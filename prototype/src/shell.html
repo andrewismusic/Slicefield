@@ -252,6 +252,11 @@ body.m-global{--accent:#7fb2ff;--bg:#0f1a2c;--panel:#16223a;background:var(--bg)
 .expclips{display:flex;flex-wrap:wrap;gap:6px}
 .expclips button{min-width:40px}
 .expmsg{color:var(--accent)!important;min-height:18px}
+.clipset{width:auto;padding:0 8px;font-size:10px;letter-spacing:.08em;text-transform:uppercase}
+#trackbar{flex-wrap:nowrap;gap:6px}
+#trackbar select{min-width:0;flex:1 1 auto;max-width:200px}
+#trackbar .grow{flex:0 1 4px}
+.foldbtn:disabled{opacity:.35;cursor:default}
 </style>
 
 <div class="app" id="app">
@@ -282,6 +287,9 @@ body.m-global{--accent:#7fb2ff;--bg:#0f1a2c;--panel:#16223a;background:var(--bg)
       </select>
       <input id="file" type="file" accept="audio/*" hidden>
       <span class="grow"></span>
+      <button id="undo" class="ic foldbtn" aria-label="Undo" title="Undo" disabled></button>
+      <button id="redo" class="ic foldbtn" aria-label="Redo" title="Redo" disabled></button>
+      <button id="clipset" class="foldbtn clipset" title="Clip settings: empty steps, repeating randomness, print">Clip</button>
       <button id="fold" class="ic foldbtn" aria-pressed="false" aria-label="Hide sequencer, loop and sliders"></button>
     </div>
   </div>

@@ -1,8 +1,8 @@
 # Slicefield — handoff for the iOS app
 
-This guide and the `prototype/` folder are everything needed to build Slicefield as a native iPhone app. The prototype is a single-page web app (version 16) designed through about fifteen rounds of hands-on testing on a phone. Treat its behaviour as the specification: when this document and the code disagree, the code in `prototype/src/` is what was actually played and approved. Say so in the pull request if you change any behaviour on purpose.
+This guide and the `prototype/` folder are everything needed to build Slicefield as a native iPhone app. The prototype is a single-page web app (version 17) designed through about fifteen rounds of hands-on testing on a phone. Treat its behaviour as the specification: when this document and the code disagree, the code in `prototype/src/` is what was actually played and approved. Say so in the pull request if you change any behaviour on purpose.
 
-**For Claude Code:** read this whole file first, then `prototype/src/engine.js` (about 580 lines, the heart of it). Section 13 gives the build order. Section 14 lists decisions the owner (Andrew) hasn't made yet. Ask him about those instead of guessing. Section 18 covers using Slicefield as the sound engine inside a larger app, and section 19 lists what changed in version 16.
+**For Claude Code:** read this whole file first, then `prototype/src/engine.js` (about 580 lines, the heart of it). Section 13 gives the build order. Section 14 lists decisions the owner (Andrew) hasn't made yet. Ask him about those instead of guessing. Section 18 covers using Slicefield as the sound engine inside a larger app, and sections 19–20 list what changed in versions 16 and 17.
 
 ---
 
@@ -27,6 +27,7 @@ This guide and the `prototype/` folder are everything needed to build Slicefield
 17. Appendix: constants, message protocol, algorithms
 18. Slicefield as an engine inside a larger app
 19. Changes in version 16
+20. Changes in version 17
 
 ---
 
@@ -273,7 +274,7 @@ For each sample `t` in the buffer:
 10. If the output is NaN, reset that track's DSP state (a safety net).
 11. Mix in `out × vol × tg`.
 
-Master: sum → `× g × 0.8` → soft clip (linear below 0.8, then a tanh knee into ±1). `g` ramps over 4 ms on play and stop. Peak is reported to the UI.
+Master: sum → `× g` (unity; `g` ramps over 4 ms on play and stop) → look-ahead limiter (1.5 ms look-ahead, ceiling −1 dBFS, 80 ms release, linear-attack ramp that reaches each peak's required gain exactly when that peak is output) → hard clamp ±1. Untouched audio therefore plays and exports at exactly its source level. The last 8 bars of output are kept in a ring for "export what you just heard". Peak and a limiter-active flag are reported to the UI.
 
 ---
 
@@ -372,7 +373,7 @@ Removed in v16 (Andrew's call). The engine keeps its 96-step history ring only f
 - **Trash** (header, one column, trash icon):
   - Tap it and release, touching nothing else: the selected sequence is deleted **on release**. No confirm. Undo is the natural partner for this (§15).
   - Hold Trash and tap steps, or hold steps and tap Trash: just those steps are cleared. Releasing Trash afterwards does nothing more, and the held steps don't toggle on/off when released.
-  - A cleared step goes back to the loop's own slice for its position (`a = idx`, on, no effects), exactly what plays with no sequence.
+  - A cleared step becomes **empty** (v17): it plays the clip's background (§20).
 - **Randomizer** (header, two columns): a die resting at the left end of a slider.
   - Drag the die right, or tap anywhere on the slider: the die jumps there and that position sets the **amount** (0–100 %). The sequence morphs live while you drag. Letting go keeps the result and the die rolls home (0.5 s, rotation proportional to distance).
   - Tapping without dragging applies the amount on release. Tapping the die where it rests (amount ≈ 0) does nothing.
@@ -440,7 +441,7 @@ Portrait only; lock the orientation. Side gutter 16 pt. Top to bottom:
 - Two 28 pt strips:
   - **Play order:** ◀ BACK · RANDOM n% · FWD ▶, with an accent marker.
   - **Silence / pattern:** ◀ SILENCE n% on the left half; on the right half, 8 small squares showing the pattern, where the square for the current step **glows softly**; PATTERN ▶.
-- A 26 pt ↺ box to the right of each strip turns on "snap back to default on release". It is **on by default for the silence/pattern strip** (snaps back to centre) and off for play order.
+- A 26 pt **pin** box to the right of each strip (v17, replaces ↺). Pinned: dragging changes the value stored on the selected clip (or the plain loop), which is kept, played and exported. Unpinned: dragging is a live override and the strip snaps back to the stored value on release. Defaults: play order pinned, silence/pattern unpinned. The stored value is a solid marker; a live override is a dashed ghost marker.
 - **Double-tap a strip** to reset it (order → forward, silence → none).
 - **Fold chevron:** folds away the lane, the loop row and both strips, leaving one 24 pt bar with just a ▾ chevron (no mini sequencer or strip summary). Tapping the bar unfolds it. This recovers about 150 pt for the rows.
 
@@ -562,16 +563,15 @@ When you are unsure how something should feel, open the prototype on a phone and
 
 ## 14. Open questions for Andrew
 
-1. **Export details.** Should exports follow the play-order and silence strips as currently set (today they don't), and should they include a tail for effects that ring past the bar? Stems per effect?
+1. **Resampling** (discussed, not built): a one-button "resample this clip into a new loop", mainly to extend pitch range and, once it exists, time-stretching. See §20.
 2. **Effect combining per row / custom "slice field maps."** It was discussed and parked ("not yet"). A suggested design was in the conversation: 1–3 effects per row, each effect at most once per track, a fixed in-row order, plus presets.
-3. **Removing a single held value.** Latch mode was removed entirely, so there's no way to keep a value without holding it except by recording or capturing. That's intentional; confirm it stays that way.
-4. **Persistence and projects.** One autosaved project, or named projects? Export audio or stems? Share sequences?
+3. **Reverb as a per-clip "space" setting** (agreed in principle, not built yet). And a cap on visible rows with a quick effect picker, now that Delay makes nine rows.
+4. **Persistence and projects.** One autosaved project, or named projects? Share sequences?
 5. **Imported audio:** resample to a bar (current behaviour, changes pitch) or trim and time-stretch?
 6. **Background audio, Ableton Link and MIDI clock**: wanted?
 7. **iPad layout**: the prototype is portrait iPhone only.
-8. **Master level:** with one track the master peaks around 0.5–0.6; the soft clipper (from the four-track days) rarely engages. Keep the 0.8 master gain, or bring a single track up nearer full scale?
-9. **Trash without a confirm.** A single tap now deletes the selected sequence (on release), as requested. Add undo (recommended) or bring back a confirm?
-10. **FX only naming.** The new switch is labelled "FX only". "Original loop" was the other candidate.
+8. **Default variation length.** New clips and the plain loop repeat their randomness every 1 bar. Is 1 the right default, or 2/4?
+9. **Filter resonance level-matching.** Freeze is now level-matched (§20); the filter's resonant peak (+3.5 dB at the default resonance) is not compensated yet.
 
 ---
 
@@ -626,8 +626,11 @@ Add scenarios as you go. Every bug fixed in either implementation should get one
 | `range` | `tr, s16, e16, q` | bar length, queued to the bar if `q` and playing |
 | `mode` | `mode: replace|combine` | Replace / Combine |
 | `fxonly` | `on` | FX only (§5.3) |
-| `order` | `tr, mode, r` | play order |
-| `mute` | `tr, rnd, bits` | silence (queued to the next step) |
+| `order` | `tr, mode, r` | the plain loop's play order (a clip carries its own `ord`) |
+| `mute` | `tr, rnd, bits` | the plain loop's silence (queued to the next step) |
+| `live` | `tr, ord?, mute?` | live (unpinned) strip override; `null` clears it. Effective = live ∥ playing clip's stored ∥ the loop's own |
+| `rand` | `tr, seed, varLen` | the plain loop's repeating randomness (varLen 0 = never repeats) |
+| `grab` | `bars` | post back the last whole bars of output (`grabbed {L, R, sr}`) |
 | `tmute` / `tvol` | `tr, on` / `tr, v` | track mute / gain (the app doesn't send these; for multi-track hosts) |
 | `swing` / `stepped` | `s` / `on` | |
 | `pref` | `{silRnd, silPat, grace}` | |
@@ -637,7 +640,7 @@ Add scenarios as you go. Every bug fixed in either implementation should get one
 | `clipEdit` | `clip` | replace a sequence everywhere it's referenced (steps edited, blank replacement) |
 | `song` / `songRows` / `songStop` | `rows:[{bars, clips[nTracks]}], from` | play the song from a row (next global bar) / update rows live / stop the song |
 
-Engine → UI events: `clip {tr, clip}` (a recording became a sequence), `clipStep {tr, id, idx, slot}` (recording wrote a step; sent at step start and again with final automation), `overDone`, `grid {tr, n}`, `songRow {idx}`, plus `status`.
+Engine → UI events: `clip {tr, clip}` (a recording became a sequence), `grabbed {L, R, sr}`, `clipStep {tr, id, idx, slot}` (recording wrote a step; sent at step start and again with final automation), `overDone`, `grid {tr, n}`, `songRow {idx}`, plus `status`.
 
 ### B. Constants
 - AUTO = 16 automation points per step
@@ -646,12 +649,12 @@ Engine → UI events: `clip {tr, clip}` (a recording became a sequence), `clipSt
 - post-slice fade = 96 samples
 - DC patch decay = 0.992 per sample
 - gate smoothing = 0.01; mute smoothing = 0.003
-- master ×0.8, soft clip knee at 0.8, 4 ms play/stop ramp
+- master unity, look-ahead limiter at −1 dBFS (1.5 ms look-ahead, 80 ms release), 4 ms play/stop ramp
 - pitch ring = 16384 samples; pitch window = 30 ms
 - freeze grain = 30.3 ms
 - history ring = 96 steps
 - touch grace default 40 ms
-- track gain 0.85 (the v15 volume knob is gone; a host can still send `tvol`)
+- track gain 1 (a host can still send `tvol`); imported loops are no longer normalised
 - strip snap zones: order ±0.06 at the ends; silence ±0.015 around the centre
 - bipolar dead band 42–58%; loop-row bands at 36% / 64%
 - lane row 24 pt; label column 34 pt; strips 28 pt; folded bar 24 pt; handle column 30 pt; row gap 3 pt; randomizer die 30 pt
@@ -727,3 +730,89 @@ From Andrew's notes on v15. Every item is reflected in the sections above.
 | New **FX only** switch, independent of Replace/Combine. Combine now means "touched slices still play, all held effects apply; latest touch of an effect wins". | §5.3, §8.2 |
 
 Tests: `node prototype/tests/engine.test.js` (18 cases, including FX only + Replace, Combine with touched slices, and "swing gap is silent"). Scenario `04-record-capture` became `04-record-fxonly`.
+
+---
+
+## 20. Changes in version 17
+
+Agreed with Andrew after v16. The model has three layers, with two actions that move things down.
+
+| Layer | What lives there | Lasts |
+|---|---|---|
+| **Live** | fingers on the grid; an unpinned strip while held | until you let go |
+| **Clip** | per clip: play order and silence/pattern (strip positions), random **seed**, **variation length** (1/2/4/8 bars or never), **background** (loop or silence) | saved with the clip, played and exported |
+| **Steps** | slice, on/off, effects, or **empty** | saved |
+
+- **Keep** = the pin on a strip (§10.4): pinned moves write to the selected clip, or to the plain loop's own settings when the slot is empty.
+- **Print** (Clip sheet): renders one variation cycle offline and writes what played into the steps. Play order, silence, patterns and random-slice jumps become ordinary steps (random slice is replaced by the slice it picked). The strips reset to forward / no silence, and the variation length goes to 1. Printing an empty slot makes a new clip from the plain loop. A 4-bar cycle prints as a 4-bar clip (the lane pages).
+
+**Repeating randomness (engine).**
+- Each track has a seeded generator `rnd()` used for play order (`stepOrder`), random silence and the Random slice effect.
+  - Touch rotation (`pickTouch`) and freeze grain jitter stay truly random.
+- At every bar line, with variation length `v > 0` and a cycle of `clipBars × v` bars:
+  - `pass = barsSinceContextStart mod cycle`
+  - the generator is reseeded with `seedMix(seed, pass)`
+  - at `pass == 0` the play positions restart
+- The context is the playing clip's id, or the plain loop; changing it restarts the count.
+- `v = 0` means "never" (`Math.random`, as before).
+- The generator state is part of the grace-window snapshot.
+- A song row lasts one full cycle of its clip.
+
+**Empty steps and backgrounds.**
+- A step can be `{empty: true}`. It plays the clip's `bg`:
+  - `'loop'` plays the loop's own slice for that step's position (`s + idx mod n`), as a plain-loop step: continuous, no slice fades.
+  - `'silence'` is silent.
+- An empty step that is switched off is silent.
+- An effect applied to an empty step (FX only, Combine) makes it heard.
+- New and blank clips are all empty.
+- Trash on a step empties it: hold Trash and tap the step, or hold the step and tap Trash. Tapping a step still toggles on/off.
+
+**Recording writes only touched steps.**
+- Untouched steps are left as they are (empty, in a new recording).
+- Silence, play order and randomness are no longer baked in by recording; Print does that.
+- A touched step is written as on, even if random silence hid it at the time.
+- FX only on an empty step turns it into its background slice plus the effects.
+- A new recording takes the plain loop's strip settings and seed, so the new clip keeps sounding the way it did while recording.
+
+**Undo / redo** (two buttons in the loop row).
+- Every edit gesture snapshots the clips, the song and the loop's settings first: one undo per gesture.
+  - Trash tap; each Trash-step tap; step on/off; assigning a cell to a step; a randomizer gesture; a whole recording take
+  - Print; a pinned strip drag or double-tap reset; Clip-sheet changes; song edits; adding a row; grid/bar-length changes
+- Live touches are not undoable.
+- Undo/redo is disabled while recording.
+- After undo or redo, the engine gets `clipEdit` for the playing or queued clip, or `launch null` if that clip no longer exists.
+
+**Export.**
+- Clips render one full variation cycle with their stored settings, after a pre-roll of the same cycle, so they loop seamlessly. Delay echoes wrap into the start.
+- Song export can add 2 silent bars for echoes to ring out.
+- New: **What you just heard** exports the last 2, 4 or 8 whole bars from the engine's output ring, live touches included.
+- New: 32-bit float WAV option.
+- No multiple takes: render again for another.
+
+**Delay** (new effect row, hue 130).
+- A send: the cell sets the send amount for that step.
+- Settings sheet controls:
+  - Time: 1/16, 1/8, 3/16 (default), 1/4, 3/8, 1/2, tempo-synced
+  - Feedback: default 55 %
+- DSP:
+  - stereo ping-pong with a one-pole low-pass in the feedback path
+  - send smoothed (×0.004 per sample), time glides (×0.0005)
+  - placed after the gate and DC patch, so echoes ring on through silent steps
+- Line length 2¹⁷ samples, preallocated.
+- Cleared on play and reset.
+
+**Level.**
+- Unity gain: track 1, master 1; imports are not normalised.
+- The soft clipper is replaced by a look-ahead limiter (§5.6).
+- Freeze is level-matched to the dry slice: grain sum ×0.38, was ×0.28, about 3 dB quieter than dry.
+
+**Tests and scenarios.**
+- `engine.test.js` has 27 cases. New ones cover: empty steps and backgrounds, recording only touched steps, variation length 1/2/never, delay tail, unity gain, limiter ceiling, grab.
+- New scenario `05-variation-delay`.
+
+**Resampling** (discussed, not built). The case for a one-button "resample this clip into a new loop":
+- it extends pitch range
+- it will matter for time-stretching once that exists
+- re-slicing a sequenced result gives a new slice grid ("chop the chop"), which stacked effects can't do
+
+Repeating most effects adds little, so it's parked as an open question (§14).
