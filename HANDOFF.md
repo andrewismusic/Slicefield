@@ -807,7 +807,7 @@ Agreed with Andrew after v16. The model has three layers, with two actions that 
 - Freeze is level-matched to the dry slice: grain sum ×0.38, was ×0.28, about 3 dB quieter than dry.
 
 **Tests and scenarios.**
-- `engine.test.js` has 27 cases. New ones cover: empty steps and backgrounds, recording only touched steps, variation length 1/2/never, delay tail, unity gain, limiter ceiling, grab.
+- `engine.test.js` has 28 cases. New ones cover: empty steps and backgrounds, recording only touched steps, variation length 1/2/never, delay tail, unity gain, limiter ceiling, grab.
 - New scenario `05-variation-delay`.
 
 **Resampling** (discussed, not built). The case for a one-button "resample this clip into a new loop":
