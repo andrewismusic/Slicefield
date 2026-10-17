@@ -1,6 +1,6 @@
 # Slicefield (iOS)
 
-Native iPhone port of the Slicefield web prototype: a four-track, slice-grid touch instrument.
+Native iPhone port of the Slicefield web prototype: a one-channel, slice-grid touch instrument. It may also become the sound/performance engine inside a larger app (HANDOFF §18), so keep the core host-agnostic.
 
 - **Spec:** `HANDOFF.md` (read it first). The prototype in `Reference/` (copied from `prototype/`) is the source of truth for behaviour. Open `Reference/slicefield.html` on a phone to compare feel.
 - **Architecture:**

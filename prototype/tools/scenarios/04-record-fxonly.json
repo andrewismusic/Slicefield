@@ -1,0 +1,17 @@
+{"seed":4,"length":{"bar":10},"msgs":[
+ {"at":0,"msg":{"type":"stepped","on":false}},
+ {"at":0,"msg":{"type":"play"}},
+ {"at":{"bar":1,"step":2},"msg":{"type":"rec","tr":0,"on":true,"id":"t0s0_1"}},
+ {"at":{"bar":1,"step":4},"msg":{"type":"touches","tr":0,"list":[{"id":"p","a":5,"n":1,"o":1,"fx":{"k":"pitch","raw":0.3}}]}},
+ {"at":{"bar":1,"step":6},"msg":{"type":"touches","tr":0,"list":[{"id":"p","a":5,"n":1,"o":1,"fx":{"k":"pitch","raw":0.9}}]}},
+ {"at":{"bar":1,"step":9},"msg":{"type":"touches","tr":0,"list":[]}},
+ {"at":{"bar":3,"step":1},"msg":{"type":"rec","tr":0,"on":false}},
+ {"at":{"bar":5},"msg":{"type":"mode","mode":"combine"}},
+ {"at":{"bar":5},"msg":{"type":"fxonly","on":true}},
+ {"at":{"bar":5},"msg":{"type":"rec","tr":0,"on":true,"over":{"id":"t0s0_1","cols":16,"n":16,"slots":[]}}},
+ {"at":{"bar":5,"step":1},"msg":{"type":"touches","tr":0,"list":[{"id":"s","a":1,"n":1,"o":2,"fx":{"k":"stutter","raw":0.8}}]}},
+ {"at":{"bar":6,"step":1},"msg":{"type":"touches","tr":0,"list":[]}},
+ {"at":{"bar":7},"msg":{"type":"fxonly","on":false}},
+ {"at":{"bar":7},"msg":{"type":"touches","tr":0,"list":[{"id":"a","a":3,"n":1,"o":3,"fx":{"k":"crush","raw":0.4}},{"id":"b","a":11,"n":1,"o":4,"fx":{"k":"reverse","raw":0.5}}]}},
+ {"at":{"bar":8},"msg":{"type":"touches","tr":0,"list":[]}},
+ {"at":{"bar":9},"msg":{"type":"rec","tr":0,"on":false}}]}

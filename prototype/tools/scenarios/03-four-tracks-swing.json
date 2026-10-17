@@ -1,6 +1,1 @@
-{"seed":3,"length":{"bar":6},"msgs":[
- {"at":0,"msg":{"type":"swing","s":0.35}},{"at":0,"msg":{"type":"grid","tr":1,"n":8}},{"at":0,"msg":{"type":"range","tr":2,"s16":0,"e16":12}},
- {"at":0,"msg":{"type":"play"}},
- {"at":{"bar":2},"msg":{"type":"mode","mode":"combine"}},
- {"at":{"bar":2},"msg":{"type":"touches","tr":1,"list":[{"id":"x","a":0,"n":2,"o":1,"fx":{"k":"filter","raw":-0.6}}]}},
- {"at":{"bar":4},"msg":{"type":"tmute","tr":3,"on":true}}]}
+{"seed": 3, "length": {"bar": 6}, "msgs": [{"at": 0, "msg": {"type": "swing", "s": 0.35}}, {"at": 0, "msg": {"type": "grid", "tr": 1, "n": 8}}, {"at": 0, "msg": {"type": "range", "tr": 2, "s16": 0, "e16": 12}}, {"at": 0, "msg": {"type": "play"}}, {"at": {"bar": 2}, "msg": {"type": "mode", "mode": "combine"}}, {"at": {"bar": 2}, "msg": {"type": "touches", "tr": 1, "list": [{"id": "x", "a": 0, "n": 2, "o": 1, "fx": {"k": "filter", "raw": -0.6}}]}}, {"at": {"bar": 4}, "msg": {"type": "tmute", "tr": 3, "on": true}}], "loops": ["break", "reese", "kalimba", "vox"]}

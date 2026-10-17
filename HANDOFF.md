@@ -1,8 +1,8 @@
 # Slicefield — handoff for the iOS app
 
-This guide and the `prototype/` folder are everything needed to build Slicefield as a native iPhone app. The prototype is a single-page web app (version 15) designed through about fifteen rounds of hands-on testing on a phone. Treat its behaviour as the specification: when this document and the code disagree, the code in `prototype/src/` is what was actually played and approved. Say so in the pull request if you change any behaviour on purpose.
+This guide and the `prototype/` folder are everything needed to build Slicefield as a native iPhone app. The prototype is a single-page web app (version 16) designed through about fifteen rounds of hands-on testing on a phone. Treat its behaviour as the specification: when this document and the code disagree, the code in `prototype/src/` is what was actually played and approved. Say so in the pull request if you change any behaviour on purpose.
 
-**For Claude Code:** read this whole file first, then `prototype/src/engine.js` (about 580 lines, the heart of it). Section 13 gives the build order. Section 14 lists decisions the owner (Andrew) hasn't made yet. Ask him about those instead of guessing.
+**For Claude Code:** read this whole file first, then `prototype/src/engine.js` (about 580 lines, the heart of it). Section 13 gives the build order. Section 14 lists decisions the owner (Andrew) hasn't made yet. Ask him about those instead of guessing. Section 18 covers using Slicefield as the sound engine inside a larger app, and section 19 lists what changed in version 16.
 
 ---
 
@@ -15,8 +15,8 @@ This guide and the `prototype/` folder are everything needed to build Slicefield
 5. Engine behaviour (the core spec)
 6. Effects reference
 7. Cells, parameters and effect settings
-8. Recording, capture and sequences
-9. Session view and song
+8. Recording and sequences
+9. Clips, song and export
 10. Screen layout and interaction spec
 11. Visual design tokens
 12. Demo loops and audio import
@@ -25,18 +25,20 @@ This guide and the `prototype/` folder are everything needed to build Slicefield
 15. Known quirks and things to improve natively
 16. Parity testing against the prototype
 17. Appendix: constants, message protocol, algorithms
+18. Slicefield as an engine inside a larger app
+19. Changes in version 16
 
 ---
 
 ## 1. What Slicefield is
 
-Slicefield is a four-track touch instrument for one-bar loops.
+Slicefield is a one-channel touch instrument for one-bar loops.
 
-- Each track (A, B, C, D) plays a one-bar audio loop, cut into a grid of slices (1/16 or 1/8).
+- It plays one one-bar audio loop, cut into a grid of slices (1/16 or 1/8).
 - The screen is a grid. **Horizontal position picks the slice; vertical position within a row sets the effect amount.** The middle row (the "loop row") shows the waveform: a tap there loops that slice dry, the top band is a high-pass filter and the bottom band a low-pass.
 - Every touch is quantised to the slice grid. Several held cells take turns in the order they were touched.
-- A **sequencer** records what you hear, step by step, as "sequences". Each holds 1 or 2 bars of steps, and each step stores a slice plus effect touches.
-- A **session view** holds up to 8+ sequences per track (clips) that launch on the bar. A **song** row list chains them.
+- A **sequencer** records what you hear, step by step, as "sequences". Each holds one bar of steps, and each step stores a slice plus effect touches.
+- A **clips view** holds 8+ sequences (clips) in one column; they launch on the bar. A **song** column chains them. Both export as audio.
 - **Design rule: what you hear is what you get.** Recording prints exactly what was heard, including smooth finger gestures. Effect settings stay "live": a step stores *where you touched*, not the value that produced. So changing an effect's range or scale later re-maps recorded steps.
 
 The test bench is at https://claude.ai/artifact/E3mmmLLnQFMJXGLG12BYvd (open it on an iPhone to feel the intended behaviour). Its full source is in `prototype/slicefield.html`.
@@ -57,7 +59,7 @@ prototype/
   src/shell.html               HTML + CSS
   tests/engine.test.js         behaviour tests (node tests/engine.test.js) — port these to XCTest
   tools/render-reference.js    renders scripted scenarios to WAV + step logs for parity testing
-  tools/scenarios/*.json       four scenarios (plain loop, every effect, 4 tracks + swing, record/capture/combine)
+  tools/scenarios/*.json       four scenarios (plain loop, every effect, 4 engine tracks + swing, record/FX only/combine)
 ```
 
 To regenerate the reference renders (written to `tools/out/`, about 20 MB, not checked in), run `node tools/render-reference.js`. Running it twice gives byte-identical step logs.
@@ -65,14 +67,14 @@ To regenerate the reference renders (written to `tools/out/`, about 20 MB, not c
 How the prototype is put together:
 
 - `engine.js` exports `engineFactory()`. In the browser it runs inside an AudioWorklet and talks to the UI only through messages (`msg()` in, `post()` out). That boundary maps directly onto a real-time audio thread plus a UI thread on iOS.
-- `ui.js` keeps all user-facing state: tracks, effect settings, clips, song and prefs. It pushes what the engine needs, and it draws everything on two `<canvas>` elements (the sequencer lane and the effect grid), plus HTML for the header, tabs, sheets and session view.
+- `ui.js` keeps all user-facing state: the track, effect settings, clips, song and prefs. It pushes what the engine needs, and it draws everything on two `<canvas>` elements (the sequencer lane and the effect grid), plus HTML for the header, tabs, sheets and session view.
 
 ---
 
 ## 3. Recommended iOS architecture
 
 ### Stack
-- **Swift + SwiftUI** for the app shell, sheets (Preferences, effect settings), session view and song.
+- **Swift + SwiftUI** for the app shell, sheets (Preferences, effect settings, export), the clips and song view.
 - **A UIKit `UIView` subclass for the performance grid and sequencer lane.** It needs raw multi-touch with `touchesBegan/Moved/Ended` (set `isMultipleTouchEnabled = true`, no gesture recognisers on the grid), the lowest possible latency, and precise drawing. Draw with Core Graphics in `draw(_:)` at display rate, or Metal if profiling demands it. SwiftUI gestures aren't suitable for 4+ simultaneous fingers with per-finger identity.
 - **DSP core in C++ (recommended) or carefully written Swift**, hosted in an `AVAudioSourceNode` on `AVAudioEngine`. C++ makes the real-time rules (no allocation, no locks, no Objective-C/Swift runtime calls) easy to guarantee. Swift 5.9+ C++ interop, or a thin C API, connects it to the app. An AUv3 is a possible later step; nothing here prevents it.
 - **Minimum iOS 17** is a reasonable default, so the app can use the Observation framework. Ask Andrew if older support matters.
@@ -83,7 +85,7 @@ UI thread ──(SPSC lock-free queue: Command)──▶ audio thread (Engine.re
 UI thread ◀──(SPSC queue: EngineEvent)──────── audio thread
 UI thread ◀──(atomic double-buffered Status snapshot, ~60 Hz)── audio thread
 ```
-- **Command** = every `msg()` type in Appendix A (touches, cfg, launch, rec, capture, …).
+- **Command** = every `msg()` type in Appendix A (touches, cfg, launch, rec, …).
 - **EngineEvent** = `clip`, `clipStep`, `overDone`, `grid`, `songRow` (the prototype's `post` events). They carry finished sequences back to the UI's model.
 - **Status** = the prototype's `status` message: playing, sample time, loop length, per-track `info()`, and the viewed track's recent step history. Publish it as a fixed-size struct the UI reads each frame. Don't allocate it per buffer.
 - **Ownership of sequences (clips):** the UI builds an immutable clip and hands the engine a pointer. The engine never frees memory; it returns replaced clips through a "garbage" queue for the UI to release. The engine edits clip steps in place while recording. On iOS, make the engine own a mutable copy and emit `clipStep` events so the UI model mirrors it, which is exactly what the prototype does.
@@ -94,7 +96,7 @@ UI thread ◀──(atomic double-buffered Status snapshot, ~60 Hz)── audio 
   - ≤ 8 effect entries per step
   - ≤ 64 grains
   - a hist ring of 96
-  - recording buffers sized at the maximum sequence length, 2 bars × 16 steps = 32
+  - recording buffers sized at the maximum sequence length, 1 bar × 16 steps = 16 (keep 32 if older 2-bar sequences must load)
 - Effect resolution (`resolveInto`) runs per sample when raw changes. It's cheap math; keep it, with no allocation.
 - Effect identity is a string key (`'pitch'`). Use an enum.
 
@@ -111,7 +113,7 @@ Use plain `Codable` value types for the UI-side model (also the save format; the
 
 ```swift
 enum Fx: String, Codable { case stutter, random, pitch, reverse, env, freeze, crush, filter }
-// crush is shown to the user as "SRR"; env as "Decay"; filter lives on the loop row.
+// env is shown to the user as "Decay"; filter lives on the loop row.
 
 struct FxTouch: Codable { var fx: Fx; var raw: Float; var auto: [Float]? }  // raw: 0…1, or −1…1 on bipolar rows
                                                                              // auto: 16 points across the step, or nil
@@ -129,7 +131,7 @@ struct Sequence: Codable {      // "clip" in the prototype
   var id: String                // prototype: "t{track}s{slot}_{n}" — the slot index is parsed from it
   var cols: Int                 // grid when made (16 or 8)
   var n: Int                    // steps per bar for its track (bar length in grid steps)
-  var steps: [Step]             // n × bars (bars = 1 or 2)
+  var steps: [Step]             // n steps (one bar); the engine still plays longer ones
 }
 
 struct ParamRange: Codable { var lo: Float; var hi: Float }
@@ -147,22 +149,22 @@ struct Track: Codable {
   var loopKind: String          // demo loop id or "file"
   var cols: Int = 16            // 16 or 8
   var len16: Int = 16           // bar length in sixteenths (multiple of 16/cols)
-  var muted = false, solo = false
-  var vol: Float = 0.8          // knob position 0…1; gain = 0.85·(vol/0.8)²
   var rows: [String]            // row order, e.g. ["stutter","random","pitch","center","reverse","env","freeze","crush"]
   var cfg: [Fx: EffectConfig]
   var orderV: Float = 1         // play-order strip position (1 = forward)
   var muteV: Float = 0.5        // silence/pattern strip position (0.5 = none)
   var slots: [Sequence?]        // session column (8 by default; rows can be added)
-  var edit: Int = 0             // selected slot: where recording and capture go, what the lane shows
+  var edit: Int = 0             // selected slot: where recording and the randomizer go, what the lane shows
 }
 
-struct SongRow: Codable { var scene: Int?; var clips: [Int?] }  // a whole session row, or one slot per track
-struct Prefs: Codable { seqLen 1|2 (2), silRnd "mute"|"insert", silPat "mute"|"insert", grace 0|20|40|70 (40), shown: Set<Fx> }
-struct Project: Codable { bpm 60…200 (124), swing 0…0.5 (0), stepped (true), playMode "replace"|"combine", tracks[4], song [SongRow], prefs, scenes }
+struct SongRow: Codable { var clip: Int? }                 // a slot index, or an empty row
+struct Prefs: Codable { silRnd "mute"|"insert", silPat "mute"|"insert", grace 0|20|40|70 (40), shown: Set<Fx> }
+struct Project: Codable { bpm 60…200 (124), swing 0…0.5 (0), stepped (true), playMode "replace"|"combine", fxOnly (false), track, song [SongRow], prefs, slots }
 ```
 
-Default rows per track: `stutter, random, pitch, center (loop/filter row), reverse, env, freeze, crush`. Default loops: A Breakbeat, B Reese bass, C Kalimba, D Vocal chops. Nothing is muted at start.
+Default rows: `stutter, random, pitch, center (loop/filter row), reverse, env, freeze, crush`. Default loop: Breakbeat.
+
+The engine still takes a track count (`new Engine(sr, nTracks)`, default 1) and the song rows carry a `clips` array per track. The app uses one track; the extra capacity costs nothing and keeps the door open for a host that runs several instances side by side (§18).
 
 ---
 
@@ -184,31 +186,36 @@ Everything here comes from `src/engine.js`. Port it line for line first, then re
 3. Apply `launchNow` (song row change, which happens at global bar lines).
 4. Apply a queued silence setting (`muteQ`).
 5. At the track's bar line (`barPos == 0`), apply in this order:
-   1. a queued grid change (`applyGrid` resets play order and clears history and capture)
+   1. a queued grid change (`applyGrid` resets play order and clears history)
    2. a queued bar-length change (same resets)
    3. recording transitions (§8)
    4. a queued clip launch
-   5. a queued capture (§8.4)
 6. Snapshot state (for the grace re-decide), then `decide()`.
 
 ### 5.3 `decide()` — what plays this step
-Inputs: the track's current touches (from the UI), its playing sequence (`clip`), the play order and silence settings, and the global **play mode**.
+Inputs: the track's current touches (from the UI), its playing sequence (`clip`), the play order and silence settings, and two global switches: **Replace / Combine** and **FX only**.
 
-1. **Classify touches.**
-   - In **Combine** mode, every effect touch is *applied* (stacked on whatever plays) and dry waveform taps are ignored.
-   - In **Replace** mode, every touch is a *looping* touch. Global touches (globe on) with an effect are also added to every step's effects.
+1. **Classify touches.** The two switches are independent:
+
+   | | FX only **off** (touches pick slices) | FX only **on** (slices come from the sequence or loop) |
+   |---|---|---|
+   | **Replace** | Touched slices take turns; each step plays its touch's own effect. | The step keeps its slice; the touches take turns giving it *their* effect (a dry tap gives none), in place of the step's own effects. |
+   | **Combine** | Touched slices take turns; *every* held effect plays on each of them. If one effect is held twice, the most recent touch's value wins. | Every held effect stacks on whatever plays (the step's own effects stay, same effect = replaced). Dry taps are ignored. |
+
+   In code: *looping* touches (`loopT`) are all touches except in FX only + Combine; *applied* touches are all effect touches in Combine.
 2. **Advance the underlying positions** even if something else plays:
    - the sequence index `cpos` advances by play order (§5.4)
    - the raw-loop slice `tlS` advances by play order within the bar
 3. **Pick the base**, in priority order:
    1. If the current step continues (a long stutter or touch spanning more than one step, `left > 0`), keep it.
-   2. Else, if there are looping touches: `pickTouch()` takes turns between them in touch order (forward/back/random per the order strip). The step plays that touch's slice with its effect, and lasts `round(touchWidth·u/sl)` steps (1 normally).
+   2. Else, if FX only is off and there are looping touches: `pickTouch()` takes turns between them in touch order (forward/back/random per the order strip). The step plays that touch's slice (with its effect in Replace), and lasts `round(touchWidth·u/sl)` steps (1 normally).
    3. Else, during a song row where this track has no sequence: a silent rest.
    4. Else, if a sequence is playing: its step at `cpos`. A step with `off = previous.off+1` and the same `sid` continues the current slice instead of restarting it.
    5. Else: the raw loop slice `tlS`.
+   6. FX only + Replace with looping touches: `pickTouch()` picks the touch whose effect this (sequence or loop) step gets.
 4. **Silence** (§5.5) decides whether the step is gated. In "insert" mode, a silenced step also rolls back the position advances, so the sequence waits.
-5. **Build the effect list**: the base's effects, then applied/global touches. An effect key appears at most once; later entries replace earlier ones.
-   - If an applied stutter or freeze touch is present, the slice is **anchored**: it keeps repeating the slice where that touch began instead of following the sequence.
+5. **Build the effect list**: the base's effects, then applied touches in touch order. An effect key appears at most once; later entries replace earlier ones.
+   - FX only + Combine: if an applied stutter or freeze touch is present, the slice is **anchored**: it keeps repeating the slice where that touch began instead of following the sequence.
    - Stutter can stretch the step: if a repeat is longer than the step, the step lasts `ceil(rep/sl)` steps (touch steps only) and `slen` grows.
 6. Start the step (`startStep`): random-slice picks its jump, pitch initialises its shifter, crush resets its phase.
 7. **Gate** = not inserted ∧ step on ∧ not silenced. Push a history entry (`{bp, bn, ci, on, a, off, sid, slen, fx}`) and feed recording (§8).
@@ -253,13 +260,15 @@ For each sample `t` in the buffer:
 5. **Read the loop** at `(rPick or a) + tau`, wrapped. If the read position jumps (not the next sample in the current direction), crossfade from the old position over 96 samples (`xf`).
 6. **Gain shaping:**
    - after `slen`, fade to zero over 96 samples
-   - **slice-edge fades** (1.5 ms, `fd = round(0.0015·sr)`), applied unless the source is the plain loop:
-     - fade out into the next step line when the step ends there
-     - fade out at the slice end
-     - fade the next step in after a faded ending
-     - fade each stutter repeat's edges (when the repeat is longer than 4·fd)
+   - past the slice end (`el ≥ slen`): silent when edge fades apply; a plain-loop step without swing fades out over 96 samples instead
+   - **slice-edge fades**, applied unless the source is the plain loop *and* swing is 0. All fades use a smoothstep curve `x²(3−2x)` so they have no corner at either end. Lengths: `fd = round(0.0015·sr)` (1.5 ms); with swing `s > 0`, fade-outs last `fd + s·0.012·sr` (up to 7.5 ms) and fade-ins `fd + s·0.006·sr` (up to 4.5 ms):
+     - fade out into the next step line when the step ends there (fade-out length)
+     - fade out at the slice end (fade-out length)
+     - fade the next step in after a faded ending (fade-in length)
+     - fade each stutter repeat's edges over `fd` (when the repeat is longer than 4·fd)
+   - Why: with swing, a slice ends before the delayed next step starts. In v15 the slice-end fade reached zero one sample early and the post-slice fade then restarted at full gain, leaking a 2 ms burst of the next slice into every swing gap. That was the swing click; the test "swing gap is silent" guards it.
 7. **Sound effects**, in list order: pitch, env (decay), crush, filter (§6).
-8. Gate smoothing `gG += (gate−gG)·0.01`; track mute smoothing `tg += (target−tg)·0.003`.
+8. Gate smoothing `gG += (gate−gG)·0.01`; track mute smoothing `tg += (target−tg)·0.003` (only used by multi-track hosts).
 9. On a new step, a decaying DC-offset patch `dc = last − new` (×0.992 per sample) hides any remaining jump.
 10. If the output is NaN, reset that track's DSP state (a safety net).
 11. Mix in `out × vol × tg`.
@@ -275,7 +284,7 @@ Value functions (normalised `v` → real units):
 - `DIV = [4, 8, 16, 32, 64, 128]`; stutter grid repeat = `len / DIV[floor(v·6)]`
 - `envMs(v) = 3·100^(v/0.985)` ms (decay)
 - `hpHz(v) = 25·200^v`; `lpHz(v) = 18000·0.01^v`
-- `crHz(v) = 500·32^v` (SRR hold rate)
+- `crHz(v) = 500·32^v` (Crush hold rate)
 - `semiQ(v, mask)`: pitch quantised to a scale. With a mask, the cell's travel is spread evenly over just the allowed notes in that direction (up to ±12). Without one, `sign(v)·min(12, floor(|v|·12)+1)`.
 
 | Effect (label) | Row | Cell controls (default) | Other params | DSP |
@@ -283,10 +292,10 @@ Value functions (normalised `v` → real units):
 | Stutter | 1 unit | `len` 0…1 (default range 0→1: 1/4…1/128) | option: Timing grid / ms | Repeat the first `rep` samples of the slice. ms mode re-reads `rep` at each repeat boundary. Ticks drawn at the 6 note values. |
 | Random slice | 1 unit | `chance` | `spread` (1 = any slice, else ±1…15) | At step start, with probability `chance`, jump to another slice in the bar (up to 6 tries to differ). |
 | Pitch | tall (2.8) bipolar | `semi` (−1…1, centre dead band) | option: scale + 12-key custom mask | Two-tap delay-line pitch shifter: 30 ms window, triangular crossfade between taps, 16k-sample ring. Target semitones glide (`×0.0015`/sample); wet mix fades in and out (`×0.004`). |
-| Reverse | thin strip (no cell parameter) | — | — | Mirror time within each slice-length chunk. |
+| Reverse | 1 unit (no cell parameter) | — | — | Mirror time within each slice-length chunk. |
 | Decay | 1 unit | `dec` (default range 0→1; ≥ 0.985 = full slice) | — | Amp envelope per slice (restarts on each stutter repeat): `exp(−t/τ)`, τ = envMs, 32-sample attack. |
 | Freeze | 1 unit, bipolar | `semi` (grain pitch, same scale system as Pitch) | option: scale | Granular hold at the slice start. Grains of 30.3 ms, Hann window, a new one every glen/12 samples, start jitter up to 20 ms, rate `2^(semi/12)`, sum × 0.28. Size and spray are fixed and hidden. |
-| SRR (crush) | 1 unit | `rate` (500 Hz…16 kHz) | — | Sample-and-hold at `crHz(rate)` with a smoothed rate (×0.002). No bit reduction. |
+| Crush | 1 unit | `rate` (500 Hz…16 kHz) | — | Sample-and-hold at `crHz(rate)` with a smoothed rate (×0.002). No bit reduction. |
 | Filter | loop row bands | `cut` (bipolar: + = HP, − = LP) | `res` 0.7 | TPT state-variable filter, k = 2−1.9·res, cutoff smoothed (×0.002), clamped to 0.45·sr. |
 
 **Removed on purpose; don't bring back without asking:** tape stop, vocoder, delay, wavefold, stutter decay, freeze OTT, crush bit depth, pitch grain size, effect colour choice.
@@ -323,29 +332,29 @@ The engine stores the track's `cfg` and re-resolves whenever raw or cfg changes 
 
 ### 7.3 Row geometry
 - Rows stack below the strips: `TOP` = 66 pt (both strips), or 30 pt when folded (§10.4).
-- Row heights use weights: loop/filter row 3.2, pitch 2.8, other rows 1. Any row whose effect has **no** cell parameter (Reverse, or all Cell boxes unticked) becomes a fixed 20 pt thin strip. Rows have a 3 pt gap.
+- Row heights use weights: loop/filter row 3.2, pitch 2.8 (when it has a cell parameter), every other row 1, including rows with **no** cell parameter (Reverse, or all Cell boxes unticked). v15 shrank those to a 20 pt strip, which was too small to hit. Rows have a 3 pt gap.
 - Rows can be reordered by dragging the ≡ handle more than 8 pt vertically (a ghost row follows the finger; a bar shows the drop point). A tap on the handle opens settings.
 - Effects can be hidden in Preferences ("Effects shown"). Hidden effects still play when they're recorded in a sequence.
 
 ---
 
-## 8. Recording, capture and sequences
+## 8. Recording and sequences
 
 ### 8.1 Rules (as approved)
-- Recording only ever happens on the **viewed track**. Switching tracks stops it.
 - **Starting into an empty slot** creates a new sequence:
   - if Record is pressed in the first half of a bar, that bar's steps so far are taken from history (no lost downbeat)
   - in the second half, recording waits for the next bar line
-- **A new recording never stops by itself.** When it reaches the sequence length (Prefs: 1 or 2 bars), it becomes the sequence (`clip` event) and keeps recording over it, looping. From then on it replaces or combines according to the mode.
-- **Starting on an existing sequence** records over it in place and keeps its length. It loops until Record is pressed again. If the sequence isn't playing yet, it's launched first and recording begins when it does.
+- **A new recording never stops by itself.** When it reaches one bar, it becomes the sequence (`clip` event) and keeps recording over it, looping. From then on it replaces or combines according to the mode.
+- **Starting on an existing sequence** records over it in place and keeps its length. It loops until Record is pressed again. If the sequence isn't playing yet, it's launched first and recording begins when it does. (Sequences are always one bar now; an older longer one would keep its length.)
 - **Stopping a new recording early:**
   - in the first half of a bar, the current bar is cut off and the sequence ends at the previous bar line
   - otherwise it finishes at the end of the bar (state "closing")
 - Recorded data is raw touch data: slice, on/off, and effect touches with raw positions and optional automation.
 
-### 8.2 Replace / Combine (global mode, one button)
-- **Replace:** touches take over from the sequence (or loop); recording replaces each step with what played.
-- **Combine:** touches never change the slice; effects stack on whatever plays; waveform taps are ignored. Recording keeps each step's slice and on/off state and merges effects in. An effect already on the step is replaced; others are kept. Steps without a touch are left untouched.
+### 8.2 Recording with Replace / Combine and FX only
+Recording prints what you hear (§5.3 table), with one difference driven by **FX only** when recording over a sequence:
+- **FX only off:** every step is replaced with what played (slice, on/off, effects).
+- **FX only on:** each step keeps its slice and on/off state. Only steps that were touched change, and they take the effects heard (merged in Combine, the touch's effect in Replace; a dry tap in Replace removes them). Untouched steps are left alone.
 
 ### 8.3 Smooth vs stepped, and automation
 - **Stepped** (the default, staircase icon): an effect's value is held from the start of each step.
@@ -353,85 +362,87 @@ The engine stores the track's `cfg` and re-resolves whenever raw or cfg changes 
   - At the end of the step (`finalize`), unfilled points are carried forward. If the points are flat (within 1e-4), the automation is dropped and only `raw` is kept.
   - Playback linearly interpolates the points across the step **regardless of the stepped toggle**. The toggle only affects live playing.
 
-### 8.4 Capture (button left of Record)
-Capture prints what you just heard (the history ring) into a sequence. The length is the Prefs sequence length (S = 1 or 2 bars) × `n` steps.
-- Window position = `((barN mod S)·n + barPos) / (S·n)`.
-  - **≥ 0.75** (last quarter): wait until the window ends, then capture that whole window and start playing it at once.
-  - Earlier: capture the most recent whole bars ending at the last bar line (up to S bars). The new sequence starts at the next bar.
-- Destination: the selected slot if empty, otherwise the next empty slot of that track (wrapping). If none is empty, add a session row. The captured sequence becomes the selected one.
-- The lane's "live" view shows the current S-bar window, so you can see exactly what Capture will print.
+### 8.4 Capture
+Removed in v16 (Andrew's call). The engine keeps its 96-step history ring only for the lane's live view and for a recording started in the first half of a bar.
 
 ### 8.5 Editing sequences in the lane
 - **Tap and release a step** to switch it off or on (on release, not on touch).
 - **Hold a step and tap a cell:** the cell's slice and the finger's raw position are assigned to that step. Keep sliding to adjust; let go to finish. A held step gets a white outline.
 - **Hold a cell, then tap a step:** pastes the held cell into the step (older gesture, kept).
-- **Clear** (header) deletes the selected sequence. The first tap arms it ("Sure?") for 2.5 s; the second tap clears.
-- **Dice** makes a random sequence of the sequence length in the selected slot:
-  - each step picks dry ×3 or one of the shown effects that has a cell, or filter
-  - a random slice within the bar
-  - bipolar raw = ±(0.15…1)
-- Sequences are labelled by track letter and slot number: A1, B3, …
+- **Trash** (header, one column, trash icon):
+  - Tap it and release, touching nothing else: the selected sequence is deleted **on release**. No confirm. Undo is the natural partner for this (§15).
+  - Hold Trash and tap steps, or hold steps and tap Trash: just those steps are cleared. Releasing Trash afterwards does nothing more, and the held steps don't toggle on/off when released.
+  - A cleared step goes back to the loop's own slice for its position (`a = idx`, on, no effects), exactly what plays with no sequence.
+- **Randomizer** (header, two columns): a die resting at the left end of a slider.
+  - Drag the die right, or tap anywhere on the slider: the die jumps there and that position sets the **amount** (0–100 %). The sequence morphs live while you drag. Letting go keeps the result and the die rolls home (0.5 s, rotation proportional to distance).
+  - Tapping without dragging applies the amount on release. Tapping the die where it rests (amount ≈ 0) does nothing.
+  - Hold the die and tap steps: only those steps are re-rolled, each tap a fresh roll, at the held amount, or 100 % when the die is held at its rest spot. The whole-sequence change then doesn't happen on release.
+  - An empty slot starts from a blank sequence (slices in order), so 100 % there is close to v15's dice.
+  - **The scheme**, per step, at amount `a`. Every step gets its own fixed random numbers for the whole gesture, so dragging further only ever adds change and dragging back undoes it smoothly:
 
-### 8.6 Grid, bar length and sequence length changes (Preferences)
-- Per-track **grid** (1/16, 1/8) and **bar length** (− / + in grid steps, 1…16 sixteenths): if the track has sequences, an inline confirm appears first ("This deletes track A's 2 sequences. [Change] [Cancel]"). Then the track's sequences are deleted, its playing sequence stops, and the change lands on the track's next bar line.
-- **Sequence length** 1 / 2 bars: if the selected sequence has a different length, confirm first ("Replace A1 with a blank 1-bar sequence?"). It's then replaced with a **blank sequence**: the bar's slices in order (step i → slice i mod n), no effects, same id so it keeps playing. Other sequences keep their length.
+    | What | Chance (per step) | How far |
+    |---|---|---|
+    | the step is affected at all | `a` | — |
+    | its slice moves (if affected) | `a` (so `a²` overall) | up to ±`a`·bar length, wrapped in the bar |
+    | each existing effect is removed (if affected) | `a/2` | — |
+    | each kept effect's cell position is nudged (if affected) | always | up to ±`a` in raw units (automation shifts with it) |
+    | one effect is added (if affected) | `a/2` | a shown effect not already on the step (filter and reverse included), random position; bipolar = ±(0.15…1) |
 
----
+    On/off state is never changed. A step whose slice moved gets a new `sid`, so it no longer continues a long stutter.
+- Sequences are labelled by slot number: 1, 2, 3, …
 
-## 9. Session view and song
+### 8.6 Grid and bar length changes (Preferences)
+- **Grid** (1/16, 1/8) and **bar length** (− / + in grid steps, 1…16 sixteenths): if there are sequences, an inline confirm appears first ("This deletes your 3 clips and empties the song. [Change] [Cancel]"). Then the sequences are deleted, the song rows are emptied, the playing sequence stops, and the change lands on the next bar line.
+- Sequence length is fixed at one bar; there is no preference.
 
-- Toggle with the session/track icon (two-columns-of-lines icon ↔ 4×4 dots). Session replaces the tabs, the lane and the grid.
-- **Clips grid** (title "CLIPS"): a left column of row-launch ▶ buttons, then 4 track columns.
-  - **Header boxes** per track: letter, S, M, a stop button, and a volume knob. The knob sits at 0.8 = 0 dB; drag 150 pt for the full range; double-tap resets to 0 dB. **Its size must not change as the dB readout changes.**
-  - The stop-all button sits top-left.
-  - **Cells have no text**, only a thumbnail: each step drawn as a short bar at its slice height, coloured by its first effect, with off steps faint.
-  - States: selected (white outline), playing (▶ marker), queued (breathing outline), dimmed if not audible.
-  - Tap a cell to select and launch it (quantised to the bar). Tap an empty cell to select it for recording. Tap a row ▶ to launch a whole row.
-  - "+ Add row" adds a row.
-- **Song** (title "SONG", always visible below):
-  - Rows hold either a whole session row (drag a row ▶ in) or per-track clips (drag cells in).
-  - Each row's length = its longest clip.
-  - Tap a row's ▶ to play the song from there; drag the ▶ vertically to reorder; × removes the row.
-  - A trailing empty row is always present.
-  - During a song, a track with no clip in the current row is silent.
-  - Any manual launch ends song playback.
+## 9. Clips, song and export
+
+- Toggle with the clips/effects icon (two-columns-of-lines icon ↔ 4×4 dots). The clips view replaces the lane, loop row and grid.
+- Two columns side by side, each one column wide and scrolling on its own:
+  - **Clips** (left): a **■ Loop** button on top (stops the clip and plays the plain loop, ends the song), then the slots, then "+ Add".
+    - Each slot shows a thumbnail (each step a short bar at its slice height, coloured by its first effect, off steps faint) and its number in the corner. The number matches the lane label.
+    - States: selected (white outline), playing (▶ marker), queued (breathing outline).
+    - Tap a slot to select it and launch it (quantised to the bar). Tap an empty slot to select it for recording.
+  - **Song** (right): rows of [▶ handle · clip thumbnail · ×].
+    - Drag a clip from the left column onto a song row to put it there. A trailing empty row is always present.
+    - Each row lasts its clip's length (one bar). An empty row (or a deleted clip) plays a silent bar.
+    - Tap a row's ▶ or thumbnail to play the song from there. Drag the ▶ vertically to reorder. × removes the row.
+    - Any manual launch ends song playback.
 - Drag and drop uses pointer capture plus a floating ghost. Session updates are done in place, so a drag in progress is never destroyed by a re-render. Keep that in SwiftUI (stable identities, no wholesale rebuilds while dragging).
-
----
+- **Export** (header share icon) opens a sheet:
+  - **Export song**: the filled song rows, rendered in order. The sheet shows rows · bars · seconds.
+  - **Export each clip**: one file per clip. Or tap a single clip's number to export just that one.
+  - Rendering is offline: a fresh engine with the same loop, grid, bar length, effect settings, tempo and swing, run faster than real time (`bounce()` in engine.js). Play order is forward and there is no silence/pattern, so the file is the clip as written. Files are 24-bit stereo WAV at the loop's sample rate, named `slicefield-song-124bpm.wav` and `slicefield-clip-3-124bpm.wav`.
+  - Delivery in the web prototype: inside claude.ai the page uses the artifact `downloads` capability, which accepts `.zip` but not `.wav`, so exports arrive as a stored (uncompressed) zip. Elsewhere one file downloads as `.wav` and several as `.zip`. Natively: render on a background thread with the same engine code, write WAVs to a temp folder, and hand them to the share sheet (`ShareLink` / `UIActivityViewController`), or offer "Save to Files".
+  - Open question: should exports include the play-order and silence strips as currently set, or a tail for effects that ring past the bar? (§14)
 
 ## 10. Screen layout and interaction spec
 
 Portrait only; lock the orientation. Side gutter 16 pt. Top to bottom:
 
 ### 10.1 Header (8-column grid, 36 pt tall controls, 5 pt gaps, max width 560)
-- Row 1: **Gear** (Preferences) · **Tempo** (2 columns) · **Swing** (2 columns) · **Capture** · **Record** · **Play** (1 column, amber)
-- Row 2: **Session/Track** · **Globe** · **Stepped/Smooth** · **Dice** · **Replace/Combine** (2 columns) · **Clear** (2 columns)
+- Row 1: **Gear** (Preferences) · **Tempo** (2 columns) · **Swing** (2 columns) · **Export** · **Record** · **Play** (1 column, amber)
+- Row 2: **Clips/Effects view** · **Stepped/Smooth** · **Randomizer** (2 columns) · **Replace/Combine** (2 columns) · **FX only** · **Trash**
 - Tempo and swing are drag fields: drag up or right to increase, 4 pt per unit; tempo 60–200 (default 124), swing 0–50%. They're the same height as the buttons. A tempo change rebuilds loops after 350 ms of inactivity, and the engine rescales positions without stopping.
-- Record states: idle; waiting (breathing); on (red); on + Combine (orange). Capture breathes while it waits for a window end, and is disabled when stopped.
-- Replace/Combine shows its current name; Combine is highlighted orange.
+- Record states: idle; waiting (breathing); on (red); recording over with FX only (orange).
+- Replace/Combine shows its current name; Combine is highlighted orange. FX only is a toggle (teal when on).
 
-### 10.2 Sequencer lane (above the tabs)
-- Height: `rows·24 + 6` pt, where rows = min(2, max(sequence length, the selected sequence's bars)).
-- The left 34 pt shows the sequence label: "A1", "REC" (red; orange in Combine), or "live".
+### 10.2 Sequencer lane (below the header)
+- Height: one row, `24 + 6` pt. A longer (older) sequence pages; tap the label to turn the page.
+- The left 34 pt shows the label: the slot number ("3"), "REC" (red; orange when recording over with FX only), or the number above "live" when the slot is empty.
 - One cell per step showing the slice number (+ for half-steps), coloured by its first effect, with up to 3 extra effect dots. Off steps and pattern-silenced steps are dimmed.
-- The playing step gets an accent outline. In the live view, the current window fills in as it plays.
+- The playing step gets an accent outline. In the live view, the current bar fills in as it plays.
 
-### 10.3 Track tabs and loop row
-- Four tabs: letter (in the track colour), activity dot, S, M. Solo overrides mute (`audible = solo || (!muted && !anySolo)`). The view dims when the viewed track isn't audible.
-- The loop row holds the "Loop" picker (9 demo loops + "Load your own…") and, on the right, the **fold chevron** (§10.4).
+### 10.3 Loop row
+- The loop row holds the "Loop" picker (9 demo loops + "Load your own…") and, on the right, the **fold chevron** (§10.4). There are no track tabs.
 
 ### 10.4 Strips and fold
 - Two 28 pt strips:
   - **Play order:** ◀ BACK · RANDOM n% · FWD ▶, with an accent marker.
   - **Silence / pattern:** ◀ SILENCE n% on the left half; on the right half, 8 small squares showing the pattern, where the square for the current step **glows softly**; PATTERN ▶.
-- A 26 pt ↺ box to the right of each strip turns on "snap back to default on release".
+- A 26 pt ↺ box to the right of each strip turns on "snap back to default on release". It is **on by default for the silence/pattern strip** (snaps back to centre) and off for play order.
 - **Double-tap a strip** to reset it (order → forward, silence → none).
-- **Fold chevron:** collapses the lane and both strips into one 24 pt bar showing:
-  - the label
-  - a mini step strip with the playhead
-  - the order and silence summary
-
-  Tapping the bar unfolds it. This recovers about 110 pt for the rows.
+- **Fold chevron:** folds away the lane, the loop row and both strips, leaving one 24 pt bar with just a ▾ chevron (no mini sequencer or strip summary). Tapping the bar unfolds it. This recovers about 150 pt for the rows.
 
 ### 10.5 Effect grid
 - 30 pt handle column (colour bar + ≡), then `cols` cells per row.
@@ -443,25 +454,24 @@ Portrait only; lock the orientation. Side gutter 16 pt. Top to bottom:
 - Columns past the track's bar length are dimmed (they still play).
 - The loop row shows the waveform (peaks): the playing slice brighter, with a playhead line in the middle band, dotted band edges, slice numbers, and "HIGH-PASS ↑ / LOW-PASS ↓" labels.
 
-### 10.6 Global mode (globe)
-- While the globe is on, **touches and both strips act on all four tracks**. The strips show one shared value. Each track's own values are kept underneath and restored when the globe goes off.
-- The accent turns blue and the **whole background tints** (`#0f1a2c`) instead of drawing a frame.
+### 10.6 Global mode
+Removed in v16 with the move to one channel.
 
 ### 10.7 Preferences sheet (gear)
-1. Sequence length (1 / 2 bars, with confirm)
-2. Grid and bar length per track A–D (with confirm)
-3. Silence slider, random side (mute / insert)
-4. Pattern slider (mute / insert)
-5. Late touches (0 / 20 / 40 / 70 ms)
-6. Effects shown (checkboxes)
-7. Latency information
-8. Reset everything (tap twice)
+1. Grid and bar length (with confirm)
+2. Silence slider, random side (mute / insert)
+3. Pattern slider (mute / insert)
+4. Late touches (0 / 20 / 40 / 70 ms)
+5. Effects shown (checkboxes)
+6. Latency information
+7. Reset everything (tap twice)
 
 The sheet has a sticky header with a close button. There are no toast popups anywhere in the app, by request.
 
 ### 10.8 Haptics (new for native; confirm with Andrew)
 Suggestions:
-- a light tick on bar-quantised events (launch landing, capture landing)
+- a light tick on bar-quantised events (launch landing, song row change)
+- a soft tick as the randomizer's die passes each 25 %
 - a selection tick on strip detents (FWD, BACK and the pattern centre)
 
 Keep haptics off the performance grid by default; they can mask timing.
@@ -472,19 +482,19 @@ Keep haptics off the performance grid by default; they can mask timing.
 
 | Token | Value |
 |---|---|
-| Background | `#111317` (global mode `#0f1a2c`) |
+| Background | `#111317` |
 | Panel / raised / line | `#1a1d23` / `#242831` / `#2f3440` |
 | Text / dim | `#ece7dc` / `#8a8f99` |
-| Accent (normal / global) | `#ffc65c` / `#7fb2ff` |
+| Accent | `#ffc65c` |
 | Record / Combine | `#e5484d` / `#ff9a4a` (lane label `#ffb36b`) |
-| Solo on / mute on | `#b5f08a` on `#2b3a1f` / `#ff9b9b` on `#3a2020` |
-| Track hues (HSL) | A 40, B 170, C 265, D 330 — text `hsl(h 75% 62%)` |
-| Effect hues | stutter 8, random 44, pitch 318, reverse 166, decay 90, freeze 190, SRR 262, filter 40 (LP band uses hue+160) |
+| FX only on | `#8ff0cf` text, `#5ee0b4` border on `#1d2f2a` |
+| Track hue (HSL) | 40 — text `hsl(40 75% 62%)` |
+| Effect hues | stutter 8, random 44, pitch 318, reverse 166, decay 90, freeze 190, crush 262, filter 40 (LP band uses hue+160) |
 | Cell fill | `hsl(hue 16% 13%)`; held `hsl(hue 70% 46%)`; value line `hsl(hue 85% 72%)` |
 | Font | Martian Mono (Google Fonts, OFL; bundle it), uppercase labels with 0.06em tracking, 9–10 pt in the grid |
 | Corner radius | cells 5, panels 7–8, sheets 12 |
 
-The icons are simple 20×20, 1.7 pt-stroke line drawings (see `ICON` in `ui.js`): play, stop, record dot, capture brackets + dot, stepped staircase, smooth curve, globe, dice, two-column lines, 4×4 dot grid, gear, close, fold chevrons. SF Symbols equivalents are fine where they read the same.
+The icons are simple 20×20, 1.7 pt-stroke line drawings (see `ICON` in `ui.js`): play, stop, record dot, share (export), trash, stepped staircase, smooth curve, dice, two-column lines, 4×4 dot grid, gear, close, fold chevrons. SF Symbols equivalents are fine where they read the same.
 
 ---
 
@@ -521,12 +531,12 @@ Each milestone ends with something Andrew can run on a phone.
 **M2 — Audio host.**
 - `AVAudioEngine` + `AVAudioSourceNode` calling `Engine::render`.
 - The audio session from §3; command, event and status queues.
-- A debug screen with Play and four loops.
+- A debug screen with Play and a loop picker.
 - **Done when:** it plays on device with the silent switch on, and survives interruptions.
 
 **M3 — Performance grid.**
 - The UIKit multi-touch grid view: rows, loop row with waveform, hit-testing, raw values, the touch list sent to the engine (sorted by touch order), the grace window.
-- Strips, tabs, header transport, tempo and swing.
+- Strips, loop row, header transport, tempo and swing.
 - **Done when:** the effects play under the fingers as in the prototype.
 
 **M4 — Settings and preferences.**
@@ -535,11 +545,12 @@ Each milestone ends with something Andrew can run on a phone.
 - The Preferences sheet with its confirms.
 
 **M5 — Sequencer.**
-- The lane, recording rules (§8), Replace/Combine, stepped/smooth automation, Capture.
-- Hold-step-tap-cell, release-to-toggle, Clear, Dice, fold.
+- The lane, recording rules (§8), Replace/Combine, FX only, stepped/smooth automation.
+- Hold-step-tap-cell, release-to-toggle, Trash (with hold gestures), the randomizer, fold.
 
 **M6 — Session and song.**
-- Clip grid, launching, thumbnails, knobs, solo/mute, song rows, drag and drop, song playback.
+- Clip column, launching, thumbnails, song column, drag and drop, song playback.
+- Export (offline render → WAV → share sheet).
 
 **M7 — App things.**
 - Persistence (autosave the `Project` as JSON; named projects?).
@@ -551,14 +562,16 @@ When you are unsure how something should feel, open the prototype on a phone and
 
 ## 14. Open questions for Andrew
 
-1. **Recording in global mode.** Today it records only the viewed track (including the global touches you hear on it). The suggested change is that Rec and Capture in global mode record all four tracks at once, each into its own selected slot. *Not decided.*
+1. **Export details.** Should exports follow the play-order and silence strips as currently set (today they don't), and should they include a tail for effects that ring past the bar? Stems per effect?
 2. **Effect combining per row / custom "slice field maps."** It was discussed and parked ("not yet"). A suggested design was in the conversation: 1–3 effects per row, each effect at most once per track, a fixed in-row order, plus presets.
 3. **Removing a single held value.** Latch mode was removed entirely, so there's no way to keep a value without holding it except by recording or capturing. That's intentional; confirm it stays that way.
 4. **Persistence and projects.** One autosaved project, or named projects? Export audio or stems? Share sequences?
 5. **Imported audio:** resample to a bar (current behaviour, changes pitch) or trim and time-stretch?
 6. **Background audio, Ableton Link and MIDI clock**: wanted?
 7. **iPad layout**: the prototype is portrait iPhone only.
-8. **Master level:** with all four demo tracks unmuted, the sum hits the soft clipper (the reference renders peak at 1.0). Keep that "hot" character, or add master gain staging or a limiter?
+8. **Master level:** with one track the master peaks around 0.5–0.6; the soft clipper (from the four-track days) rarely engages. Keep the 0.8 master gain, or bring a single track up nearer full scale?
+9. **Trash without a confirm.** A single tap now deletes the selected sequence (on release), as requested. Add undo (recommended) or bring back a confirm?
+10. **FX only naming.** The new switch is labelled "FX only". "Original loop" was the other candidate.
 
 ---
 
@@ -573,7 +586,7 @@ When you are unsure how something should feel, open the prototype on a phone and
   - AudioWorklet/ScriptProcessor fallback, the iOS silent-WAV unlock, the `gen` guard against duplicate engines
   - mouse handling (`buttons === 0` gesture end), the `[hidden]` CSS rule
   - chunked loop generation with `setTimeout`
-- **No undo** exists anywhere in the prototype. Consider undo for Clear, grid changes and recording passes, since these are the destructive actions.
+- **No undo** exists anywhere in the prototype. Consider undo for Trash, the randomizer, grid changes and recording passes, since these are the destructive actions. Trash no longer asks first, so this matters more now.
 
 ---
 
@@ -606,29 +619,29 @@ Add scenarios as you go. Every bug fixed in either implementation should get one
 | type | fields | effect |
 |---|---|---|
 | `load` / `loadAll` | `tr, L, R` / `bufs[4]` | set loop buffers; if the length changed, rescale running positions |
-| `play` / `stop` | — | start from t = 0 (resets all tracks) / stop (ends recordings and capture, clears song) |
+| `play` / `stop` | — | start from t = 0 (resets all tracks) / stop (ends recordings, clears song) |
 | `touches` | `tr, list:[{id, a, n, o, fx:{k, raw}|null, glob}]` | the current held touches for a track (a, n in sixteenths; o = touch order); may trigger a grace re-decide |
 | `cfg` | `tr, cfg:{fx: EffectConfig}` | replace effect settings; bumps the version counter |
 | `grid` | `tr, n, q` | grid 16/8, queued to the bar if `q` and playing |
 | `range` | `tr, s16, e16, q` | bar length, queued to the bar if `q` and playing |
-| `mode` | `mode: replace|combine` | global play mode |
+| `mode` | `mode: replace|combine` | Replace / Combine |
+| `fxonly` | `on` | FX only (§5.3) |
 | `order` | `tr, mode, r` | play order |
 | `mute` | `tr, rnd, bits` | silence (queued to the next step) |
-| `tmute` / `tvol` | `tr, on` / `tr, v` | effective mute (after solo logic) / track gain |
+| `tmute` / `tvol` | `tr, on` / `tr, v` | track mute / gain (the app doesn't send these; for multi-track hosts) |
 | `swing` / `stepped` | `s` / `on` | |
-| `pref` | `{silRnd, silPat, grace, seqLen}` | |
+| `pref` | `{silRnd, silPat, grace}` | |
 | `view` | `tr` | which track's history to report |
-| `capture` | `tr, id` | §8.4 |
 | `rec` | `tr, on, id` / `over: clip` | start new / record over existing / stop |
 | `launch` | `tr, clip|null` | queue a sequence (null = raw loop) at the next bar; starts transport if stopped; ends song |
 | `clipEdit` | `clip` | replace a sequence everywhere it's referenced (steps edited, blank replacement) |
-| `song` / `songRows` / `songStop` | `rows:[{bars, clips[4]}], from` | play the song from a row (next global bar) / update rows live / stop the song |
+| `song` / `songRows` / `songStop` | `rows:[{bars, clips[nTracks]}], from` | play the song from a row (next global bar) / update rows live / stop the song |
 
-Engine → UI events: `clip {tr, clip, cap?}` (a recording or capture became a sequence), `clipStep {tr, id, idx, slot}` (recording wrote a step; sent at step start and again with final automation), `overDone`, `grid {tr, n}`, `songRow {idx}`, plus `status`.
+Engine → UI events: `clip {tr, clip}` (a recording became a sequence), `clipStep {tr, id, idx, slot}` (recording wrote a step; sent at step start and again with final automation), `overDone`, `grid {tr, n}`, `songRow {idx}`, plus `status`.
 
 ### B. Constants
 - AUTO = 16 automation points per step
-- slice-edge fade = 1.5 ms
+- slice-edge fade = 1.5 ms, smoothstep shaped; with swing s: fade-out 1.5 ms + 12·s ms, fade-in 1.5 ms + 6·s ms
 - position-jump crossfade = 96 samples
 - post-slice fade = 96 samples
 - DC patch decay = 0.992 per sample
@@ -638,10 +651,10 @@ Engine → UI events: `clip {tr, clip, cap?}` (a recording or capture became a s
 - freeze grain = 30.3 ms
 - history ring = 96 steps
 - touch grace default 40 ms
-- volume curve `0.85·(v/0.8)²`, knob default 0.8 (0 dB)
+- track gain 0.85 (the v15 volume knob is gone; a host can still send `tvol`)
 - strip snap zones: order ±0.06 at the ends; silence ±0.015 around the centre
 - bipolar dead band 42–58%; loop-row bands at 36% / 64%
-- lane row 24 pt; label column 34 pt; strips 28 pt; folded bar 24 pt; handle column 30 pt; thin row 20 pt; row gap 3 pt
+- lane row 24 pt; label column 34 pt; strips 28 pt; folded bar 24 pt; handle column 30 pt; row gap 3 pt; randomizer die 30 pt
 - row weights: loop row 3.2, pitch 2.8, others 1
 
 ### C. Where to look in the prototype
@@ -650,11 +663,67 @@ Engine → UI events: `clip {tr, clip, cap?}` (a recording or capture became a s
 | Step decision | `engine.js` · `Track.decide`, `boundary`, `regrace` |
 | Effects DSP | `engine.js` · `Track.render`, `startStep` |
 | Cell → value | `engine.js` · `resolveInto`, `rowBip`, `defCfg` |
-| Recording / capture | `engine.js` · `msg('rec')`, `finishRec`, `finalize`, `capture`, `doCapture` |
+| Recording | `engine.js` · `msg('rec')`, `finishRec`, `finalize` |
+| Offline render | `engine.js` · `bounce`; `ui.js` · `exportEngine`, `wav24`, `zip`, `offer` |
+| Randomizer | `ui.js` · `rollStep`, `diceAll`, `diceStep` |
+| Trash | `ui.js` · `clearSequence`, `clearSteps`, `trashHeld` |
 | Hit-testing and raw values | `ui.js` · `hit`, `rawToRel`, `computeLayout` |
 | Touch list sent to the engine | `ui.js` · `entriesOf`, `toEngine`, `push` |
 | Strips and patterns | `ui.js` · `orderFrom`, `muteFrom`, `patterns`, `drawStrips`, `drawSlim` |
 | Lane and step editing | `ui.js` · `laneInfo`, `laneDown`, `assignStep`, `drawLane` |
 | Settings sheet | `ui.js` · `openSettings`, `vcol`, `scaleEditor` |
-| Preferences and confirms | `ui.js` · the `prefsBtn` click handler, `setShape`, `blankSequence` |
+| Preferences and confirms | `ui.js` · the `prefsBtn` click handler, `setShape`, `blankClip` |
 | Session and song | `ui.js` · `renderSession`, `renderSong`, `dragSource`, `rowMover`, `songRowsForEngine` |
+
+---
+
+## 18. Slicefield as an engine inside a larger app
+
+Andrew may run Slicefield as the sound and performance engine inside a larger, platform-style app. Most of it is cheap to plan for now and expensive to retrofit, so build it this way from M1, even for the standalone app.
+
+**Package boundaries**
+- **`SlicefieldCore`** (C++, a thin C API, or a Swift package wrapping it): the engine, the effect DSP, the loop synth and the offline renderer. It has no UIKit, no AVAudioSession, no file I/O and no globals. Everything lives in an instance, so a host can create several (one per channel, or a preview instance next to a live one).
+- **`SlicefieldUI`**: the grid and lane `UIView`s and the SwiftUI sheets. They talk to an engine only through a protocol (commands in, status and events out), never by reaching into its internals.
+- **`SlicefieldApp`**: the standalone shell. It owns the audio session, persistence, import and export UI.
+
+**Who owns what**
+- **Audio session and graph.** The host owns `AVAudioSession` and the `AVAudioEngine`. The core exposes `render(out, frames)` and the host decides where that runs: its own `AVAudioSourceNode`, a mixer bus, or an AUv3 later. Don't configure the session from inside the core.
+- **Clock and transport.** Today the engine's sample counter `t` is its clock and Play resets it. For embedding, accept an external transport: a host sample position plus tempo (and later Ableton Link or MIDI clock), and derive bar and step lines from that. Keep "start at the next bar" as an option, so a Slicefield channel can join a running host. Keep tempo changes the same message they are now (§5.1, which rescales positions).
+- **Sample rate and buffers.** Already handled by `load` with a buffer of the new length. Keep loop generation and resampling off the audio thread, as now.
+- **Content.** Loops come from the host's library (an asset ID plus a decoded buffer), not only from the built-in synth. Clips, effect settings and the song are plain `Codable` values (§4) that the host can save inside its own document. Give them a `version` field and IDs that are real UUIDs, not the prototype's `t0s3_…` strings (§15).
+- **Rendering.** `bounce()` (offline render) is already part of the core; the export feature uses it. A host can use the same call for its own bounces, stems or a song timeline.
+
+**API shape**
+- The message protocol (Appendix A) is the public API. Keep it a typed enum of commands, versioned, with no UI concepts in it. Touches arrive as abstract `{id, slice, width, order, effect, raw}`, so a host can drive the engine from MIDI, a different controller or automation instead of the grid.
+- Expose parameters by stable identifiers (`fx.pitch.semi.lo`, `strip.order`, `strip.silence`, `swing`, `mode`, `fxOnly`) so a host can automate or MIDI-map them, and an AUv3 can publish them as an `AUParameterTree`.
+- Events out (`clip`, `clipStep`, `songRow`, status) should be subscribable, not a single callback, so several UIs (the grid plus a host overview) can watch one engine.
+- One-channel UI, multi-channel core: the engine still takes `nTracks` and song rows carry one clip per track. A host that wants four Slicefields side by side can use one engine with four tracks (shared clock, one render call) or four engines. Either works; one engine is simpler for sync.
+
+**Things to avoid**
+- Singletons, `static` state or a global RNG (the RNG is already injectable for parity).
+- Calls from the engine back into Swift, ObjC or the UI on the audio thread.
+- Assuming the app's window, orientation or safe area inside `SlicefieldUI`. Take a size and lay out from it, so the grid can sit in a host's panel or sheet.
+- Persisting anything from inside the core.
+
+---
+
+## 19. Changes in version 16
+
+From Andrew's notes on v15. Every item is reflected in the sections above.
+
+| Change | Where |
+|---|---|
+| One channel: no track tabs, solo, mute, volume knobs, globe, or per-track grid/length rows. Clips and song are one column each, side by side. | §1, §4, §9, §10 |
+| Sequences fixed at one bar (no 1/2-bar preference). | §8.1, §8.6 |
+| Export: the song, every clip, or one clip, as 24-bit WAV (offline render). | §9 |
+| Capture removed. | §8.4 |
+| Rows without a cell parameter (Reverse) are back to the normal one-unit height. | §7.3 |
+| Swing click fixed: a 2 ms leak of the next slice into each swing gap. Swing fades are also longer and smoothstep-shaped. | §5.6 |
+| Fold also hides the loop row, and the folded bar no longer shows a mini sequencer or strip summary. | §10.4 |
+| Randomizer: a die on a two-button slider (drag or tap to set the amount, rolls home on release; hold it and tap steps). Scheme documented. | §8.5 |
+| "SRR" renamed back to "Crush". | §6 |
+| Silence/pattern strip snaps back to centre on release by default. | §10.4 |
+| Clear is a one-column trash icon. A tap clears the sequence on release; hold it and tap steps (or hold steps and tap it) to clear just those. | §8.5 |
+| New **FX only** switch, independent of Replace/Combine. Combine now means "touched slices still play, all held effects apply; latest touch of an effect wins". | §5.3, §8.2 |
+
+Tests: `node prototype/tests/engine.test.js` (18 cases, including FX only + Replace, Combine with touched slices, and "swing gap is silent"). Scenario `04-record-capture` became `04-record-fxonly`.

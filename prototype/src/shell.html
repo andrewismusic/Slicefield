@@ -226,6 +226,32 @@ body.m-global{--accent:#7fb2ff;--bg:#0f1a2c;--panel:#16223a;background:var(--bg)
 .warn{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 10px;margin:2px 0 6px;border-radius:8px;border:1px solid #6a3030;background:#2a1a1c;color:#ffcfcf;font-size:11px}
 .warn .wb{display:inline-flex;gap:6px}
 .warn button{height:28px}
+/* one channel: clips and song side by side, one column each */
+.session{flex-direction:row;gap:8px}
+.session .sess-scroll{flex:1;min-width:0}
+.sgrid.clipcol{grid-template-columns:minmax(0,1fr)}
+.sgrid.songcol{grid-template-columns:30px minmax(0,1fr) 24px}
+.sgrid .slot{height:44px}
+.sgrid .launch,.sgrid .rowx{height:44px}
+.slot .lb{font-size:9px;top:3px;left:5px;color:rgba(236,231,220,.7)}
+.stopall{height:30px;min-height:30px;gap:6px;font-size:10px;letter-spacing:.08em;text-transform:uppercase}
+.stopall svg{width:11px;height:11px}
+/* randomizer: a die that slides along a two-button-wide track and rolls home on release */
+.dice{position:relative;height:36px;border-radius:6px;background:var(--panel);border:1px solid var(--line);touch-action:none;cursor:ew-resize;overflow:hidden}
+.dice::before{content:"";position:absolute;left:34px;right:8px;top:50%;height:2px;margin-top:-1px;border-radius:1px;background:linear-gradient(90deg,#2f3440,#6c6450)}
+.dice.held{border-color:var(--accent)}
+.dice i{position:absolute;left:2px;top:2px;width:30px;height:30px;border-radius:6px;background:var(--raise);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;color:var(--fg);will-change:transform}
+.dice.held i{background:#3a3120;border-color:var(--accent);color:var(--accent)}
+.dice i svg{width:20px;height:20px}
+.dice span{position:absolute;right:6px;top:0;line-height:34px;font-size:10px;color:var(--accent);pointer-events:none;font-variant-numeric:tabular-nums}
+.dice span.left{right:auto;left:8px}
+.dice:focus-visible{outline:2px solid var(--accent);outline-offset:1px}
+.tiny{font-size:9px;line-height:1.05;letter-spacing:.04em;text-transform:uppercase;padding:0 2px}
+#fxonly[aria-pressed="true"]{background:#1d2f2a;border-color:#5ee0b4;color:#8ff0cf}
+.trash.held{background:#3a1d1f;border-color:var(--rec);color:#ffb4b4}
+.expclips{display:flex;flex-wrap:wrap;gap:6px}
+.expclips button{min-width:40px}
+.expmsg{color:var(--accent)!important;min-height:18px}
 </style>
 
 <div class="app" id="app">
@@ -234,18 +260,18 @@ body.m-global{--accent:#7fb2ff;--bg:#0f1a2c;--panel:#16223a;background:var(--bg)
       <button id="prefs" class="ic c1" aria-label="Preferences" title="Preferences"></button>
       <div class="drag c23" id="bpm" tabindex="0" role="slider" aria-label="Tempo" aria-valuemin="60" aria-valuemax="200"><b>124</b><small>BPM</small></div>
       <div class="drag c45" id="swing" tabindex="0" role="slider" aria-label="Swing" aria-valuemin="0" aria-valuemax="50"><b>0%</b><small>Swing</small></div>
-      <button id="cap" class="ic capbtn c6" aria-label="Capture" title="Capture: print what you just played into a sequence" disabled></button>
+      <button id="export" class="ic c6" aria-label="Export" title="Export the song or clips as audio"></button>
       <button id="rec" class="ic recbtn c7" aria-pressed="false" aria-label="Record"></button>
       <button id="play" class="ic play c8" aria-pressed="false" aria-label="Play"></button>
-      <button id="sessbtn" class="ic c1" aria-label="Session view" title="Session view"></button>
-      <button id="globe" class="ic toggle c2" aria-pressed="false" aria-label="Global mode" title="Global: touches and sliders apply to all four tracks until you turn it off"></button>
-      <button id="stepped" class="ic c3" aria-label="Stepped values" title="Stepped or smooth effect values"></button>
-      <button id="dice" class="ic c4" aria-label="Random sequence" title="Make a random sequence for this track"></button>
+      <button id="sessbtn" class="ic c1" aria-label="Clips and song" title="Clips and song"></button>
+      <button id="stepped" class="ic c2" aria-label="Stepped values" title="Stepped or smooth effect values"></button>
+      <div id="dice" class="dice c34" tabindex="0" role="slider" aria-label="Randomize the sequence" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
+        title="Drag the die (or tap the slider) to randomize · hold it and tap steps to randomize just those"><span id="diceval"></span><i id="die"></i></div>
       <button id="recmode" class="toggle sm c56" aria-pressed="false">Replace</button>
-      <button id="clear" class="sm c78" disabled title="Clear this sequence (tap twice)">Clear</button>
+      <button id="fxonly" class="toggle tiny c7" aria-pressed="false">FX<br>only</button>
+      <button id="clear" class="ic trash c8" disabled aria-label="Clear" title="Tap: clear this sequence · hold and tap steps: clear just those"></button>
     </header>
     <canvas id="lane" class="lane" aria-label="Sequencer steps"></canvas>
-    <nav class="tabs" id="tabs" role="tablist" aria-label="Tracks"></nav>
     <div class="row" id="trackbar">
       <span class="k">Loop</span>
       <select id="sound" aria-label="Loop">
@@ -256,14 +282,14 @@ body.m-global{--accent:#7fb2ff;--bg:#0f1a2c;--panel:#16223a;background:var(--bg)
       </select>
       <input id="file" type="file" accept="audio/*" hidden>
       <span class="grow"></span>
-      <button id="fold" class="ic foldbtn" aria-pressed="false" aria-label="Hide sequencer and sliders"></button>
+      <button id="fold" class="ic foldbtn" aria-pressed="false" aria-label="Hide sequencer, loop and sliders"></button>
     </div>
   </div>
   <div class="main" id="mainpane">
     <div class="gridwrap" id="gridwrap"><canvas id="grid" aria-label="Performance strips and effect grid"></canvas></div>
     <section class="session" id="session" hidden aria-label="Session view">
-      <div class="sess-scroll" id="sessScroll"><div class="sgrid" id="sgrid"></div></div>
-      <div class="sess-scroll song"><div class="sgrid" id="songgrid"></div></div>
+      <div class="sess-scroll" id="sessScroll"><div class="sgrid clipcol" id="sgrid"></div></div>
+      <div class="sess-scroll song"><div class="sgrid songcol" id="songgrid"></div></div>
     </section>
   </div>
   <div class="ghost" id="ghost" hidden></div>

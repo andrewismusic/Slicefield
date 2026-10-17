@@ -5,6 +5,7 @@
 // Randomness comes from a seeded mulberry32, so runs are repeatable. If the native engine uses the
 // same generator and draws numbers in the same order, its step log should match exactly; audio should
 // match within a small tolerance (see HANDOFF.md, "Parity testing").
+// The app runs one track; a scenario with several "loops" runs that many side by side.
 // Usage: node tools/render-reference.js [scenario.json ...]   (default: every file in tools/scenarios)
 const fs=require('fs'),path=require('path');
 const root=path.join(__dirname,'..'),src=f=>fs.readFileSync(path.join(root,'src',f),'utf8');
@@ -16,11 +17,10 @@ function wav(L,R,sr){const n=L.length,b=Buffer.alloc(44+n*8);b.write('RIFF',0);b
 function runScenario(file){
   const sc=JSON.parse(fs.readFileSync(file,'utf8')),sr=sc.sr||48000,bpm=sc.bpm||124,BL=128;
   Math.random=mulberry32(sc.seed||1);
-  const EF=EFx(),e=new EF.Engine(sr),events=[],stepsLog=[];
+  const kinds=sc.loops||['break'],EF=EFx(),e=new EF.Engine(sr,kinds.length),events=[],stepsLog=[];
   e.post=m=>{if(m.type!=='status')events.push(Object.assign({t:e.t},m));};
   // log every step decision
   for(const tr of e.tracks){const d=tr.decide.bind(tr);tr.decide=(t,k)=>{d(t,k);const c=tr.cur;stepsLog.push([t,tr.i,c.src,+(c.a/e.u).toFixed(3),tr.gate?1:0,c.fx.map(x=>x.k).join('+')]);};}
-  const kinds=sc.loops||['break','reese','kalimba','vox'];
   // the prototype's loop length rule: one bar at this tempo, rounded to 64 samples
   kinds.forEach((k,i)=>{const lp=ML(k,sr,bpm);e.msg({type:'load',tr:i,L:lp.L,R:lp.R});});
   const msgs=(sc.msgs||[]).slice().sort((a,b)=>a.at-b.at);
