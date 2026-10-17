@@ -1,0 +1,10 @@
+{"seed":2,"length":{"bar":8},"msgs":[
+ {"at":0,"msg":{"type":"play"}},
+ {"at":{"bar":1},"msg":{"type":"touches","tr":0,"list":[{"id":"a","a":4,"n":1,"o":1,"fx":{"k":"stutter","raw":0.7}}]}},
+ {"at":{"bar":2},"msg":{"type":"touches","tr":0,"list":[{"id":"b","a":2,"n":1,"o":2,"fx":{"k":"pitch","raw":0.6}},{"id":"c","a":9,"n":1,"o":3,"fx":{"k":"reverse","raw":0.5}}]}},
+ {"at":{"bar":3},"msg":{"type":"touches","tr":0,"list":[{"id":"d","a":0,"n":1,"o":4,"fx":{"k":"freeze","raw":-0.5}}]}},
+ {"at":{"bar":4},"msg":{"type":"touches","tr":0,"list":[{"id":"e","a":6,"n":1,"o":5,"fx":{"k":"filter","raw":-0.7}},{"id":"f","a":11,"n":1,"o":6,"fx":{"k":"crush","raw":0.2}}]}},
+ {"at":{"bar":5},"msg":{"type":"touches","tr":0,"list":[{"id":"g","a":3,"n":1,"o":7,"fx":{"k":"env","raw":0.15}},{"id":"h","a":12,"n":1,"o":8,"fx":{"k":"random","raw":1}}]}},
+ {"at":{"bar":6},"msg":{"type":"touches","tr":0,"list":[]}},
+ {"at":{"bar":6},"msg":{"type":"order","tr":0,"mode":"back","r":0.3}},
+ {"at":{"bar":6},"msg":{"type":"mute","tr":0,"rnd":0,"bits":[1,0,1,1,0,1,0,1]}}]}
