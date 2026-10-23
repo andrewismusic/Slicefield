@@ -347,61 +347,84 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
 .projmsg{display:flex;align-items:center;gap:10px;padding:6px 10px;border-radius:8px;background:var(--raise);font-size:11px}
 .projmsg button{height:26px;font-size:11px}
 .projempty{color:var(--dim);line-height:1.6;padding:12px 8px}
+/* v22 */
+:host{--blue:#5eb0ff}
+.c24{grid-column:2/5}.c26{grid-column:2/7}
+#trackbar{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:5px;max-width:560px;width:100%}
+#trackbar select{max-width:none;width:100%;height:36px;min-width:0}
+#trackbar .ic{height:36px}
+#loadclip{font-size:9px;letter-spacing:.06em}
+/* two-state toggles: the first state orange (accent), the second blue */
+.toggle2{background:color-mix(in srgb,var(--accent) 18%,#1b1d22);border-color:var(--accent);color:var(--accent)}
+.toggle2.alt{background:color-mix(in srgb,var(--blue) 18%,#1b1d22);border-color:var(--blue);color:var(--blue)}
+#gamebtn[aria-pressed="true"]{background:#3a1d2c;border-color:#ff5fa2;color:#ff9ccb}
+/* the field editor's and the game's bars sit over the bottom of the field */
+.fieldbar{position:absolute;left:0;right:0;bottom:0;display:flex;gap:6px;align-items:center;padding:6px;background:rgba(17,19,23,.92);border-top:1px solid var(--line);z-index:2}
+.fieldbar select{flex:1;min-width:0;height:32px}
+.fieldbar button{height:32px;font-size:11px}
+.fieldbar .hint{flex:1;font-size:10px;color:var(--dim);line-height:1.3}
+.fieldlist{display:flex;flex-direction:column;gap:4px}
+.frow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:center}
+.frow .pb{height:auto;min-height:42px;display:flex;align-items:center;gap:8px;text-align:left;padding:4px 8px;border-radius:8px}
+.frow .pb canvas{width:30px;height:36px;flex:none;border-radius:4px}
+.frow .pb b{font-size:12px;font-weight:600}.frow .pb small{display:block;font-size:10px;color:var(--dim)}
+.frow.cur .pb{border-color:var(--accent)}
+.btnrow{display:flex;flex-wrap:wrap;gap:6px}
+.btnrow button{height:32px;font-size:11px}
+/* projects sheet */
+.card.big{max-width:560px;height:88%;max-height:88%}
+.card.big .sess-scroll{flex:1;min-height:120px}
+.prow.sel .pb{border-color:#fff}
+.prow.gone .pb{background:#4a1d20;border-color:var(--rec);color:#ffb4b4}
+.prow.gone{transition:opacity .25s;opacity:.55}
+.projtools{display:grid;grid-template-columns:36px repeat(3,minmax(0,1fr));gap:6px}
+.projtools button{height:34px;font-size:10px;letter-spacing:.06em}
 </style>
 
 <div class="app" id="app">
   <div class="side" id="side">
+    <!-- v22: rows 1 and 2 are on every page; row 3 (and the lane) only on the field. Row 2's middle shows
+         what is on the field (loop, field, game) there, and LOAD TO SEQUENCER on the Clips page. -->
     <header class="tgrid" id="tgrid">
       <button id="prefs" class="ic c1" aria-label="Preferences" title="Preferences"></button>
       <div class="drag c2" id="bpm" tabindex="0" role="slider" aria-label="Tempo" aria-valuemin="60" aria-valuemax="200"><b>124</b><small>BPM</small></div>
       <div class="drag c3" id="swing" tabindex="0" role="slider" aria-label="Swing" aria-valuemin="50" aria-valuemax="75"><b>50</b><small>Swing</small></div>
       <button id="export" class="ic c4" aria-label="Export" title="Export clips, the sequence, or what you just heard"></button>
-      <button id="project" class="ic c5" aria-label="Project" title="Save or open a project"></button>
-      <button id="rec" class="ic recbtn c6" aria-pressed="false" aria-label="Record" title="Record: touches are written into the sequence"></button>
-      <button id="play" class="ic play c78" aria-pressed="false" aria-label="Play"></button>
+      <button id="project" class="ic c5" aria-label="Projects" title="Projects"></button>
+      <button id="undo" class="ic c6" aria-label="Undo" title="Undo" disabled></button>
+      <button id="redo" class="ic c7" aria-label="Redo" title="Redo" disabled></button>
+      <button id="sessbtn" class="ic takesbtn c8" aria-label="Clips" title="Clips"></button>
     </header>
-    <div class="row" id="trackbar">
-      <span class="k">Loop</span>
-      <select id="sound" aria-label="Loop">
+    <div class="tgrid" id="trackbar">
+      <button id="clear" class="ic trash c1" disabled aria-label="Clear" title="Tap: clear the sequence · hold and tap steps: empty just those"></button>
+      <select id="sound" class="c24 fieldonly" aria-label="Loop">
         <optgroup label="Drums"><option value="break">Breakbeat</option><option value="boombap">Boom bap</option></optgroup>
         <optgroup label="Bass"><option value="acid">Acid bass</option><option value="reese">Reese bass</option><option value="dub">Dub stabs</option></optgroup>
         <optgroup label="Melodic"><option value="lead">Synth lead</option><option value="keys">Electric piano</option><option value="kalimba">Kalimba</option><option value="vox">Vocal chops</option></optgroup>
         <option value="pick">Load your own…</option>
       </select>
+      <button id="fieldbtn" class="ic c5 fieldonly" aria-label="Fields" title="Fields: switch, edit or roll a layout of effect cells"></button>
+      <button id="gamebtn" class="ic c6 fieldonly" aria-pressed="false" aria-label="Game" title="Game: play a 16-bar round; every bar is saved as a clip"></button>
+      <button id="loadclip" class="tiny c26 clipsonly" hidden title="Load the selected clip into the sequencer to edit it">LOAD TO SEQUENCER</button>
+      <button id="play" class="ic play c78" aria-pressed="false" aria-label="Play"></button>
       <input id="file" type="file" accept="audio/*" hidden><input id="projfile" type="file" accept=".json,.zip,application/json,application/zip" hidden>
-      <span class="grow"></span>
-      <button id="undo" class="ic foldbtn" aria-label="Undo" title="Undo" disabled></button>
-      <button id="redo" class="ic foldbtn" aria-label="Redo" title="Redo" disabled></button>
-      <button id="sessbtn" class="ic takesbtn" aria-label="Clips" title="Clips"></button>
     </div>
-    <div class="tgrid" id="tools">
-      <button id="clear" class="ic trash c1" disabled aria-label="Clear" title="Tap: clear the sequence · hold and tap steps: empty just those"></button>
-      <button id="stepped" class="ic c2 fieldonly" aria-label="Stepped values" title="Stepped or smooth effect values"></button>
-      <div id="dice" class="dice c35 fieldonly" tabindex="0" role="slider" aria-label="Randomize the sequence" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
+    <div class="tgrid fieldonly" id="tools">
+      <button id="stepped" class="ic toggle2 c1" aria-label="Stepped values" title="Stepped or smooth effect values"></button>
+      <div id="dice" class="dice c24" tabindex="0" role="slider" aria-label="Randomize the sequence" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
         title="Drag the die (or tap the slider) to randomize · hold it and tap steps to randomize just those"><span id="diceval"></span><i id="die"></i></div>
-      <button id="recmode" class="toggle tiny c6 fieldonly" aria-pressed="false">REPLACE</button>
-      <button id="fxonly" class="toggle tiny c7 fieldonly" aria-pressed="false">FX<br>ONLY</button>
-      <button id="cliploop" class="tiny c23 clipsonly" aria-pressed="false" hidden title="Loop the selected clip">LOOP</button>
-      <button id="dupclip" class="ic c4 clipsonly" hidden aria-label="Duplicate" title="Duplicate the selected clip"></button>
-      <button id="loadclip" class="tiny c57 clipsonly" hidden title="Load the selected clip into the sequencer to edit it">LOAD TO<br>SEQUENCER</button>
-      <button id="newfolder" class="tiny c23 projonly" hidden title="Make a folder inside the one you are looking at">NEW<br>FOLDER</button>
-      <button id="saveproj" class="tiny c45 projonly" hidden title="Save this project">SAVE</button>
-      <button id="newproj" class="tiny c67 projonly" hidden title="Start a new project (this one is saved first if it changed)">NEW<br>PROJECT</button>
+      <button id="recmode" class="toggle2 tiny c5">REPLACE</button>
+      <button id="fxonly" class="toggle tiny c6" aria-pressed="false">FX<br>ONLY</button>
+      <button id="rec" class="ic recbtn c7" aria-pressed="false" aria-label="Record" title="Record: touches are written into the sequence"></button>
       <button id="capture" class="ic capbtn c8" aria-label="Capture" title="Capture: save the sequence as it is now to Clips"></button>
     </div>
     <canvas id="lane" class="lane" aria-label="Sequencer steps"></canvas>
   </div>
   <div class="main" id="mainpane">
-    <div class="gridwrap" id="gridwrap"><canvas id="grid" aria-label="Performance strips and effect grid"></canvas></div>
-    <section class="projects" id="projects" hidden aria-label="Projects">
-      <div class="projhead"><input id="projname" type="text" maxlength="40" spellcheck="false" aria-label="Project name" placeholder="Untitled"><span id="projstate" class="projstate"></span></div>
-      <div class="crumbs" id="crumbs"></div>
-      <div class="sess-scroll" id="projScroll"><div class="projlist" id="projlist"></div></div>
-      <div class="projfoot"><button id="tofile" type="button">Save to file</button><button id="fromfile" type="button">Open file…</button></div>
-      <div class="projmsg" id="projmsg" hidden></div>
-    </section>
+    <div class="gridwrap" id="gridwrap"><canvas id="grid" aria-label="Performance strips and effect grid"></canvas>
+      <div class="fieldbar" id="fieldbar" hidden></div>
+    </div>
     <section class="session" id="session" hidden aria-label="Clips">
-      <div class="takeshead" id="takeshead"></div>
       <div class="sess-scroll" id="sessScroll"><div class="takelist" id="takelist"></div></div>
     </section>
   </div>

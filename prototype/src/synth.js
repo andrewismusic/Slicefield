@@ -226,5 +226,29 @@ function synthFactory(){
       for(const s of [4,12]){const st=Math.round((b*16+s)*s16);let lp=0;for(let k=0;k<0.2*sr;k++){const n=Math.random()*2-1;lp+=(n-lp)*0.5;const tt=k/sr,e=(tt<0.03?Math.exp(-(tt%0.01)*300):0)+Math.exp(-tt*25)*0.6;const v=(n-lp)*e*0.25;L[st+k]+=v;R[st+k]+=v;}}
     }
   }
-  return {makeLoop,resample};
+  // Time-stretch (WSOLA) to len samples, keeping pitch: Hann-windowed grains (40 ms) are laid down every half
+  // grain; each is read from near where the speed puts it, nudged (up to a quarter grain) to the place that
+  // best continues the grain before (cross-correlation of the mono sum). Both channels use the same grains, so
+  // the stereo image holds. Reading and writing wrap round, so a loop stays seamless.
+  function stretch2(L,R,len,rate){
+    const N=L.length;if(!N)return {L:new Float32Array(len),R:new Float32Array(len)};
+    const W=2*Math.round(0.02*(rate||48000)),Hs=W/2,Ha=Hs*N/len,D=Math.round(W/4),oL=new Float32Array(len),oR=new Float32Array(len),ws=new Float32Array(len);
+    const win=new Float32Array(W);for(let i=0;i<W;i++)win[i]=0.5-0.5*Math.cos(2*Math.PI*i/W);
+    const at=(b,i)=>b[((i%N)+N)%N];
+    let prev=-1;
+    for(let k=0,K=Math.ceil(len/Hs);k<K;k++){
+      const nom=Math.round(k*Ha);let best=nom;
+      if(prev>=0){
+        const nat=prev+Hs;let bc=-Infinity;
+        for(let d=-D;d<=D;d+=2){const p=nom+d;let c=0;
+          for(let i=0;i<W;i+=4)c+=(at(L,nat+i)+at(R,nat+i))*(at(L,p+i)+at(R,p+i));
+          if(c>bc){bc=c;best=p;}}
+      }
+      prev=best;const o=k*Hs;
+      for(let i=0;i<W;i++){const j=(o+i)%len,w=win[i];oL[j]+=at(L,best+i)*w;oR[j]+=at(R,best+i)*w;ws[j]+=w;}
+    }
+    for(let j=0;j<len;j++){const w=ws[j]>1e-3?ws[j]:1;oL[j]/=w;oR[j]/=w;}
+    return {L:oL,R:oR};
+  }
+  return {makeLoop,resample,stretch2};
 }

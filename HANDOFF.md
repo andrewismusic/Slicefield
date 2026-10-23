@@ -1,6 +1,6 @@
 # Slicefield — handoff for the iOS app
 
-This guide and the `prototype/` folder are everything needed to build Slicefield as a native iPhone app. The prototype is a single-page web app (version 21) designed through about fifteen rounds of hands-on testing on a phone. Treat its behaviour as the specification: when this document and the code disagree, the code in `prototype/src/` is what was actually played and approved. Say so in the pull request if you change any behaviour on purpose.
+This guide and the `prototype/` folder are everything needed to build Slicefield as a native iPhone app. The prototype is a single-page web app (version 22) designed through about fifteen rounds of hands-on testing on a phone. Treat its behaviour as the specification: when this document and the code disagree, the code in `prototype/src/` is what was actually played and approved. Say so in the pull request if you change any behaviour on purpose.
 
 **For Claude Code:** read this whole file first, then `prototype/src/engine.js` (about 580 lines, the heart of it). Section 13 gives the build order. Section 14 lists decisions the owner (Andrew) hasn't made yet. Ask him about those instead of guessing. Section 18 covers using Slicefield as the sound engine inside a larger app, and sections 19–21 list what changed in versions 16, 17 and 18. **Version 18 replaced recording, clips and the song with capture and a Takes list, and the play-order and silence strips with fixed ORDER and SKIP patterns.** Where §5.4, §5.5, §8, §9, §10.4 or §20 disagree with §21, §21 wins.
 
@@ -32,6 +32,7 @@ This guide and the `prototype/` folder are everything needed to build Slicefield
 22. Changes in version 19
 23. Changes in version 20
 24. Changes in version 21
+25. Changes in version 22: fields, the game, and a leaner Clips page
 
 ---
 
@@ -309,7 +310,7 @@ Value functions (normalised `v` → real units):
 | Crush | 1 unit | `rate` (500 Hz…16 kHz) | — | Sample-and-hold at `crHz(rate)` with a smoothed rate (×0.002). No bit reduction. Loudness-compensated (v20, §23.5). |
 | Delay | 1 unit | `send` | `time` (1/16…1/2), `fb`; option: Tails ring / cut | Tempo-synced ping-pong send, darkened repeats. Tails (v20, §23.4). |
 | Reverb | 1 unit | `send` | `size` (RT60 0.3…9 s), `tone`; option: Tails ring / cut | Send into a 4-line FDN (§23.4). |
-| Filter | loop row bands | `cut` (bipolar: + = HP, − = LP) | `res` 0.7 | TPT state-variable filter, k = 2−1.9·res, cutoff smoothed (×0.002), clamped to 0.45·sr. |
+| Filter | loop row bands | `cut` (bipolar: + = HP, − = LP) | `res` 0.7 | TPT state-variable filter, k = 2−1.9·res, cutoff smoothed (×0.002), clamped to 0.45·sr. Resonance level-matched (v22, §25.6). |
 
 **Removed on purpose; don't bring back without asking:** tape stop, vocoder, delay, wavefold, stutter decay, freeze OTT, crush bit depth, pitch grain size, effect colour choice.
 
@@ -583,17 +584,12 @@ When you are unsure how something should feel, open the prototype on a phone and
 
 ## 14. Open questions for Andrew
 
-1. **Resampling** (discussed, not built): a one-button "resample this take into a new loop", mainly to extend pitch range and, once it exists, time-stretching. See §20.
-2. **Fields, signal order and overlapping cells** (agreed direction, not built; design notes in §21). Still open: how fields are picked mid-performance, what a random field may contain, and whether overlap needs its own edit mode.
-3. **Reverb** is built (v20, v21). With fields, it becomes a cell like the others.
-4. **Persistence and projects.** Named projects in a folder library (v21, §24.6). Still open: sharing projects or clips with other people.
-5. **Imported audio:** resample to a bar (current behaviour, changes pitch) or trim and time-stretch?
-6. **Background audio, Ableton Link and MIDI clock**: wanted?
-7. **iPad layout**: the prototype is portrait iPhone only.
-8. **Clips housekeeping.** Done through projects (§24.6).
-9. **The shooting game** (§21): scoring, round length, and whether it ships in the instrument or in the larger platform.
-10. **Desktop input** for web and VST versions, which have no multi-touch (§18).
-11. **Filter resonance level-matching.** Freeze is now level-matched (§20); the filter's resonant peak (+3.5 dB at the default resonance) is not compensated yet.
+Postponed by Andrew (v22): resampling a take into a new loop, Ableton Link and MIDI clock, background audio, the iPad layout, desktop/VST input, sharing projects, and the native app itself (until the game is further along).
+
+1. **Fields** (built, §25.3). Still open: cells limited to part of the width (true rectangles), more than one cell for the same effect, and whether random fields need other rules.
+2. **The game** (first pass, §25.4): scoring and currency (waiting on the larger platform), round length (16 bars now), the enemy mix and timing, and what a mine should cost.
+3. **Imported audio** is stretched to the bar by default now (§25.6); resampling is the other choice in Preferences. Still open: trimming or choosing which part of a long file becomes the bar.
+4. **Persistence and projects.** Named projects in a folder library (§24.6, now a sheet, §25.5).
 
 ---
 
@@ -643,8 +639,9 @@ Add scenarios as you go. Every bug fixed in either implementation should get one
 | `load` / `loadAll` | `tr, L, R` / `bufs[4]` | set the track's own loop (`base`); if the length changed, rescale running positions |
 | `loopBuf` | `key, L, R` | hold a loop that sequences can name with `clip.loop = key` (clips made on other loops, §23.2) |
 | `play` / `stop` | — | start from t = 0 (resets all tracks) / stop (clears song) |
-| `touches` | `tr, list:[{id, a, n, o, fx:{k, raw}|null, glob}]` | the current held touches for a track (a, n in sixteenths; o = touch order); may trigger a grace re-decide |
-| `cfg` | `tr, cfg:{fx: EffectConfig}` | replace effect settings; bumps the version counter |
+| `touches` | `tr, list:[{id, a, n, o, fx:[{k, raw}]|null}]` | the current held touches for a track (a, n in sixteenths; o = touch order). `fx` lists every cell under the finger (overlapping cells, §25.3); a single `{k, raw}` is still accepted. May trigger a grace re-decide |
+| `cfg` | `tr, cfg:{fx: EffectConfig}` | replace effect settings (the field's); bumps the version counter |
+| `field` | `tr, order:[effect keys]` | the field's signal order, top to bottom (§25.3). A sequence may carry its own `cfg` and `rank` (`{key: place}`, from `rankOf(order)`), which win while it plays |
 | `grid` | `tr, n, q` | grid 16/8, queued to the bar if `q` and playing |
 | `range` | `tr, s16, e16, q` | bar length, queued to the bar if `q` and playing |
 | `mode` | `mode: replace|combine` | Replace / Combine |
@@ -991,7 +988,7 @@ Both strips are fully static. Every slider position is one fixed pattern, and no
 - Scenario `04-capture-fxonly` replaces `04-record-fxonly`, and `05-patterns-delay` replaces `05-variation-delay`.
 - Scenarios can give ORDER/SKIP as a slider position, `{"type":"order","v":0.4}`, and the renderer turns it into the pattern.
 
-### 21.7 Planned: fields, signal order and overlapping cells (not built)
+### 21.7 Planned: fields, signal order and overlapping cells (built in v22, see §25.3)
 
 Andrew's direction: cell layouts become **fields**, presets you can switch on the fly (and generate at random); row order sets signal order; and resizing cells lets them overlap to make combinations.
 
@@ -1016,7 +1013,7 @@ Andrew's direction: cell layouts become **fields**, presets you can switch on th
   - always some plain slice cells
   - a cap on overlaps
 
-### 21.8 Planned: the shooting game (not built)
+### 21.8 Planned: the shooting game (first pass built in v22, see §25.4)
 
 An optional layer over the grid. Hitting an enemy touches the cell under it. (Since v19 there is no capture of every bar: a round should run with Record on, or capture at the end of each round, so it leaves clips; to be decided.) Agreed so far:
 - **Drones: tap.** Quick hits.
@@ -1170,7 +1167,7 @@ The **project** button (folder) opens a sheet: **Save project**, **Open project�
 
 ## 24. Changes in version 21
 
-Agreed with Andrew after v20.
+Agreed with Andrew after v20. (v22 changed several of these again: see §25.)
 
 ### 24.1 Transport and the die
 - **Stop turns Record off.**
@@ -1225,3 +1222,86 @@ The folder button now opens a **Projects page**, the third page after the field 
 
 ### 24.7 Tests
 `engine.test.js` has 50 cases; new ones cover reverb's default tails and dry/wet levels. Scenario 06 now drives reverb's wet level from the cell (its default tails are cut).
+
+---
+
+## 25. Changes in version 22: fields, the game, and a leaner Clips page
+
+Agreed with Andrew after v21. The native app is on hold until the game is further along.
+
+### 25.1 Header: three rows, the third only on the field
+Rows 1 and 2 are the same on both pages; row 3 (and the lane) are only on the field, so on the Clips page that row is gone entirely.
+
+| Row | Columns 1 … 8 |
+|---|---|
+| 1 | gear · BPM · swing · export · projects (folder) · undo · redo · Clips |
+| 2 | trash · **[field page]** loop picker (3) · Fields · Game **/ [Clips page]** LOAD TO SEQUENCER (5) · Play (2) |
+| 3 (field only) | stepped/smooth · die (3) · REPLACE/COMBINE · FX ONLY · Record · Capture |
+
+- Row 2's middle is "what is on the field": the loop, the field and the game there, and on the Clips page the one way to put a clip on the field.
+- Record sits under Play; Capture under the Clips button's column.
+- **Colours:** REPLACE is orange (the accent), COMBINE blue; stepped is orange, smooth blue. Both are always lit in one of the two.
+
+### 25.2 Clips page: a jamming page
+- No title, count or hint, no LOOP and no Duplicate (any edit ends in a new capture anyway).
+- **There is always one clip selected** while any exist. **Tap a clip:** it is selected and **loops** (from the next bar line if something is playing; it starts playback if stopped) until another is tapped or Stop is pressed. Play plays the selected clip. The list never plays through by itself any more (export still renders it in order).
+- **Trash:** a tap deletes the **selected** clip (the selection moves to the next one, which takes over if the deleted one was playing). Hold the trash and tap clips, or hold clips and tap it, to delete several. There's no "delete all".
+- **LOAD TO SEQUENCER** also puts back the clip's field (§25.3).
+
+### 25.3 Fields
+A **field** is a layout of effect cells plus the effects' settings: `{id, name, cells:[{k, y, h}], cfg}`. A project holds a list of fields; the field page shows one.
+
+- **Cells** are full-width bands on a grid **48 units** tall (`FG`). `k` is an effect key, or `center` for the loop row (high-pass above, dry middle, low-pass below). Each effect has at most one cell. Cells may **overlap**.
+- **Touches:** a touch drives every cell under the finger, each by its place in its own cell (the same raw mapping as before, §7.1). The touch's `fx` becomes a list. Replace plays all of a touch's effects; Combine stacks them with the other held touches (one value per effect, the latest touch wins); recording and lane assignment write them all.
+- **Signal order = top to bottom.** Each step's effect list is sorted by the field's order (cells starting at the same unit keep their order); the engine gets it as `field {order}` and sorts `F` when a step is decided (natively: an index array per field, no allocation). It applies to the per-step chain: Stutter, Reverse, Random, Freeze, Pitch, Decay, Crush and Filter. Delay and Reverb are sends whose tails outlive the step, so they always come last. Effects a field doesn't hold (in an old step) go after, as they were.
+- **Each clip keeps the field it was captured on** (a copy). In engine form a clip carries `cfg` (its settings) and `rank` (its order); the engine uses them while that sequence plays (`cfgOf(k)`, `rankE`) and the track's own otherwise. So editing a field's settings no longer changes clips already captured, only the sequence on the field. (Before v22 settings were per project and re-mapped every clip.)
+- **Loading a field keeps the loop and clears the sequence** at once (to a blank one with the same ORDER, SKIP and SKIP/GAP mode). Undo brings both back. Load to Sequencer restores the clip's field: the project's field with that id if it's unchanged, otherwise a copy named "<field> · clip n" is added.
+- **The Fields sheet** (row 2):
+  - the current field's name (rename in place), **Edit layout**, **Duplicate**;
+  - the project's fields (a small picture of each, its cells in order); tap to load; a trash per row (not for the one on the field);
+  - **Random field**, and **New from a preset** (All effects, the v21 layout; Dub; Glitch; Pitch play).
+- **Random fields:** the loop row (at least 12 units, so its dry middle is easy to find) plus 3–6 other effects, each at least 3 units (5 for Pitch and Freeze), the whole height covered, then one or two overlaps made by growing a cell into its lower neighbour, never more than two cells deep.
+- **Field editor** (Edit layout): each cell is a block at its true height; overlapping cells are shown side by side so each can be grabbed. Drag a block to move it, its top or bottom edge (the grips) to resize it (minimum 2 units), × to remove it, tap it for its settings. The bar at the bottom has **+ Add…** (an effect not in the field: it takes the largest free space, or the lower half of the tallest cell), **Even out** (stack everything, no gaps or overlaps, sizes kept in proportion) and **Done**. Each drag is one undo step; the engine follows every change at once.
+- **On the field**, overlapping cells are drawn see-through with a dashed outline, the overlap is striped in both colours and labelled ("DELAY + REVERB"), and the handle column is split into one lane per overlapping cell. A tap on a handle opens that effect's settings; dragging a handle moves its cell (with anything overlapping it) to another place in the order, and the field is re-stacked.
+- Effect **settings** edits are now undoable (the first change in the sheet is one undo step).
+- **Preferences → Effects shown** is gone: a field decides which effects are there. FX ONLY + trash + tap removes every effect under the finger from the sequence.
+- **Projects:** a project now stores `fields` and `field` (the one on the field); each clip stores its `field`. A project from before v22 becomes one field built from its row order, the effects it showed and its settings, and its clips get a copy of it.
+
+### 25.4 The game (first pass, no scoring)
+**Game** (crosshair, row 2) starts a round; tapping it again stops the round. Stop does too.
+
+- **Round:** a one-bar count-in (the rest of the current bar if more than half of it is left, else the next one; bar 0 if playback was stopped), then **16 bars**. Record is on for the whole round, and at the end of each round bar the sequence is **captured as a clip**, so a round always leaves 16 clips (bar n's clip is the sequence as it stood at the end of bar n, so what you heard in that bar). Capture happens when the engine's `barN` passes the bar, by which time its last step's `clipStep` has arrived. Capture, Record and Fields are disabled during a round.
+- **Targets** appear over the field on the beat (with a short fade-in), at a slice column and a height inside one of the field's cells, so hitting them plays that cell. Touches work as always: they're heard and recorded whether or not they hit anything.
+  - **Drone:** tap it within about a beat.
+  - **Armoured** (hexagon, a number): hold it for that many beats (1–4); letting go resets it.
+  - **Serpent:** its path (up to five turns across neighbouring columns) is shown; hold its head and follow it for 2–4 beats. It dies if you stayed on it for at least 60% of its run.
+  - **Linked** (2 or 3 nodes joined by lines): hold all the nodes at once for half a beat.
+  - **Mine** (red, spiked): a finger that touches one is **silenced** until it lifts (shown with a red ring). Mines never appear under a finger.
+- **Ramp:** bars 1–4 drones only (2 per bar, rising to 4); armoured from bar 5; serpents and linked groups from bar 9; mines from bar 13; off-beat drones from bar 7. Difficulty otherwise = tempo.
+- **Display:** the round's state replaces the ORDER and SKIP strips (which rest during a round): GET READY with a beat count, then BAR n / 16, the clips so far and hits. At the end: "16 clips saved", hits and how many got away (counted, not scored).
+- The game reads touches only and drives the engine like any fingers (§18). Code: `startGame`, `gameTick` (spawning, hit tests, captures, once per frame), `drawGame`, in `ui.js`.
+
+### 25.5 Projects is a sheet again
+- The folder button opens a **large sheet** (like Export, but taller); the icon stays a folder.
+- **Naming a new project saves it** (in the folder being viewed). **NEW PROJECT** starts one and puts the cursor in the name. SAVE keeps later changes; the automatic saves of §24.6 remain.
+- **Selection:** tap a project or folder to select it (white outline; its line says "Tap again to open"), tap it again to open it.
+- **The sheet's own trash** (left of NEW FOLDER): a tap deletes the selected item; hold it and tap rows, or hold rows and tap it, to delete several. A deleted row **turns red at once** and goes a moment later; the library is updated in the background, and **Undo** in the message bar brings it back.
+
+### 25.6 Sound
+- **Filter resonance is level-matched** like Crush: the filter's input and output are compared A-weighted (80 ms) and the output is only ever turned down, so a plain cut is never made up for. Measured on the demo loops the resonant peak raised the A-weighted level by up to +1.6 dB (Electric piano, Acid bass); now at most +0.1 dB.
+- **Crush fix:** with near-silent input the compensation could divide by almost nothing and push its gain to infinity (a NaN on the output, caught by the new scenario 07). Both Crush and Filter now leave the gain alone unless the output is louder than the input by a measurable amount.
+- **Imported audio is time-stretched** to the bar by default (Preferences → Your own audio: **Stretch**, keeps its pitch, or **Resample**, as before). WSOLA in `synth.js` (`stretch2`): 40 ms Hann grains every 20 ms, each read from near where the speed puts it, nudged by up to 10 ms to the place that best continues the grain before (cross-correlation of the mono sum, every 2nd lag and 4th sample); both channels use the same grains; reading and writing wrap round so the bar loops seamlessly. It runs once per tempo and is cached. Projects from before v22 keep resampling. Native: do the same offline (or use a library), never on the audio thread.
+
+### 25.7 Always a sequence
+- The field starts on a **blank sequence** (every step empty: the loop's slices in order, no effects), which sounds exactly like the plain loop did. There's no separate "live" view; the lane label always says **SEQ** (or the clip's number in its corner ticks), never LIVE or REC. Recording still outlines the playing step in red.
+- **Trash** clears the sequence to a blank one with the same ORDER, SKIP and SKIP/GAP mode (at the next bar line; at once while recording). It's disabled while the sequence is already blank.
+
+### 25.8 Tests and scenarios
+- `engine.test.js` has 56 cases. New ones:
+  - filter resonance level-matching (within 0.5 dB, Electric piano)
+  - a touch over two overlapping cells plays both effects
+  - …in the field's order, and changing the order changes the sound
+  - a clip plays with its own field's settings, then the track's
+  - time-stretch keeps pitch at the new length
+- Scenario `07-fields-overlap-order`: steps with two effects each played in two signal orders, recording a two-effect touch (Stutter + Pitch), a settings change, and a clip carrying its own `rank`. The parity renderer needed no new shorthands.
+

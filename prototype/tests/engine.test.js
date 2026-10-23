@@ -235,6 +235,40 @@ const blank=id=>({id,cols:16,n:16,ord:{perm:null},mute:{bits:null},slots:Array.f
 {const e=mk();let got=null;e.post=m=>{if(m.type==='grabbed')got=m;};e.msg({type:'play'});run(e,steps(e,16*3+5));
  e.msg({type:'grab',bars:2});ok('grab returns the last 2 whole bars',got&&got.L.length===2*e.len&&got.L.some(v=>v!==0));}
 
+// Filter: its resonant peak doesn't make the loop louder (A-weighted, within 0.5 dB of the dry loop; it was +1.5 dB).
+{const aw=(()=>{const s=src('engine.js');return eval('('+s.slice(s.indexOf('function aWeight'),s.indexOf('  function rdM'))+')');})();
+ const lp=ML('keys',sr,124);
+ function lvl(fx){const e=new EF.Engine(sr);e.msg({type:'load',tr:0,L:lp.L,R:lp.R});e.msg({type:'mode',mode:'combine'});e.msg({type:'fxonly',on:true});e.msg({type:'play'});
+   if(fx)e.msg({type:'touches',tr:0,list:[{id:'f',a:0,n:1,o:1,fx}]});const o=EF.bounce(e,e.len*3),a=aw(sr);let q=0;
+   for(let i=0;i<o.L.length;i++){const y=a.run(o.L[i]+o.R[i]);if(i>=e.len)q+=y*y;}return 10*Math.log10(q);}
+ const dry=lvl(null),worst=Math.max(...[-0.75,-0.6,0.6,0.45].map(raw=>lvl({k:'filter',raw})-dry));
+ ok('Filter resonance is level-matched',worst<0.5,worst.toFixed(2)+' dB');}
+
+// Fields: a touch where cells overlap drives several effects at once; the field's row order is the signal order.
+{const e=mk();e.msg({type:'play'});const T=e.tracks[0];run(e,steps(e,2));
+ e.msg({type:'touches',tr:0,list:[{id:'o',a:4,n:1,o:1,fx:[{k:'crush',raw:0.3},{k:'filter',raw:-0.4}]}]});run(e,steps(e,2));
+ ok('Replace: one touch over two overlapping cells plays both effects',T.cur.fx.map(f=>f.k).sort().join()==='crush,filter',T.cur.fx.map(f=>f.k));
+ e.msg({type:'field',tr:0,order:['filter','crush']});run(e,steps(e,2));const a=T.cur.fx.map(f=>f.k).join();
+ e.msg({type:'field',tr:0,order:['crush','filter']});run(e,steps(e,2));const b=T.cur.fx.map(f=>f.k).join();
+ ok('…in the field’s order, top to bottom',a==='filter,crush'&&b==='crush,filter',[a,b]);
+ function out(order){const e2=mk();e2.msg({type:'field',tr:0,order});e2.msg({type:'play'});
+   e2.msg({type:'touches',tr:0,list:[{id:'o',a:4,n:1,o:1,fx:[{k:'crush',raw:0}, {k:'filter',raw:0.6}]}]});return EF.bounce(e2,e2.len).L;}
+ const x=out(['crush','filter']),y=out(['filter','crush']);let d=0;for(let i=0;i<x.length;i++)d=Math.max(d,Math.abs(x[i]-y[i]));
+ ok('…and changing the order changes the sound',d>0.05,d);}
+
+// A sequence from the Clips list plays with the field it was captured on (its settings), then the track's own comes back.
+{const e=mk();const T=e.tracks[0];const c=EF.defCfg('pitch');c.o.scale='oct';c.o.mask=EF.maskOf(EF.SCALES.oct);
+ const k={id:'fk',cols:16,n:16,ord:{perm:null},mute:{bits:null},cfg:{pitch:c},rank:EF.rankOf(['pitch']),
+   slots:Array.from({length:16},(_,i)=>({on:true,a:i,off:0,sid:'f'+i,slen:1,fx:[{k:'pitch',raw:0.5}]}))};
+ e.msg({type:'launch',tr:0,clip:k});e.msg({type:'play'});run(e,steps(e,2));const s1=EF.semiQ(T.cur.fx[0].v.semi,T.cur.fx[0].o);
+ e.msg({type:'launch',tr:0,clip:Object.assign({},k,{id:'fk2',cfg:null})});run(e,steps(e,17));const s2=EF.semiQ(T.cur.fx[0].v.semi,T.cur.fx[0].o);
+ ok('a clip plays with its own field’s settings; without one, the track’s',s1===12&&s2===7,[s1,s2]);}
+
+// Imported audio stretched to the bar keeps its pitch (WSOLA), and the bar loops round seamlessly.
+{const S=eval(src('synth.js')+';synthFactory()'),N=72000,L=new Float32Array(N);for(let i=0;i<N;i++)L[i]=Math.sin(2*Math.PI*440*i/sr);
+ const o=S.stretch2(L,L,93000,sr);let z=0;for(let i=1;i<o.L.length;i++)if(o.L[i-1]<0&&o.L[i]>=0)z++;
+ ok('time-stretch keeps pitch (440 Hz in, about 440 out) at the new length',o.L.length===93000&&Math.abs(z/(93000/sr)-440)<3,z/(93000/sr));}
+
 // Every effect renders without NaN.
 {const e=mk();e.msg({type:'play'});let nan=false,pk=0;
  for(const k of ['stutter','random','reverse','freeze','crush','pitch','env','filter','delay','reverb']){e.msg({type:'touches',tr:0,list:[{id:k,a:2,n:1,o:1,fx:{k,raw:0.7}}]});

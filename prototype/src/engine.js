@@ -159,6 +159,11 @@ function engineFactory(){
       this.rN=1<<14;this.rm=this.rN-1;this.rL=new Float32Array(this.rN);this.rR=new Float32Array(this.rN);
       this.pPh=0;this.pSem=0;this.pMix=0;this.hadPitch=false;
       this.gr=[];this.gNext=0;this.cAcc=1;this.cl=0;this.cr=0;this.fs=new Float64Array(4);
+      // Filter: the resonant peak is level-matched the same way (A-weighted, only ever turned down)
+      this.hadFilt=false;this.fEi=0;this.fEo=0;this.fG=1;this.fAi=aWeight(E.sr);this.fAo=aWeight(E.sr);
+      // the field: effect settings (cfg) and signal order (rank: effect -> place, top to bottom). A sequence
+      // played from the Clips list carries its own (the field it was captured on).
+      this.rank=null;
       this.hadCrush=false;this.cEi=0;this.cEo=0;this.cG=1;this.cK=1-Math.exp(-1/(0.08*E.sr));
       this.cAi=aWeight(E.sr);this.cAo=aWeight(E.sr);
       this.dN=1<<17;this.dm=this.dN-1;this.dL=new Float32Array(this.dN);this.dR=new Float32Array(this.dN);this.dW=0;this.dWet=1;
@@ -197,7 +202,7 @@ function engineFactory(){
     }
     // A sequence may name a loop the engine holds (`loop` key, see 'loopBuf'); otherwise the track's own plays.
     setClip(c){
-      this.clip=c||null;const b=(c&&c.loop&&this.E.bufs.get(c.loop))||this.base;
+      this.clip=c||null;this.cfgV++;const b=(c&&c.loop&&this.E.bufs.get(c.loop))||this.base;
       if(b&&b.L.length===this.E.len){this.L=b.L;this.R=b.R;}
     }
     mkE(f){return {k:f.k,raw:f.raw,auto:f.auto||null,tid:f.tid||null,live:null,v:{},o:null,rv:NaN,cv:-1,ref:null};}
@@ -208,11 +213,16 @@ function engineFactory(){
       return e.raw;
     }
     res(e,raw){
-      if(raw!==e.rv||e.cv!==this.cfgV){const c=this.cfg[e.k];resolveInto(e.v,c,e.k,raw);e.o=c.o;e.rv=raw;e.cv=this.cfgV;}
+      if(raw!==e.rv||e.cv!==this.cfgV){const c=this.cfgOf(e.k);resolveInto(e.v,c,e.k,raw);e.o=c.o;e.rv=raw;e.cv=this.cfgV;}
     }
+    // effect settings and signal order: the playing sequence's own field, else the track's
+    cfgOf(k){const c=this.clip&&this.clip.cfg;return (c&&c[k])||this.cfg[k];}
+    get rankE(){return (this.clip&&this.clip.rank)||this.rank;}
     relink(){
       const c=this.cur;if(!c)return;
-      for(const e of c.fx){if(!e.tid)continue;const t=this.touches.find(x=>x.id===e.tid);e.live=t&&t.fx&&t.fx.k===e.k?t.fx.raw:null;}
+      for(const e of c.fx){if(!e.tid)continue;const t=this.touches.find(x=>x.id===e.tid);let f=null;
+        if(t&&t.fx)for(let j=0;j<t.fx.length;j++)if(t.fx[j].k===e.k){f=t.fx[j];break;}
+        e.live=f?f.raw:null;}
     }
     // ORDER: a sequence position plays the step (or loop slice) its pattern names, bar by bar
     mapPos(pos,len){
@@ -296,7 +306,7 @@ function engineFactory(){
         const x=this.pickTouch(loopT);
         // Combine: the touched slice plays with the step's own effects, and every held effect stacks on them
         const own=combine&&slot&&!slot.empty?slot.fx||[]:[];
-        base={src:'touch',sid:'T'+x.id+'#'+(++this.sidC),a:x.a*u,dur:Math.max(1,Math.round(x.n*u/sl)),slen:x.n*u,fx:x.fx&&!combine?[{tid:x.id,k:x.fx.k,raw:x.fx.raw}]:own,off:0,on:true,picked:true};
+        base={src:'touch',sid:'T'+x.id+'#'+(++this.sidC),a:x.a*u,dur:Math.max(1,Math.round(x.n*u/sl)),slen:x.n*u,fx:x.fx&&!combine?x.fx.map(f=>({tid:x.id,k:f.k,raw:f.raw})):own,off:0,on:true,picked:true};
       }
       else if(this.songSilent){base={src:'rest',sid:'R'+(++this.sidC),a:this.tlS*sl,dur:1,slen:sl,fx:[],off:0,on:false};}
       else if(slot&&slot.empty){
@@ -314,7 +324,7 @@ function engineFactory(){
       else base={src:'loop',sid:'L'+(++this.sidC),a:this.tlS*sl,dur:1,slen:sl,fx:[],off:0,on:true};
       // FX only + Replace: the step keeps its slice and takes the next touch's effect in place of its own
       if(base&&fxOnly&&!combine&&loopT.length&&(base.src!=='rest'||base.empty)){
-        const x=this.pickTouch(loopT);base.fx=x.fx?[{tid:x.id,k:x.fx.k,raw:x.fx.raw}]:[];base.picked=true;
+        const x=this.pickTouch(loopT);base.fx=x.fx?x.fx.map(f=>({tid:x.id,k:f.k,raw:f.raw})):[];base.picked=true;
       }
       // SKIP mutes a step in place; as GAP it inserts a rest and the sequence waits. A touched step is
       // never skipped unless the preference says SKIP applies to touches too.
@@ -325,11 +335,13 @@ function engineFactory(){
       this.rest=insert;
       if(base){
         const F=base.fx.map(f=>this.mkE(f));
-        const add=x=>{const f=this.mkE({k:x.fx.k,raw:x.fx.raw,tid:x.id});const j=F.findIndex(e=>e.k===f.k);if(j>=0)F[j]=f;else F.push(f);};
+        const add=x=>{for(const q of x.fx){const f=this.mkE({k:q.k,raw:q.raw,tid:x.id});const j=F.findIndex(e=>e.k===f.k);if(j>=0)F[j]=f;else F.push(f);}};
         applied.forEach(add);
+        // signal order: the field's, top to bottom (effects it doesn't hold go last, as they came)
+        const rk=this.rankE;if(rk&&F.length>1)F.sort((a,b)=>(a.k in rk?rk[a.k]:99)-(b.k in rk?rk[b.k]:99));
         for(const e of F)this.res(e,e.auto?e.auto[0]:e.raw);
         // FX only + Combine: a held stutter or freeze keeps repeating the slice it began on
-        const anc=fxOnly&&applied.find(x=>x.fx.k==='stutter'||x.fx.k==='freeze');
+        const anc=fxOnly&&applied.find(x=>x.fx.some(f=>f.k==='stutter'||f.k==='freeze'));
         if(anc){if(!this.anch||this.anch.id!==anc.id)this.anch={id:anc.id,a:base.a,slen:base.slen};base.a=this.anch.a;base.slen=this.anch.slen;}
         else this.anch=null;
         const st=F.find(e=>e.k==='stutter');
@@ -381,7 +393,7 @@ function engineFactory(){
       this.restore(b);this.decide(b.t,b.k);
     }
     startStep(c){
-      let pitch=false,crush=false;
+      let pitch=false,crush=false,filt=false;
       for(const e of c.fx){
         if(e.k==='stutter'&&e.o.mode==='ms')e.rep=Math.max(64,Math.round(this.E.sr*stMs(e.v.len)/1000));
         else if(e.k==='random'){
@@ -393,9 +405,10 @@ function engineFactory(){
         }
         else if(e.k==='pitch'){pitch=true;if(!this.hadPitch){const s0=semiQ(e.v.semi,e.o);this.pSem=s0;this.pMix=s0!==0?1:0;}}
         else if(e.k==='crush'){this.cAcc=1;if(!this.hadCrush){this.cEi=this.cEo=0;this.cG=1;this.cAi.reset();this.cAo.reset();}crush=true;}
+        else if(e.k==='filter'){if(!this.hadFilt){this.fEi=this.fEo=0;this.fG=1;this.fAi.reset();this.fAo.reset();}filt=true;}
       }
       c.fc=c.rPick>=0?c.rPick:c.a;
-      this.hadPitch=pitch;this.hadCrush=crush;
+      this.hadPitch=pitch;this.hadCrush=crush;this.hadFilt=filt;
     }
     render(oL,oR,i0,i1,t0,swing){
       if(!this.L||!this.sl||this.L.length!==this.E.len)return;
@@ -493,7 +506,7 @@ function engineFactory(){
             // turned down to match.
             const pi=this.cAi.run(l+r),po=this.cAo.run(this.cl+this.cr);
             this.cEi+=(pi*pi-this.cEi)*this.cK;this.cEo+=(po*po-this.cEo)*this.cK;
-            const cg=this.cEo>this.cEi?Math.max(0.3,Math.sqrt((this.cEi+1e-12)/this.cEo)):1;
+            const cg=this.cEo>this.cEi+1e-12?Math.max(0.3,Math.sqrt(this.cEi/this.cEo)):1;
             this.cG+=(cg-this.cG)*0.003;
             l=this.cl*this.cG;r=this.cr*this.cG;
           }
@@ -505,7 +518,14 @@ function engineFactory(){
             let v3=l-s[1],v1=a1*s[0]+a2*v3,v2=s[1]+a2*s[0]+a3*v3;s[0]=2*v1-s[0];s[1]=2*v2-s[1];
             const yl=hp?l-kk*v1-v2:v2;
             v3=r-s[3];v1=a1*s[2]+a2*v3;v2=s[3]+a2*s[2]+a3*v3;s[2]=2*v1-s[2];s[3]=2*v2-s[3];
-            r=hp?r-kk*v1-v2:v2;l=yl;
+            const yr=hp?r-kk*v1-v2:v2;
+            // Level-matching: the resonant peak can make the step louder than it went in. Input and output are
+            // compared A-weighted (80 ms) and the output only ever turned down (a plain cut never is).
+            const fi=this.fAi.run(l+r),fo=this.fAo.run(yl+yr);
+            this.fEi+=(fi*fi-this.fEi)*this.cK;this.fEo+=(fo*fo-this.fEo)*this.cK;
+            const fg=this.fEo>this.fEi+1e-12?Math.max(0.3,Math.sqrt(this.fEi/this.fEo)):1;   // (silence in, silence out: no change)
+            this.fG+=(fg-this.fG)*0.003;
+            l=yl*this.fG;r=yr*this.fG;
           }
         }
         if(!ring){this.rL[t&rm]=l;this.rR[t&rm]=r;}
@@ -525,7 +545,7 @@ function engineFactory(){
         {let dv=null;for(let j=0;j<F.length;j++)if(F[j].k==='delay'){dv=F[j].v;break;}
           if(dv){this.dTv=len*DT[step(dv.time,6)]/16;this.dFb=Math.min(0.95,dv.fb);}
           this.dSend+=((dv&&this.gate?dv.send:0)-this.dSend)*0.004;
-          const cut=!dv&&this.cfg.delay.o.tails==='cut';this.dWet+=((cut?0:1)-this.dWet)*0.005;
+          const cut=!dv&&this.cfgOf('delay').o.tails==='cut';this.dWet+=((cut?0:1)-this.dWet)*0.005;
           if(this.dTv>0){
             if(this.dTime<=0)this.dTime=this.dTv;else this.dTime+=(this.dTv-this.dTime)*0.0005;
             const w=this.dW,dm=this.dm,rp=w-this.dTime,wl=rdM(this.dL,dm,rp),wr=rdM(this.dR,dm,rp),fb=cut?0:this.dFb;
@@ -537,7 +557,7 @@ function engineFactory(){
         {if(rv){const key=rv.size*1000+rv.tone;if(key!==this.rKey){this.rKey=key;const T60=rvSec(rv.size)*sr;
             for(let q=0;q<4;q++)this.rvG[q]=Math.pow(10,-3*this.rvLen[q]/T60);this.rDamp=0.12+0.85*rv.tone;}}
           this.rSend+=((rv&&this.gate?rv.wet:0)-this.rSend)*0.004;
-          const cut=!rv&&this.cfg.reverb.o.tails==='cut';this.rWet+=((cut?0:1)-this.rWet)*0.005;
+          const cut=!rv&&this.cfgOf('reverb').o.tails==='cut';this.rWet+=((cut?0:1)-this.rWet)*0.005;
           let x=dry*0.5*this.rSend;
           for(let q=0;q<2;q++){const b=this.apB[q],i=this.apI[q],d=b[i],y=d-0.6*x;b[i]=x+0.6*y;this.apI[q]=i+1>=b.length?0:i+1;x=y;}
           const B=this.rvB,M=this.rvM,w=this.rvW,lp=this.rvLp,dmp=this.rDamp;
@@ -595,8 +615,12 @@ function engineFactory(){
         case 'loopBuf':this.bufs.set(d.key,{L:d.L,R:d.R});for(const tr of this.tracks)if(tr.clip&&tr.clip.loop===d.key)tr.setClip(tr.clip);break;
         case 'play':if(!this.playing)this.start();break;
         case 'stop':this.stop();break;
-        case 'touches':{T.touches=d.list||[];T.relink();const sig=T.touches.map(x=>x.id+':'+x.a+':'+(x.fx?x.fx.k:'-')).join();if(sig!==T.tsig){T.tsig=sig;T.regrace();}break;}
+        // a touch's fx: the effects its cell (or overlapping cells) drive, [{k, raw}], or null for a dry touch
+        case 'touches':{T.touches=(d.list||[]).map(x=>x.fx&&!Array.isArray(x.fx)?Object.assign({},x,{fx:[x.fx]}):x.fx&&!x.fx.length?Object.assign({},x,{fx:null}):x);
+          T.relink();const sig=T.touches.map(x=>x.id+':'+x.a+':'+(x.fx?x.fx.map(f=>f.k).join('+'):'-')).join();if(sig!==T.tsig){T.tsig=sig;T.regrace();}break;}
         case 'cfg':T.cfg=Object.assign({},T.cfg,d.cfg);T.cfgV++;break;
+        // the field's signal order, top to bottom: [effect keys]
+        case 'field':{const r={};(d.order||[]).forEach((k,i)=>{r[k]=i;});T.rank=d.order?r:null;break;}
         case 'grid':if(this.playing&&d.q){T.gridQ=d.n;}else{T.gridQ=0;T.applyGrid(d.n);}T.bsnap=null;break;
         case 'range':if(this.playing&&d.q)T.rangeQ={s16:d.s16,e16:d.e16};else{T.rangeQ=null;T.s16=d.s16;T.e16=d.e16;T.clampTl();if(T.barPos>=T.n)T.barPos%=T.n;}T.bsnap=null;break;
         case 'mode':this.mode=d.mode==='combine'?'combine':'replace';break;
@@ -699,5 +723,7 @@ function engineFactory(){
     for(let t=0;t<samples;t+=BL){const n=Math.min(BL,samples-t);e.render(bl,br,BL);L.set(n<BL?bl.subarray(0,n):bl,t);R.set(n<BL?br.subarray(0,n):br,t);}
     e.post=post;return {L,R};
   }
-  return {Engine,bounce,orderPattern,skipPattern,DEAD,PATN,emptyStep,DT,FX,semi,semiQ,scaleNotes,SCALES,maskOf,NOTES,stMs,DIV,step,defCfg,allCfg,resolve,rowBip,AUTO};
+  // a sequence's signal order in engine form (see the 'field' message)
+  const rankOf=order=>{const r={};(order||[]).forEach((k,i)=>{r[k]=i;});return r;};
+  return {Engine,bounce,rankOf,orderPattern,skipPattern,DEAD,PATN,emptyStep,DT,FX,semi,semiQ,scaleNotes,SCALES,maskOf,NOTES,stMs,DIV,step,defCfg,allCfg,resolve,rowBip,AUTO};
 }
