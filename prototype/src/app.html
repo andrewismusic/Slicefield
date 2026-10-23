@@ -1,19 +1,15 @@
-<title>Slicefield</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Martian+Mono:wdth,wght@75..112.5,300..700&display=swap">
 <style>
-/* Layout: one-screen instrument. Transport, track tabs, track bar, then a canvas holding the
-   sequencer lane, the two performance strips and the effect grid. Single dark stage look. */
-:root{
-  color-scheme: dark;
+/* Everything lives in the Slicefield element's shadow root, so none of these rules or ids reach the
+   host page. Layout: one-screen instrument. Header, sequencer lane, loop bar, then a canvas holding
+   the ORDER and SKIP strips and the effect grid (or the Takes list). Single dark stage look. */
+:host{
+  color-scheme: dark;display:block;height:100%;box-sizing:border-box;font-family:var(--mono);font-size:12px;color:var(--fg);
   --bg:#111317;--panel:#1a1d23;--raise:#242831;--line:#2f3440;--fg:#ece7dc;--dim:#8a8f99;--accent:#ffc65c;--rec:#e5484d;
   --mono:"Martian Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
 }
 [hidden]{display:none!important}
-html{height:100%;box-sizing:border-box}
 *,*::before,*::after{box-sizing:inherit}
-body{height:100%;background:var(--bg);color:var(--fg);font-family:var(--mono);font-size:12px;overflow:hidden;
+.app{background:var(--bg);color:var(--fg);font-family:var(--mono);font-size:12px;overflow:hidden;
   padding-inline:16px;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent}
 .app{height:100%;display:flex;flex-direction:column;gap:7px;padding-block:10px}
 .row{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px}
@@ -155,8 +151,6 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
 .tgrid button:disabled{opacity:.38;cursor:default}
 .lane{position:relative;inset:auto;width:100%;height:30px;display:block;touch-action:none;flex:none}
 /* app-wide mode colour: normal, latched, global, and global + latched */
-body{--accent:#ffc65c;transition:background-color .25s}
-body.m-global{--accent:#7fb2ff;--bg:#0f1a2c;--panel:#16223a;background:var(--bg)}
 .toggle[aria-pressed="true"]{background:color-mix(in srgb,var(--accent) 18%,#1b1d22);border-color:var(--accent);color:var(--accent)}
 .ic.play{background:var(--accent)}
 .tab[aria-selected="true"]{border-color:var(--accent)}
@@ -256,6 +250,40 @@ body.m-global{--accent:#7fb2ff;--bg:#0f1a2c;--panel:#16223a;background:var(--bg)
 #trackbar{flex-wrap:nowrap;gap:6px}
 #trackbar select{min-width:0;flex:1 1 auto;max-width:200px}
 #trackbar .grow{flex:0 1 4px}
+.c25{grid-column:2/6}
+/* REPLACE/COMBINE and FX ONLY: the same small caps, one header cell each */
+.tgrid .tiny{font-size:8px;font-stretch:75%;letter-spacing:0;line-height:1.05;padding:0 1px;white-space:normal;overflow:hidden}
+#recmode[aria-pressed="true"]{background:#3a2a1d;border-color:#ff9a4a;color:#ffc08a}
+/* Takes button: a count of the takes kept so far */
+.takesbtn{position:relative}
+.takesbtn b{position:absolute;right:2px;top:2px;min-width:14px;height:13px;padding:0 3px;border-radius:7px;background:var(--accent);color:#1b1408;font-size:8px;line-height:13px;font-weight:700;text-align:center}
+.takesbtn b:empty{display:none}
+.takesbtn.flash b{animation:flash .5s ease-out}
+@keyframes flash{from{transform:scale(1.5)}to{transform:none}}
+/* Takes: one scrolling column, oldest at the top */
+.session{flex-direction:column}
+.takeshead{display:flex;align-items:center;gap:6px;flex-wrap:wrap}
+.takeshead h2{margin:0 auto 0 0;font-size:12px;letter-spacing:.16em;text-transform:uppercase}
+.takeshead button{height:30px;font-size:10px;letter-spacing:.06em;text-transform:uppercase;display:inline-flex;align-items:center;gap:5px}
+.takeshead button svg{width:12px;height:12px}
+.takeshead button[aria-pressed="true"]{background:#3a3120;border-color:var(--accent);color:var(--accent)}
+.takelist{display:flex;flex-direction:column;gap:4px;padding:6px}
+.take{display:grid;grid-template-columns:26px minmax(0,1fr) 76px 28px 26px;gap:4px;align-items:stretch;height:44px}
+.take .hdl{display:flex;align-items:center;justify-content:center;border-radius:6px;background:var(--panel);color:#6c7380;cursor:grab;touch-action:none}
+.take .hdl svg{width:14px;height:14px}
+.take .th{position:relative;border-radius:7px;background:#1c1f25;border:1px solid #262a32;overflow:hidden;cursor:pointer;padding:0}
+.take .th canvas{position:absolute;inset:0;width:100%;height:100%}
+.take .th span{position:absolute;left:5px;top:3px;font-size:9px;color:rgba(236,231,220,.75);pointer-events:none}
+.take.now .th{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}
+.take.now .th::after{content:"";position:absolute;right:6px;top:6px;border-left:7px solid var(--accent);border-top:4.5px solid transparent;border-bottom:4.5px solid transparent}
+.take.cur .th{border-color:#8a8f99}
+.take .reps{display:flex;align-items:center;border-radius:6px;background:var(--panel);border:1px solid var(--line);overflow:hidden}
+.take .reps button{height:100%;width:22px;padding:0;border:0;border-radius:0;background:transparent;font-size:13px;color:var(--dim)}
+.take .reps span{flex:1;text-align:center;font-variant-numeric:tabular-nums;font-size:11px}
+.take .sel,.take .del{height:100%;padding:0;font-size:12px;color:var(--dim)}
+.take .sel[aria-pressed="true"]{background:#3a3120;border-color:var(--accent);color:var(--accent)}
+.take.drop{outline:2px dashed var(--accent);outline-offset:1px}
+.takes-empty{color:var(--dim);line-height:1.6;padding:14px 8px}
 .foldbtn:disabled{opacity:.35;cursor:default}
 </style>
 
@@ -265,16 +293,15 @@ body.m-global{--accent:#7fb2ff;--bg:#0f1a2c;--panel:#16223a;background:var(--bg)
       <button id="prefs" class="ic c1" aria-label="Preferences" title="Preferences"></button>
       <div class="drag c23" id="bpm" tabindex="0" role="slider" aria-label="Tempo" aria-valuemin="60" aria-valuemax="200"><b>124</b><small>BPM</small></div>
       <div class="drag c45" id="swing" tabindex="0" role="slider" aria-label="Swing" aria-valuemin="0" aria-valuemax="50"><b>0%</b><small>Swing</small></div>
-      <button id="export" class="ic c6" aria-label="Export" title="Export the song or clips as audio"></button>
-      <button id="rec" class="ic recbtn c7" aria-pressed="false" aria-label="Record"></button>
+      <button id="export" class="ic c6" aria-label="Export" title="Export takes, the sequence, or what you just heard"></button>
+      <button id="sessbtn" class="ic takesbtn c7" aria-label="Takes" title="Takes: every bar you play is kept here"></button>
       <button id="play" class="ic play c8" aria-pressed="false" aria-label="Play"></button>
-      <button id="sessbtn" class="ic c1" aria-label="Clips and song" title="Clips and song"></button>
-      <button id="stepped" class="ic c2" aria-label="Stepped values" title="Stepped or smooth effect values"></button>
-      <div id="dice" class="dice c34" tabindex="0" role="slider" aria-label="Randomize the sequence" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
+      <button id="stepped" class="ic c1" aria-label="Stepped values" title="Stepped or smooth effect values"></button>
+      <div id="dice" class="dice c25" tabindex="0" role="slider" aria-label="Randomize the sequence" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
         title="Drag the die (or tap the slider) to randomize · hold it and tap steps to randomize just those"><span id="diceval"></span><i id="die"></i></div>
-      <button id="recmode" class="toggle sm c56" aria-pressed="false">Replace</button>
-      <button id="fxonly" class="toggle tiny c7" aria-pressed="false">FX<br>only</button>
-      <button id="clear" class="ic trash c8" disabled aria-label="Clear" title="Tap: clear this sequence · hold and tap steps: clear just those"></button>
+      <button id="recmode" class="toggle tiny c6" aria-pressed="false">REPLACE</button>
+      <button id="fxonly" class="toggle tiny c7" aria-pressed="false">FX<br>ONLY</button>
+      <button id="clear" class="ic trash c8" disabled aria-label="Clear" title="Tap: clear the sequence · hold and tap steps: empty just those"></button>
     </header>
     <canvas id="lane" class="lane" aria-label="Sequencer steps"></canvas>
     <div class="row" id="trackbar">
@@ -289,15 +316,15 @@ body.m-global{--accent:#7fb2ff;--bg:#0f1a2c;--panel:#16223a;background:var(--bg)
       <span class="grow"></span>
       <button id="undo" class="ic foldbtn" aria-label="Undo" title="Undo" disabled></button>
       <button id="redo" class="ic foldbtn" aria-label="Redo" title="Redo" disabled></button>
-      <button id="clipset" class="foldbtn clipset" title="Clip settings: empty steps, repeating randomness, print">Clip</button>
+      <button id="lasttake" class="foldbtn clipset" title="Loop the last take · tap again for the one before">◀ Take</button>
       <button id="fold" class="ic foldbtn" aria-pressed="false" aria-label="Hide sequencer, loop and sliders"></button>
     </div>
   </div>
   <div class="main" id="mainpane">
     <div class="gridwrap" id="gridwrap"><canvas id="grid" aria-label="Performance strips and effect grid"></canvas></div>
-    <section class="session" id="session" hidden aria-label="Session view">
-      <div class="sess-scroll" id="sessScroll"><div class="sgrid clipcol" id="sgrid"></div></div>
-      <div class="sess-scroll song"><div class="sgrid songcol" id="songgrid"></div></div>
+    <section class="session" id="session" hidden aria-label="Takes">
+      <div class="takeshead" id="takeshead"></div>
+      <div class="sess-scroll" id="sessScroll"><div class="takelist" id="takelist"></div></div>
     </section>
   </div>
   <div class="ghost" id="ghost" hidden></div>

@@ -6,5 +6,5 @@
  {"at":{"bar":4},"msg":{"type":"touches","tr":0,"list":[{"id":"e","a":6,"n":1,"o":5,"fx":{"k":"filter","raw":-0.7}},{"id":"f","a":11,"n":1,"o":6,"fx":{"k":"crush","raw":0.2}}]}},
  {"at":{"bar":5},"msg":{"type":"touches","tr":0,"list":[{"id":"g","a":3,"n":1,"o":7,"fx":{"k":"env","raw":0.15}},{"id":"h","a":12,"n":1,"o":8,"fx":{"k":"random","raw":1}}]}},
  {"at":{"bar":6},"msg":{"type":"touches","tr":0,"list":[]}},
- {"at":{"bar":6},"msg":{"type":"order","tr":0,"mode":"back","r":0.3}},
- {"at":{"bar":6},"msg":{"type":"mute","tr":0,"rnd":0,"bits":[1,0,1,1,0,1,0,1]}}]}
+ {"at":{"bar":6},"msg":{"type":"order","tr":0,"v":0.62}},
+ {"at":{"bar":6},"msg":{"type":"mute","tr":0,"v":0.55}}]}

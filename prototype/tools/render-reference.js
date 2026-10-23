@@ -1,7 +1,7 @@
 // Renders scripted scenarios through the prototype engine and writes reference output for parity tests:
 //   tools/out/<name>.wav          stereo 32-bit float WAV of the master output
 //   tools/out/<name>.steps.json   every step decision per track: [t, track, src, slice(16ths), gate, fx keys]
-//   tools/out/<name>.events.json  engine events (clip, clipStep, overDone, grid, songRow)
+//   tools/out/<name>.events.json  engine events (bar captures, grid, songRow)
 // Randomness comes from a seeded mulberry32, so runs are repeatable. If the native engine uses the
 // same generator and draws numbers in the same order, its step log should match exactly; audio should
 // match within a small tolerance (see HANDOFF.md, "Parity testing").
@@ -10,7 +10,7 @@
 const fs=require('fs'),path=require('path');
 const root=path.join(__dirname,'..'),src=f=>fs.readFileSync(path.join(root,'src',f),'utf8');
 function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
-eval(src('engine.js')+src('synth.js')+';global.EFx=engineFactory;global.ML=makeLoop;');
+eval(src('engine.js')+src('synth.js')+';global.EFx=engineFactory;global.ML=synthFactory().makeLoop;');
 function wav(L,R,sr){const n=L.length,b=Buffer.alloc(44+n*8);b.write('RIFF',0);b.writeUInt32LE(36+n*8,4);b.write('WAVE',8);b.write('fmt ',12);
   b.writeUInt32LE(16,16);b.writeUInt16LE(3,20);b.writeUInt16LE(2,22);b.writeUInt32LE(sr,24);b.writeUInt32LE(sr*8,28);b.writeUInt16LE(8,32);b.writeUInt16LE(32,34);
   b.write('data',36);b.writeUInt32LE(n*8,40);for(let i=0;i<n;i++){b.writeFloatLE(L[i],44+i*8);b.writeFloatLE(R[i],48+i*8);}return b;}
@@ -23,7 +23,9 @@ function runScenario(file){
   for(const tr of e.tracks){const d=tr.decide.bind(tr);tr.decide=(t,k)=>{d(t,k);const c=tr.cur;stepsLog.push([t,tr.i,c.src,+(c.a/e.u).toFixed(3),tr.gate?1:0,c.fx.map(x=>x.k).join('+')]);};}
   // the prototype's loop length rule: one bar at this tempo, rounded to 64 samples
   kinds.forEach((k,i)=>{const lp=ML(k,sr,bpm);e.msg({type:'load',tr:i,L:lp.L,R:lp.R});});
-  const msgs=(sc.msgs||[]).slice().sort((a,b)=>a.at-b.at);
+  // ORDER and SKIP may be given as a slider position {"v":0.3}; the pattern is worked out as the app does
+  const pat=m=>m.v===undefined?m:m.type==='order'?{type:'order',tr:m.tr,perm:EF.orderPattern(m.v,e.tracks[m.tr].n)}:m.type==='mute'?{type:'mute',tr:m.tr,bits:EF.skipPattern(m.v,e.tracks[m.tr].n)}:m;
+  const msgs=(sc.msgs||[]).map(x=>Object.assign({},x,{msg:pat(x.msg)})).sort((a,b)=>a.at-b.at);
   // "at" may be a sample index, or {bar, step} in sixteenths of the 1-bar loop
   const atS=a=>typeof a==='number'?a:Math.round(((a.bar||0)*16+(a.step||0))*e.len/16);
   const total=Math.ceil(atS(sc.length||{bar:8})/BL)*BL,L=new Float32Array(total),R=new Float32Array(total);

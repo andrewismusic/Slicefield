@@ -1,21 +1,23 @@
-(function(){
-  const EF=engineFactory(),FX=EF.FX;
+// The interface. Runs as the Slicefield constructor: everything it keeps is local to this instance, and it
+// draws into the host element's shadow root.
+function slicefieldUI(hostEl,engineFactory,synth,markup){
+  const EF=engineFactory(),FX=EF.FX,{makeLoop,resample}=synth;
+  const root=hostEl.attachShadow({mode:'open'});root.innerHTML=markup;this.root=root;
   const FONT='"Martian Mono", ui-monospace, Menlo, monospace';
   const ALL_FX=['stutter','random','pitch','reverse','env','freeze','crush','delay'];
   const HUES=[8,24,44,90,138,166,190,214,262,318,340];
   const TRACK_HUES=[40];
-  const SCENES=8;
   const LOOP_NAMES={break:'Breakbeat',boombap:'Boom bap',acid:'Acid bass',reese:'Reese bass',dub:'Dub stabs',lead:'Synth lead',keys:'Electric piano',kalimba:'Kalimba',vox:'Vocal chops',file:'Your file'};
   const BAND_LO=0.42,BAND_HI=0.58,STRIP=28,HW=30,LROW=24,LLAB=34;
-  const $=id=>document.getElementById(id);
+  const $=id=>root.getElementById(id);
   const clamp=(v,a,b)=>v<a?a:v>b?b:v;
   const canvas=$('grid'),wrap=$('gridwrap'),laneCv=$('lane'),laneG=laneCv.getContext('2d'),gridG=canvas.getContext('2d');
   let g=gridG,LW=300,laneDpr=1;
   const ACC='#ffc65c',ACCRGB='255,198,92';const ACCA=a=>'rgba('+ACCRGB+','+a+')';
   const BG='#111317';
-  const playBtn=$('play'),bpmEl=$('bpm'),swingEl=$('swing'),recBtn=$('rec'),expBtn=$('export'),modeBtn=$('recmode'),fxoBtn=$('fxonly'),clearBtn=$('clear'),steppedBtn=$('stepped'),diceEl=$('dice'),dieEl=$('die'),diceVal=$('diceval'),prefsBtn=$('prefs'),sessBtn=$('sessbtn');
+  const playBtn=$('play'),bpmEl=$('bpm'),swingEl=$('swing'),expBtn=$('export'),modeBtn=$('recmode'),fxoBtn=$('fxonly'),clearBtn=$('clear'),steppedBtn=$('stepped'),diceEl=$('dice'),dieEl=$('die'),diceVal=$('diceval'),prefsBtn=$('prefs'),sessBtn=$('sessbtn');
   const soundSel=$('sound'),fileIn=$('file'),sheet=$('sheet'),card=$('card');
-  const sessEl=$('session'),sgrid=$('sgrid'),songGrid=$('songgrid'),ghost=$('ghost');
+  const sessEl=$('session'),takeList=$('takelist'),takesHead=$('takeshead'),sessScroll=$('sessScroll'),ghost=$('ghost');
 
   // ---------- state ----------
   function defCfg(){
@@ -23,26 +25,24 @@
     return c;
   }
   // One channel: a single track (the engine could run more side by side, the app uses one).
-  // loopSet: the plain loop's own strip positions and randomness (used when the selected slot is empty)
-  const newSeed=()=>(Math.random()*4294967296)|0;
-  const newTrack=(i,kind)=>({i,kind,file:null,cols:16,recBuf:null,len16:16,rows:['stutter','random','pitch','center','reverse','env','freeze','crush','delay'],
-    cfg:defCfg(),loopSet:{orderV:1,muteV:0.5,seed:newSeed(),varLen:1},slots:new Array(SCENES).fill(null),edit:0,buf:null,pk:null,lg:{}});
+  // seq: the sequence on the main page (null: the plain loop plays). loopSet: the plain loop's own strips.
+  const newTrack=(i,kind)=>({i,kind,file:null,cols:16,len16:16,rows:['stutter','random','pitch','center','reverse','env','freeze','crush','delay'],
+    cfg:defCfg(),loopSet:{orderV:1,muteV:1},seq:null,buf:null,pk:null});
   const tracks=[newTrack(0,'break')];
-  let view=0,scenes=SCENES;
-  const PREF0={silRnd:'mute',silPat:'mute',grace:40};
+  let view=0;
+  // touchWin: touches play through SKIP. silPat: 'mute' (SKIP) or 'insert' (GAP: the sequence waits).
+  const PREF0={silPat:'mute',grace:40,touchWin:true};
   const prefs=Object.assign({},PREF0,{shown:new Set(ALL_FX)});
-  // Strips: the stored value belongs to the selected clip (or the plain loop). With the pin on, moving a
-  // strip changes the stored value (kept, exported). With it off, the move is live only and the strip
-  // snaps back to the stored value on release.
+  // Strips: the stored value belongs to the sequence (or the plain loop). With the pin on, moving a strip
+  // changes the stored value. With it off, the move is live only and the strip snaps back on release.
   const PIN0={order:true,mute:false};const pin=Object.assign({},PIN0);
   const liveV={order:null,mute:null};
-  const ctxSet=t=>editClip(t)||t.loopSet;
+  const ctxSet=t=>t.seq||t.loopSet;
   const oS=t=>ctxSet(t).orderV, mS=t=>ctxSet(t).muteV;   // stored
   const oV=t=>liveV.order!=null?liveV.order:oS(t), mV=t=>liveV.mute!=null?liveV.mute:mS(t);   // heard
   let bpm=124,swing=0,stepped=true,sessOn=false,playMode='replace',fxOnly=false;
-  const seqName=t=>String(t.edit+1);
-  // song rows: each holds one clip (its slot index) or nothing
-  let song=[{clip:null}];
+  // Takes: every bar played is captured; the ones that add something are kept here, oldest first.
+  let takes=[],takeNum=0,capBn=-9,songPlaying=false;
   let st={playing:false,t:0,len:1,tracks:[],hist:[],song:null,recv:0};
   const ptrs=new Map();let orderCtr=0,tsCtr=0,idCtr=0;
   const SLIM=24;let folded=false;
@@ -50,11 +50,10 @@
   let lanePage=0,laneFollow=true;
   const T=()=>tracks[view];
   const info=i=>(st.tracks&&st.tracks[i])||{};
-  const clipOf=(t,s)=>t.slots[s]||null;
-  const editClip=t=>clipOf(t,t.edit);
+  const barSteps=t=>t.len16*t.cols/16;
 
   // ---------- audio ----------
-  let actx=null,send=null,ready=null,sr=48000,unlocked=false,gotStatus=false,usingFallback=false,workletNode=null,intent=null,gen=0,mediaEl=null,heardHint=false;
+  let actx=null,send=null,ready=null,sr=48000,unlocked=false,gotStatus=false,usingFallback=false,workletNode=null,spKeep=null,intent=null,gen=0,mediaEl=null,heardHint=false;
   const isIOS=/iPhone|iPad|iPod/.test(navigator.userAgent)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
   // A looping, silent media element moves iOS into its playback audio session, so Web Audio is heard
   // even when the phone is in Silent Mode.
@@ -82,7 +81,7 @@
     ensureCtx();mediaUnlock();
     // WebKit only counts some events as a user gesture, so keep trying on each one until audio runs.
     if(actx.state!=='running'){
-      try{const r=actx.resume();if(r&&r.catch)r.catch(()=>{});}catch(_){}
+      try{const r=actx.resume();if(r&&r.then)r.then(()=>tx(prefMsg()),()=>{});if(r&&r.catch)r.catch(()=>{});}catch(_){}
       try{const b=actx.createBuffer(1,1,actx.sampleRate),s=actx.createBufferSource();s.buffer=b;s.connect(actx.destination);s.start(0);}catch(_){}
     }
   }
@@ -91,9 +90,7 @@
   const withTimeout=(p,ms)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),ms))]);
   function onEngine(m){
     if(m.type==='status')onStatus(m);
-    else if(m.type==='clip')storeClip(m.tr,m.clip,m.cap);
-    else if(m.type==='clipStep'){const c=findClip(m.tr,m.id);if(c){c.slots[m.idx]=m.slot;delete tracks[m.tr].lg[m.idx];}}
-    else if(m.type==='overDone'){renderSession();pushSong();}
+    else if(m.type==='bar')onBar(m);
     else if(m.type==='grabbed')onGrabbed(m);
     else if(m.type==='grid'){
       const t=tracks[m.tr],old=t.cols;t.cols=m.n;t.colsQ=0;
@@ -109,7 +106,7 @@
     const myGen=gen,e=new EF.Engine(sr);e.post=m=>{if(myGen===gen)onEngine(m);};
     const sp=actx.createScriptProcessor(2048,0,2);
     sp.onaudioprocess=ev=>{const b=ev.outputBuffer;e.render(b.getChannelData(0),b.getChannelData(1),b.length);};
-    connectOut(sp);window.__keep=sp;send=m=>e.msg(m);
+    connectOut(sp);spKeep=sp;send=m=>e.msg(m);
     syncAll();
     if(st.playing||intent)send({type:'play'});
   }
@@ -187,11 +184,13 @@
     if(t.buf)tx({type:'load',tr:t.i,L:t.buf.L,R:t.buf.R});
     push(t);
   }
-  const prefMsg=()=>({type:'pref',pref:{silRnd:prefs.silRnd,silPat:prefs.silPat,grace:prefs.grace}});
+  // the output latency the device reports (plus the backup engine's large blocks) widens the late-touch window
+  const outLat=()=>actx?Math.round(((actx.outputLatency||0)+(actx.baseLatency||0))*1000+(usingFallback?2048/sr*1000:0)):0;
+  const prefMsg=()=>({type:'pref',pref:{silPat:prefs.silPat,grace:prefs.grace,lat:outLat(),touchWin:prefs.touchWin}});
   // the engine works out every effect value from these settings, so edits reach recorded sequences too
   function sendCfg(t){const c={};for(const k in t.cfg){const x=t.cfg[k];c[k]={cells:x.cells.slice(),lo:Object.assign({},x.lo),hi:Object.assign({},x.hi),x:Object.assign({},x.x),o:Object.assign({},x.o,x.o.mask?{mask:x.o.mask.slice()}:{})};}tx({type:'cfg',tr:t.i,cfg:c});}
   function syncAll(){
-    tx({type:'swing',s:swing});tx({type:'stepped',on:stepped});tx({type:'live',tr:0,ord:null,mute:null});tx({type:'mode',mode:playMode});tx({type:'fxonly',on:fxOnly});tx(prefMsg());tx({type:'view',tr:view});
+    tx({type:'swing',s:swing});tx({type:'stepped',on:stepped});tx({type:'live',tr:0,ord:null,mute:null});if(tracks[0].seq)tx({type:'launch',tr:0,clip:clipForm(tracks[0].seq)});tx({type:'mode',mode:playMode});tx({type:'fxonly',on:fxOnly});tx(prefMsg());tx({type:'view',tr:view});
     tracks.forEach(t=>{fitTrack(t);syncTrack(t);});
     // regenerate at the device rate in the background for best quality
     if(curRate()!==48000)regenAll();
@@ -199,50 +198,25 @@
   const barSec=()=>240/bpm;
 
   // ---------- strips ----------
-  function orderFrom(v){
-    if(v<=0.06)return {mode:'back',r:0};
-    if(v>=0.94)return {mode:'fwd',r:0};
-    if(v<0.5)return {mode:'back',r:(v-0.06)/0.44};
-    return {mode:'fwd',r:(0.94-v)/0.44};
-  }
-  let PATS=null;
-  function patterns(){
-    if(PATS)return PATS;const n=8,out=[];
-    for(let m=0;m<128;m++){
-      const bits=[1];for(let i=1;i<n;i++)bits.push((m>>(n-1-i))&1);
-      const on=[];bits.forEach((b,i)=>{if(b)on.push(i);});
-      const k=on.length,mean=n/k;let ev=0;
-      for(let i=0;i<k;i++){const d=((on[(i+1)%k]-on[i])+n)%n||n;ev+=(d-mean)*(d-mean);}
-      out.push({bits,k,ev,v:-m});
-    }
-    out.sort((a,b)=>b.k-a.k||a.ev-b.ev||a.v-b.v);
-    return PATS=out.map(o=>o.bits);
-  }
-  function muteFrom(v){
-    if(Math.abs(v-0.5)<0.015)return {rnd:0,bits:null};
-    if(v<0.5)return {rnd:(0.5-v)/0.5,bits:null};
-    const P=patterns(),i=Math.round((v-0.5)/0.5*(P.length-1));
-    return {rnd:0,bits:i===0?null:P[i]};
-  }
-  // a clip carries its settings in engine form too, so it plays (and exports) the same anywhere
-  function clipForm(c){const o=orderFrom(c.orderV),m=muteFrom(c.muteV);c.ord={mode:o.mode,r:o.r};c.mute={rnd:m.rnd,bits:m.bits};return c;}
-  function withSettings(c,from){
-    const f=from||{};c.orderV=f.orderV!=null?f.orderV:1;c.muteV=f.muteV!=null?f.muteV:0.5;c.seed=f.seed!=null?f.seed:newSeed();
-    c.varLen=f.varLen!=null?f.varLen:1;c.bg=f.bg||'loop';return clipForm(c);
-  }
-  function sendLoopSet(t){const L=t.loopSet,o=orderFrom(L.orderV),m=muteFrom(L.muteV);
-    tx({type:'order',tr:t.i,mode:o.mode,r:o.r});tx({type:'mute',tr:t.i,rnd:m.rnd,bits:m.bits});tx({type:'rand',tr:t.i,seed:L.seed,varLen:L.varLen});}
-  function sendCtx(t){const c=editClip(t);if(c){clipForm(c);tx({type:'clipEdit',tr:t.i,clip:c});pushSong();}else sendLoopSet(t);}
-  const STRIP_DEF={order:1,mute:0.5};
+  // ORDER and SKIP: each slider position is one fixed pattern (see the engine's orderPattern and
+  // skipPattern); the far right is the default. Values are stored with the sequence, or the plain loop.
+  const ordOf=(t,v)=>({perm:EF.orderPattern(v,barSteps(t))}), muteOf=(t,v)=>({bits:EF.skipPattern(v,barSteps(t))});
+  const tr0=()=>tracks[0];
+  // a sequence carries its patterns in engine form too, so it plays (and exports) the same anywhere
+  function clipForm(c){const t=tr0();c.ord=ordOf(t,c.orderV);c.mute=muteOf(t,c.muteV);return c;}
+  function withSettings(c,from){const f=from||{};c.orderV=f.orderV!=null?f.orderV:1;c.muteV=f.muteV!=null?f.muteV:1;return clipForm(c);}
+  function sendLoopSet(t){const L=t.loopSet;tx({type:'order',tr:t.i,perm:ordOf(t,L.orderV).perm});tx({type:'mute',tr:t.i,bits:muteOf(t,L.muteV).bits});}
+  function sendCtx(t){if(t.seq){clipForm(t.seq);tx({type:'clipEdit',tr:t.i,clip:t.seq});}else sendLoopSet(t);}
+  const STRIP_DEF={order:1,mute:1};
   function setStrip(t,which,v,stored){
-    if(which==='mute'&&Math.abs(v-0.5)<0.015)v=0.5;
-    if(which==='mute')t.lg={};
+    if(v>=EF.DEAD)v=Math.max(v,EF.DEAD);
     if(stored){ctxSet(t)[which+'V']=v;liveV[which]=null;sendCtx(t);tx({type:'live',tr:t.i,[which==='order'?'ord':'mute']:null});return;}
     liveV[which]=v;
-    if(which==='order'){const o=orderFrom(v);tx({type:'live',tr:t.i,ord:{mode:o.mode,r:o.r}});}
-    else{const m=muteFrom(v);tx({type:'live',tr:t.i,mute:{rnd:m.rnd,bits:m.bits}});}
+    tx({type:'live',tr:t.i,[which==='order'?'ord':'mute']:which==='order'?ordOf(t,v):muteOf(t,v)});
   }
-  function endLive(t,which){if(liveV[which]==null)return;liveV[which]=null;if(which==='mute')t.lg={};tx({type:'live',tr:t.i,[which==='order'?'ord':'mute']:null});}
+  function endLive(t,which){if(liveV[which]==null)return;liveV[which]=null;tx({type:'live',tr:t.i,[which==='order'?'ord':'mute']:null});}
+  // pattern number shown on a strip (1…PATN), or 0 in the default zone
+  const patNo=v=>v>=EF.DEAD?0:Math.min(EF.PATN,Math.floor((EF.DEAD-v)/EF.DEAD*EF.PATN)+1);
 
   // ---------- touches ----------
   // Cell values: unipolar cells map bottom→top onto the range; bipolar cells move outward from the
@@ -261,17 +235,9 @@
   // ---------- geometry ----------
   const visRows=t=>t.rows.filter(id=>id==='center'||prefs.shown.has(id));
   function laneInfo(){
-    const t=T(),i=info(view);
-    let clip=editClip(t);
-    if(t.recBuf&&(i.rec==='on'||i.rec==='closing')){
-      // what is being recorded replaces the sequence step by step, as you hear it
-      const base=clip?clip.slots.slice():[];t.recBuf.forEach((s,k)=>{base[k]=s;});
-      clip={id:'__rec',n:clip?clip.n:(i.n||t.cols),cols:t.cols,slots:base,rec:true,recIdx:t.recBuf.length-1,real:clip};
-    }
+    const t=T(),i=info(view),clip=t.seq;
     const n=clip?clip.n:(i.n||t.cols),slots=clip?clip.slots:null;
-    const total=slots?slots.length:n,bars=Math.max(1,Math.ceil(total/n));
-    // sequences are one bar; anything longer pages through the lane
-    return {t,clip,n,slots,bars,rows:1,over:i.recOver&&i.rec==='on',dub:i.recDub&&i.rec==='on'};
+    return {t,clip,n,slots,rows:1};
   }
   function hasCell(t,k){return t.cfg[k].cells.length>0;}
   function computeLayout(){
@@ -293,7 +259,7 @@
   new ResizeObserver(()=>sizeLane()).observe(laneCv);
   laneCv.addEventListener('pointerdown',async e=>{
     e.preventDefault();try{laneCv.setPointerCapture(e.pointerId);}catch(_){}
-    const b=laneCv.getBoundingClientRect(),x=e.clientX-b.left,y=e.clientY-b.top;initAudio();await ready;laneDown(e.pointerId,x,y);
+    const b=laneCv.getBoundingClientRect(),x=e.clientX-b.left,y=e.clientY-b.top;initAudio();laneDown(e.pointerId,x,y);
   });
   // A step switches off or on when it is released. While a step is held, tapping a cell assigns that
   // cell (and the finger's position in it) to the step. Several steps can be held at once (for Trash).
@@ -301,7 +267,7 @@
   const laneUp=e=>{
     const h=laneHolds.get(e.pointerId);if(!h)return;laneHolds.delete(e.pointerId);
     if(laneHold===h)laneHold=[...laneHolds.values()].pop()||null;
-    if(!h.used&&e.type==='pointerup'){const s=h.clip.slots[h.idx];if(s){checkpoint();s.on=!(s.on!==false);delete h.t.lg[h.idx];tx({type:'clipEdit',tr:h.t.i,clip:h.clip});pushSong();renderSession();}}
+    if(!h.used&&e.type==='pointerup'){const s=h.clip.slots[h.idx];if(s){checkpoint();s.on=!(s.on!==false);seqEdited(h.t);}}
   };
   ['pointerup','pointercancel','lostpointercapture'].forEach(ev=>laneCv.addEventListener(ev,laneUp));
   function resize(){
@@ -358,16 +324,22 @@
     const [x,y]=pos(e),h=hit(x,y),t=T();
     initAudio();
     if(h.strip){
-      if(h.snapBox){pin[h.strip]=!pin[h.strip];return;}
+      if(h.snapBox){
+        pin[h.strip]=!pin[h.strip];
+        // unpinning SKIP puts its stored pattern back to the default
+        if(h.strip==='mute'&&!pin.mute&&mS(t)<EF.DEAD){checkpoint();setStrip(t,'mute',STRIP_DEF.mute,true);}
+        return;
+      }
       // double-tap a strip to put its stored value back to the default
       const now=performance.now(),dbl=lastStrip.which===h.strip&&now-lastStrip.t<320;lastStrip={which:h.strip,t:dbl?0:now};
       const keep=dbl||pin[h.strip];if(keep)checkpoint();
-      special.set(e.pointerId,{kind:'strip',which:h.strip,held:dbl,keep});await ready;
-      setStrip(t,h.strip,dbl?STRIP_DEF[h.strip]:clamp(x/SW(),0,1),keep);return;
+      const v=dbl?STRIP_DEF[h.strip]:clamp(x/SW(),0,1);
+      special.set(e.pointerId,{kind:'strip',which:h.strip,held:dbl,keep,x,v});await ready;
+      setStrip(t,h.strip,v,keep);return;
     }
     if(h.unfold){setFold(false);return;}
     if(h.handle){special.set(e.pointerId,{kind:'handle',id:h.id,y0:y,y,moved:false});return;}
-    if(laneHold&&h.cell&&!laneHold.clip.rec){special.set(e.pointerId,{kind:'assign'});assignStep(h);return;}
+    if(laneHold&&h.cell){special.set(e.pointerId,{kind:'assign'});assignStep(h);return;}
     const ptr={x,y,tr:view,col:-1,fx:null,raw:0,ri:-1,order:-1,ts:0,hid:null,live:false};ptrs.set(e.pointerId,ptr);
     checkBlocked();await ready;
     if(ptrs.get(e.pointerId)===ptr){ptr.live=true;update(ptr);}else ensurePlaying();
@@ -375,7 +347,11 @@
   canvas.addEventListener('pointermove',e=>{
     const [x,y]=pos(e),sp=special.get(e.pointerId);
     if(sp){
-      if(sp.kind==='strip'){if(!sp.held)setStrip(T(),sp.which,clamp(x/SW(),0,1),sp.keep);}
+      // Fine control: the further the finger moves above or below its strip, the slower the value moves
+      // (down to a tenth), so every one of the patterns can be reached.
+      if(sp.kind==='strip'){if(!sp.held){
+        const cy=(sp.which==='order'?yOrder():yMute())+STRIP/2,off=Math.max(0,Math.abs(y-cy)-STRIP*0.75),rate=1/(1+Math.min(9,off/22));
+        sp.v=clamp(sp.v+(x-sp.x)/SW()*rate,0,1);sp.x=x;sp.fine=rate<0.99?rate:0;setStrip(T(),sp.which,sp.v,sp.keep);}}
       else if(sp.kind==='handle'){if(Math.abs(y-sp.y0)>8)sp.moved=true;sp.y=y;}
       else if(sp.kind==='assign'){const h=hit(x,y);if(h.cell&&laneHold)assignStep(h);}
       return;
@@ -408,22 +384,23 @@
     const L=laneInfo(),i=info(view),per=L.n*L.rows;
     const total=L.slots?L.slots.length:L.n;
     const pages=Math.max(1,Math.ceil(total/per));
-    const playIdx=L.clip&&L.clip.rec?L.clip.recIdx:(L.clip&&i.clipId===L.clip.id?i.cIdx:-1);
+    const playIdx=L.clip&&i.clipId===L.clip.id?i.cIdx:-1;
     const page=laneFollow&&playIdx>=0?Math.floor(playIdx/per):Math.min(lanePage,pages-1);
     return Object.assign(L,{per,pages,page,playIdx});
   }
   let laneHold=null;
   function laneDown(id,x,y){
-    const d=lanePageInfo();
+    let d=lanePageInfo();
     if(x<LLAB){if(d.pages>1){laneFollow=false;lanePage=(d.page+1)%d.pages;}return;}
     const row=Math.min(d.rows-1,Math.floor((y-4)/LROW)),col=Math.floor((x-LLAB)/(LW-LLAB)*d.n);
     const idx=d.page*d.per+row*d.n+col;
     if(col<0||col>=d.n)return;
-    if(d.clip&&(d.clip.rec||d.over))return;
-    // a held Trash clears tapped steps; a held die randomizes them
+    // a held Trash empties tapped steps; a held die randomizes them
     if(trashHeld){trashHeld.used=true;clearSteps(d.t,[idx]);return;}
     if(diceHeld){diceStep(idx);return;}
-    if(!d.clip||idx>=d.slots.length)return;
+    // on the plain loop, touching a step starts a sequence of empty steps (the loop plays through them)
+    if(!d.clip){checkpoint();loadSeq(d.t,blankClip(d.t));d=lanePageInfo();}
+    if(idx>=d.slots.length)return;
     const h={id,idx,clip:d.clip,t:d.t,used:false};laneHolds.set(id,h);laneHold=h;
     // a cell already held on the grid is pasted straight into the step
     let finger=null;for(const p of ptrs.values())if(p.live&&p.fx&&p.tr===view&&(!finger||p.ts>finger.ts))finger=p;
@@ -432,18 +409,19 @@
   function assignStep(h){
     const L=laneHold;if(!L)return;const t=L.t;if(!L.used)checkpoint();L.used=true;
     L.clip.slots[L.idx]={on:true,a:h.col*16/t.cols,off:0,sid:L.sid||(L.sid='P'+(++idCtr)),slen:1,fx:h.fx==='dry'?[]:[{k:h.fx,raw:h.raw}]};
-    delete t.lg[L.idx];tx({type:'clipEdit',tr:t.i,clip:L.clip});pushSong();renderSession();
+    seqEdited(t);
   }
 
   // ---------- transport ----------
   async function togglePlay(){
     initAudio();checkBlocked();await ready;
-    if(st.playing||intent){intent=null;tx({type:'stop'});songPlaying=false;pendSong=-1;paintIcons();updateSession();}
+    if(st.playing||intent){intent=null;tx({type:'stop'});songPlaying=false;capBn=-9;paintIcons();updateSession();}
     else{intent={type:'play'};tx(intent);paintIcons();}
   }
   playBtn.addEventListener('click',togglePlay);
   window.addEventListener('keydown',e=>{
-    if(e.code==='Space'&&!/INPUT|SELECT|BUTTON/.test(document.activeElement.tagName)&&sheet.hidden){e.preventDefault();togglePlay();}
+    const a=root.activeElement||document.activeElement;
+    if(e.code==='Space'&&!(a&&/INPUT|SELECT|BUTTON/.test(a.tagName))&&sheet.hidden){e.preventDefault();togglePlay();}
   });
   function dragNumber(el,get,set,stepPx,fmt){
     let y0=0,x0=0,v0=0,id=null;
@@ -459,24 +437,12 @@
   dragNumber(bpmEl,()=>bpm,v=>{const nb=clamp(Math.round(v),60,200);if(nb!==bpm){bpm=nb;clearTimeout(bpmTimer);bpmTimer=setTimeout(regenAll,350);}},4,v=>String(v));
   dragNumber(swingEl,()=>Math.round(swing*100),v=>{swing=clamp(Math.round(v),0,50)/100;tx({type:'swing',s:swing});},4,v=>v+'%');
   const press=(b,on)=>b.setAttribute('aria-pressed',on?'true':'false');
-  recBtn.addEventListener('click',async()=>{
-    initAudio();checkBlocked();await ready;
-    const i=info(view),t=T(),ex=editClip(t);
-    if(i.rec==='on'||i.rec==='waiting')tx({type:'rec',tr:view,on:false});
-    else if(!i.rec){
-      // an existing sequence is recorded over in place and keeps its length; an empty slot records a new one
-      checkpoint();
-      if(ex)tx({type:'rec',tr:view,on:true,id:ex.id,over:clipForm(ex)});
-      else tx({type:'rec',tr:view,on:true,id:'t'+view+'s'+t.edit+'_'+(++idCtr)});
-    }
-  });
   // Replace: each step plays one touch's effect. Combine: every held effect stacks on each step.
   modeBtn.addEventListener('click',()=>{playMode=playMode==='replace'?'combine':'replace';tx({type:'mode',mode:playMode});paintIcons();});
-  // FX only: the sequence (or loop) keeps its slices and touches only bring effects; recording over a
-  // sequence then changes only the effects of the steps that were touched.
+  // FX only: the sequence (or loop) keeps its slices and touches only bring effects.
   fxoBtn.addEventListener('click',()=>{fxOnly=!fxOnly;tx({type:'fxonly',on:fxOnly});paintIcons();});
-  // Trash: a tap (on release) clears the whole sequence. Hold it and tap steps, or hold steps and tap it,
-  // to clear just those steps; then releasing it clears nothing more.
+  // Trash: a tap (on release) clears the sequence, so the plain loop plays. Hold it and tap steps, or hold
+  // steps and tap it, to empty just those steps; then releasing it clears nothing more.
   let trashHeld=null;
   clearBtn.addEventListener('pointerdown',e=>{
     if(clearBtn.disabled)return;trashHeld={id:e.pointerId,used:false};clearBtn.classList.add('held');
@@ -488,34 +454,40 @@
   ['pointerup','pointercancel','lostpointercapture'].forEach(ev=>clearBtn.addEventListener(ev,trashUp));
   clearBtn.addEventListener('click',e=>{if(e.detail===0)clearSequence(T());}); // keyboard
   function clearSequence(t){
-    const c=editClip(t),f=info(t.i);if(!c)return;checkpoint();
-    if(f.rec&&f.recId===c.id)tx({type:'rec',tr:t.i,on:false});
-    if(f.clipId===c.id||f.clipQ===c.id)tx({type:'launch',tr:t.i,clip:null});
-    t.slots[t.edit]=null;t.lg={};t.recBuf=null;computeLayout();renderSession();pushSong();
+    if(!t.seq)return;checkpoint();loadSeq(t,null);
   }
-  // a cleared step becomes empty: it plays the clip's background (the loop's own slice there, or silence)
+  // an emptied step plays the loop's own slice for its position
   function clearSteps(t,idxs){
-    const c=editClip(t);if(!c)return;checkpoint();
-    for(const i of idxs){if(i>=c.slots.length)continue;c.slots[i]=EF.emptyStep(++idCtr);delete t.lg[i];}
-    tx({type:'clipEdit',tr:t.i,clip:c});pushSong();renderSession();
+    const c=t.seq;if(!c)return;checkpoint();
+    for(const i of idxs){if(i>=c.slots.length)continue;c.slots[i]=EF.emptyStep(++idCtr);}
+    seqEdited(t);
   }
+  // The main page's sequence: load one (a take, a blank, or null for the plain loop), or note an edit.
+  function loadSeq(t,c){
+    t.seq=c;liveV.order=liveV.mute=null;laneFollow=true;
+    if(songPlaying){songPlaying=false;tx({type:'songStop'});}
+    if(c)clipForm(c);
+    initAudio();ready.then(()=>{tx({type:'live',tr:t.i,ord:null,mute:null});tx({type:'launch',tr:t.i,clip:c});});
+    computeLayout();updateSession();
+  }
+  function seqEdited(t){if(t.seq){t.seq.edited=true;tx({type:'clipEdit',tr:t.i,clip:clipForm(t.seq)});}}
   steppedBtn.addEventListener('click',()=>{stepped=!stepped;paintIcons();tx({type:'stepped',on:stepped});});
-  // Changing a track's grid deletes its sequences (they were made on the other grid), so it asks first.
-  // Changing a track's grid or bar length deletes its sequences; both changes land on the track's next bar.
+  // Changing the grid or bar length clears the sequence and the takes (they were made on the other grid),
+  // so it asks first. The change lands on the next bar.
   function setShape(t,nc,nl){
-    const f=info(t.i);if(f.rec)tx({type:'rec',tr:t.i,on:false});checkpoint();
-    song.forEach(r=>{r.clip=null;});songPlaying=false;pendSong=-1;tx({type:'songStop'});
-    t.slots=t.slots.map(()=>null);t.lg={};t.recBuf=null;tx({type:'launch',tr:t.i,clip:null});
+    checkpoint();songPlaying=false;tx({type:'songStop'});
+    takes=[];t.seq=null;liveV.order=liveV.mute=null;tx({type:'launch',tr:t.i,clip:null});
     t.len16=nl;
     if(nc!==(t.colsQ||t.cols)){if(st.playing){t.colsQ=nc;tx({type:'grid',tr:t.i,n:nc,q:true});}else{t.cols=nc;tx({type:'grid',tr:t.i,n:nc});}}
     tx({type:'range',tr:t.i,s16:0,e16:nl,q:st.playing});
-    computeLayout();renderSession();pushSong();
+    sendLoopSet(t);computeLayout();renderSession();
   }
-  // a blank clip is all empty steps, so it plays the loop straight through until steps are written
-  function blankClip(t,slot){
+  // a blank sequence is all empty steps, so it plays the loop straight through until steps are written;
+  // it takes over the plain loop's ORDER and SKIP
+  function blankClip(t){
     const cols=t.colsQ||t.cols,n=t.len16*cols/16,slots=[];
     for(let i=0;i<n;i++)slots.push(EF.emptyStep(++idCtr));
-    return withSettings({id:'t'+t.i+'s'+slot+'_b'+(++idCtr),cols,n,slots,tr:t.i,scene:slot},t.loopSet);
+    return withSettings({id:'q'+(++idCtr),cols,n,slots},t.loopSet);
   }
   soundSel.addEventListener('change',()=>{
     const v=soundSel.value,t=T();
@@ -528,7 +500,8 @@
       const ab=await actx.decodeAudioData(await f.arrayBuffer());
       const max=Math.min(ab.length,Math.round(ab.sampleRate*4));
       const l=ab.getChannelData(0).slice(0,max),r=(ab.numberOfChannels>1?ab.getChannelData(1):ab.getChannelData(0)).slice(0,max);
-      t.file={L:l,R:r};t.kind='file';   // kept at its own level: untouched audio plays and exports at unityLOOP_NAMES.file=f.name.replace(/\.[^.]+$/,'').slice(0,18);
+      t.file={L:l,R:r};t.kind='file';   // kept at its own level: untouched audio plays and exports at unity
+      LOOP_NAMES.file=f.name.replace(/\.[^.]+$/,'').slice(0,18);
       let opt=soundSel.querySelector('option[value="file"]');
       if(!opt){opt=document.createElement('option');opt.value='file';soundSel.appendChild(opt);}
       opt.textContent=LOOP_NAMES.file;soundSel.value='file';genTrack(t);
@@ -544,7 +517,11 @@
     rec:svg('<circle cx="10" cy="10" r="5.5" stroke="none"/>'),
     stepOn:svg('<path d="M2 15H6V9H10V12H14V5H18"/>'),
     stepOff:svg('<path d="M2 15C4.5 15 4.5 9 7 9S9.5 12 12 12S13.5 5 18 5"/>'),
-    dice:svg('<rect x="3.5" y="3.5" width="13" height="13" rx="3"/><circle cx="7" cy="7" r="1" fill="currentColor"/><circle cx="13" cy="13" r="1" fill="currentColor"/><circle cx="10" cy="10" r="1" fill="currentColor"/><circle cx="13" cy="7" r="1" fill="currentColor"/><circle cx="7" cy="13" r="1" fill="currentColor"/>'),
+    // just the pips: the die's own outline is its edge
+    dice:'<svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><circle cx="5.2" cy="5.2" r="2"/><circle cx="14.8" cy="14.8" r="2"/><circle cx="10" cy="10" r="2"/><circle cx="14.8" cy="5.2" r="2"/><circle cx="5.2" cy="14.8" r="2"/></svg>',
+    list:svg('<path d="M3 5H17M3 10H17M3 15H17"/>'),
+    handle:svg('<path d="M6 5H14M6 10H14M6 15H14"/>'),
+    check:svg('<path d="M4.5 10.5L8.5 14.5L15.5 6"/>'),
     lines:svg('<path d="M3 5H8.5M3 10H8.5M3 15H8.5M11.5 5H17M11.5 10H17M11.5 15H17"/>'),
     grid:svg('<circle cx="3.5" cy="3.5" r="1.25" fill="currentColor" stroke="none"/><circle cx="7.83" cy="3.5" r="1.25" fill="currentColor" stroke="none"/><circle cx="12.16" cy="3.5" r="1.25" fill="currentColor" stroke="none"/><circle cx="16.49" cy="3.5" r="1.25" fill="currentColor" stroke="none"/><circle cx="3.5" cy="7.83" r="1.25" fill="currentColor" stroke="none"/><circle cx="7.83" cy="7.83" r="1.25" fill="currentColor" stroke="none"/><circle cx="12.16" cy="7.83" r="1.25" fill="currentColor" stroke="none"/><circle cx="16.49" cy="7.83" r="1.25" fill="currentColor" stroke="none"/><circle cx="3.5" cy="12.16" r="1.25" fill="currentColor" stroke="none"/><circle cx="7.83" cy="12.16" r="1.25" fill="currentColor" stroke="none"/><circle cx="12.16" cy="12.16" r="1.25" fill="currentColor" stroke="none"/><circle cx="16.49" cy="12.16" r="1.25" fill="currentColor" stroke="none"/><circle cx="3.5" cy="16.49" r="1.25" fill="currentColor" stroke="none"/><circle cx="7.83" cy="16.49" r="1.25" fill="currentColor" stroke="none"/><circle cx="12.16" cy="16.49" r="1.25" fill="currentColor" stroke="none"/><circle cx="16.49" cy="16.49" r="1.25" fill="currentColor" stroke="none"/>'),
     gear:svg('<circle cx="10" cy="10" r="2.6"/><path d="M10 2.5v2.2M10 15.3v2.2M2.5 10h2.2M15.3 10h2.2M4.7 4.7l1.6 1.6M13.7 13.7l1.6 1.6M4.7 15.3l1.6-1.6M13.7 6.3l1.6-1.6"/><circle cx="10" cy="10" r="5.4"/>'),
@@ -558,13 +535,14 @@
   };
   function paintIcons(){
     playBtn.innerHTML=st.playing||intent?ICON.stop:ICON.play;playBtn.setAttribute('aria-label',st.playing||intent?'Stop':'Play');
-    recBtn.innerHTML=ICON.rec;expBtn.innerHTML=ICON.share;clearBtn.innerHTML=ICON.trash;
-    const cmb=playMode==='combine';modeBtn.textContent=cmb?'Combine':'Replace';press(modeBtn,cmb);
+    expBtn.innerHTML=ICON.share;clearBtn.innerHTML=ICON.trash;
+    const cmb=playMode==='combine';modeBtn.textContent=cmb?'COMBINE':'REPLACE';press(modeBtn,cmb);
     modeBtn.title=cmb?'Combine: every held effect plays on each step':'Replace: each step plays one touch and its effect';
     press(fxoBtn,fxOnly);fxoBtn.title=fxOnly?'FX only: slices come from the sequence or loop; touches only bring effects':'FX only is off: touched slices play';
     steppedBtn.innerHTML=stepped?ICON.stepOn:ICON.stepOff;steppedBtn.setAttribute('aria-label',stepped?'Stepped values (on)':'Stepped values (off)');
     prefsBtn.innerHTML=ICON.gear;$('undo').innerHTML=ICON.undo;$('redo').innerHTML=ICON.redo;
-    sessBtn.innerHTML=sessOn?ICON.grid:ICON.lines;sessBtn.setAttribute('aria-label',sessOn?'Effects view':'Clips and song');sessBtn.title=sessOn?'Effects view':'Clips and song';
+    sessBtn.innerHTML=(sessOn?ICON.grid:ICON.list)+'<b>'+(takes.length||'')+'</b>';sessBtn.setAttribute('aria-label',sessOn?'Effects view':'Takes ('+takes.length+')');
+    sessBtn.title=sessOn?'Back to the effects':'Takes: every bar you play that adds something is kept here';
   }
 
   // ---------- randomizer ----------
@@ -572,19 +550,21 @@
   // its current state; you hear it while dragging, and letting go keeps it and rolls the die home.
   // Hold the die and tap steps to re-roll just those steps (at the die's amount; 100% from its rest spot).
   // Every step gets its own fixed random numbers for the gesture, so more amount only ever adds change.
+  // Rolls follow the play mode: Replace gives a step one effect, Combine stacks effects, FX ONLY leaves
+  // the slices where they are.
   function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
-  const cloneClip=c=>Object.assign({},c,{ord:c.ord&&Object.assign({},c.ord),mute:c.mute&&Object.assign({},c.mute),slots:c.slots.map(s=>Object.assign({},s,{fx:(s.fx||[]).map(f=>Object.assign({},f,f.auto?{auto:f.auto.slice()}:{}))}))});
+  const copySlot=s=>Object.assign({},s,{fx:(s.fx||[]).map(f=>Object.assign({},f,f.auto?{auto:f.auto.slice()}:{}))});
+  const cloneClip=c=>Object.assign({},c,{ord:c.ord&&Object.assign({},c.ord),mute:c.mute&&Object.assign({},c.mute),slots:c.slots.map(copySlot)});
   const fxBip=(t,k)=>k==='filter'||cellBip(t,k);
   const dicePool=t=>ALL_FX.filter(k=>prefs.shown.has(k)&&(hasCell(t,k)||k==='reverse')).concat('filter');
   function rollStep(orig,a,R,t,clip,idx){
-    const n=clip.n,step=16/clip.cols;
+    const n=clip.n,step=16/clip.cols,combine=playMode==='combine';
     const uAff=R(),uSl=R(),uSlD=R(),uAdd=R(),uAddK=R(),uAddR=R(),uAddS=R(),dev=[R(),R(),R(),R()],rem=[R(),R(),R(),R()];
-    const copy=x=>Object.assign({},x,{fx:(x.fx||[]).map(f=>Object.assign({},f,f.auto?{auto:f.auto.slice()}:{}))});
-    if(uAff>=a)return copy(orig);                          // chance a step is touched at all: a
-    // an empty step is rolled as its background slice; if nothing ends up changing it stays empty
+    if(uAff>=a)return copySlot(orig);                      // chance a step is touched at all: a
+    // an empty step is rolled as its loop slice; if nothing ends up changing it stays empty
     const s=orig.empty?{on:orig.on!==false,a:(idx%n)*step,off:0,sid:'D'+(++idCtr),slen:1,fx:[]}:orig;
-    const y=copy(s);let moved=false;
-    if(uSl<a){                                             // chance its slice moves: a (so a² overall), up to ±a·bar away
+    const y=copySlot(s);let moved=false;
+    if(!fxOnly&&uSl<a){                                    // chance its slice moves: a (so a² overall), up to ±a·bar away
       const cur=Math.round(s.a/step),d=Math.round((uSlD*2-1)*a*n)||(uSlD<0.5?-1:1);
       y.a=((((cur+d)%n)+n)%n)*step;moved=y.a!==s.a;
     }
@@ -593,12 +573,13 @@
       const lo=fxBip(t,f.k)?-1:0,nr=clamp(f.raw+(dev[j%4]*2-1)*a,lo,1),dd=nr-f.raw;f.raw=nr;
       if(f.auto)f.auto=f.auto.map(v=>clamp(v+dd,lo,1));
     });
-    if(uAdd<a*0.5){                                        // an effect added: a/2
+    if(uAdd<a*0.5){                                        // an effect added (Combine) or swapped in (Replace): a/2
       const pool=dicePool(t).filter(k=>!y.fx.some(f=>f.k===k));
-      if(pool.length){const k=pool[Math.min(pool.length-1,Math.floor(uAddK*pool.length))];
-        y.fx.push({k,raw:fxBip(t,k)?(uAddS<0.5?-1:1)*(0.15+0.85*uAddR):uAddR});}
+      if(pool.length){const k=pool[Math.min(pool.length-1,Math.floor(uAddK*pool.length))],f={k,raw:fxBip(t,k)?(uAddS<0.5?-1:1)*(0.15+0.85*uAddR):uAddR};
+        if(combine)y.fx.push(f);else y.fx=[f];}
     }
-    if(orig.empty&&!moved&&!y.fx.length)return copy(orig);
+    if(!combine&&y.fx.length>1)y.fx=y.fx.slice(-1);        // Replace: a rolled step plays one effect
+    if(orig.empty&&!moved&&!y.fx.length)return copySlot(orig);
     if(moved){y.sid='D'+(++idCtr);y.off=0;y.slen=1;}
     return y;
   }
@@ -614,14 +595,13 @@
     diceEl.setAttribute('aria-valuenow',String(Math.round(a*100)));
   }
   function diceBase(h){
-    if(!h.base){const c=clipOf(h.t,h.slot);h.isNew=!c;h.base=c?cloneClip(c):blankClip(h.t,h.slot);}
+    if(!h.base)h.base=h.t.seq?cloneClip(h.t.seq):blankClip(h.t);
     return h.base;
   }
   function storeDice(h,c){
-    const t=h.t,f=info(t.i);if(!h.cp){h.cp=true;checkpoint();}t.slots[h.slot]=c;t.lg={};laneFollow=true;
-    if(!h.launched&&f.clipId!==c.id&&f.clipQ!==c.id){h.launched=true;ready.then(()=>tx({type:'launch',tr:t.i,clip:c}));}
-    else tx({type:'clipEdit',tr:t.i,clip:c});
-    computeLayout();renderSession();pushSong();
+    const t=h.t;if(!h.cp){h.cp=true;checkpoint();}c.edited=true;
+    if(t.seq&&t.seq.id===c.id){t.seq=c;tx({type:'clipEdit',tr:t.i,clip:clipForm(c)});}
+    else loadSeq(t,c);
   }
   function diceAll(h){
     const base=diceBase(h),out=cloneClip(base);
@@ -637,8 +617,7 @@
   diceEl.addEventListener('pointerdown',e=>{
     e.preventDefault();initAudio();try{diceEl.setPointerCapture(e.pointerId);}catch(_){}
     const t=T(),b=diceEl.getBoundingClientRect();
-    diceHeld={id:e.pointerId,x0:e.clientX,a:diceAmt(e),rest:e.clientX-b.left<DIE+6,moved:false,used:false,t,slot:t.edit,base:null,
-      seed:(Math.random()*4294967296)>>>0,launched:false};
+    diceHeld={id:e.pointerId,x0:e.clientX,a:diceAmt(e),rest:e.clientX-b.left<DIE+6,moved:false,used:false,t,base:null,seed:(Math.random()*4294967296)>>>0};
     diceEl.classList.add('held');dicePos(diceHeld.a,false);
   });
   diceEl.addEventListener('pointermove',e=>{
@@ -654,177 +633,156 @@
   };
   ['pointerup','pointercancel','lostpointercapture'].forEach(ev=>diceEl.addEventListener(ev,diceUp));
   diceEl.addEventListener('keydown',e=>{if(e.key!=='Enter'&&e.key!==' ')return;e.preventDefault();initAudio();
-    const t=T();ready.then(()=>diceAll({a:0.5,t,slot:t.edit,seed:(Math.random()*4294967296)>>>0}));});
+    const t=T();ready.then(()=>diceAll({a:0.5,t,seed:(Math.random()*4294967296)>>>0}));});
 
-  // ---------- clips, session and song ----------
-  function storeClip(tr,clip){
-    const m=/^t(\d+)s(\d+)_/.exec(clip.id);const t=tracks[tr],s=m?+m[2]:t.edit;t.recBuf=null;
-    while(t.slots.length<=s)tracks.forEach(x=>x.slots.push(null));scenes=Math.max(scenes,t.slots.length);
-    if(clip.orderV==null){withSettings(clip,t.loopSet);tx({type:'clipEdit',tr,clip});}
-    clip.tr=tr;clip.scene=s;t.slots[s]=clip;t.lg={};laneFollow=true;computeLayout();renderSession();pushSong();
+  // ---------- takes ----------
+  // Capture: the engine hands over every whole bar it played, as heard (ORDER, SKIP and random slices
+  // already written into its steps). A bar is kept as a take when it adds something: not the plain loop,
+  // and not an untouched replay of a take already kept. Playing the same thing again straight after
+  // counts as a repeat of that take (×2, ×3…); only bars you touched add repeats, so a sequence left
+  // looping doesn't run the count up. Repeats can also be set by hand, and takes dragged into any order.
+  const fxKey=f=>f.k+(f.auto?f.auto.map(x=>x.toFixed(3)).join('/'):(+f.raw).toFixed(3));
+  const barKey=slots=>slots.map(s=>(s.on===false?0:1)+':'+(+s.a).toFixed(3)+':'+(s.off||0)+':'+(+(s.slen||1)).toFixed(3)+':'+(s.fx||[]).map(fxKey).join(',')).join('|');
+  const plainKey=t=>{const n=barSteps(t),out=[];for(let i=0;i<n;i++)out.push({on:true,a:i*16/t.cols,off:0,slen:1,fx:[]});return barKey(out);};
+  let backPos=-1;   // where "◀ Take" has stepped back to (-1: start from the newest take)
+  function onBar(m){
+    const t=tracks[m.tr];if(!t||m.n!==barSteps(t))return;
+    const k=barKey(m.slots);
+    if(k===plainKey(t))return;
+    const last=takes[takes.length-1];
+    if(last&&last.key===k&&capBn===m.bn-1){capBn=m.bn;if(m.touched){last.reps=Math.min(64,last.reps+1);takesChanged(false);}return;}
+    if(!m.touched&&takes.some(x=>x.key===k))return;
+    takes.push({id:'k'+(++idCtr),num:++takeNum,n:m.n,cols:m.cols,slots:m.slots,reps:1,key:k,sel:false});
+    capBn=m.bn;backPos=-1;takesChanged(true);
   }
-  function findClip(tr,id){const t=tracks[tr];return t.slots.find(c=>c&&c.id===id)||null;}
-  const clipBars=c=>c?Math.max(1,Math.ceil(c.slots.length/(c.n||c.cols))):1;
-  const cycleBars=c=>clipBars(c)*(c&&c.varLen>0?c.varLen:1);
-  let pendSong=-1;
-  function launchSlot(s){
-    const t=T(),c=clipOf(t,s);t.edit=s;t.lg={};laneFollow=true;
-    initAudio();ready.then(()=>tx({type:'launch',tr:t.i,clip:c&&clipForm(c)}));
-    if(songPlaying){songPlaying=false;pendSong=-1;}
-    computeLayout();updateSession();
+  function takesChanged(added){
+    paintIcons();if(added){sessBtn.classList.remove('flash');void sessBtn.offsetWidth;sessBtn.classList.add('flash');}
+    if(!sessOn)return;
+    const atEnd=sessScroll.scrollTop+sessScroll.clientHeight>=sessScroll.scrollHeight-60;
+    renderSession();if(added&&atEnd)sessScroll.scrollTop=sessScroll.scrollHeight;
+    pushSongRows();
   }
+  const takeClip=k=>({id:k.id,cols:k.cols,n:k.n,slots:k.slots,ord:{perm:null},mute:{bits:null}});
+  // looping a take puts a copy of it on the main page: edit it, play over it, and new takes follow
+  function loopTake(k,keepBack){
+    checkpoint();if(!keepBack)backPos=takes.indexOf(k);
+    loadSeq(T(),withSettings({id:'q'+(++idCtr),cols:k.cols,n:k.n,slots:k.slots.map(copySlot),src:k.id,num:k.num},null));
+  }
+  $('lasttake').addEventListener('click',()=>{
+    if(!takes.length)return;const t=T();
+    const cur=t.seq&&t.seq.src?takes.findIndex(k=>k.id===t.seq.src):-1;
+    // the first tap loops the newest take; each further tap the one before (an edited copy reloads first)
+    if(backPos<0||backPos>=takes.length)backPos=takes.length-1;
+    else if(cur===backPos&&!t.seq.edited)backPos=Math.max(0,backPos-1);
+    loopTake(takes[backPos],true);
+  });
+  const songRows=()=>takes.map(k=>({bars:k.reps,clips:[takeClip(k)]}));
+  function pushSongRows(){if(songPlaying)tx({type:'songRows',rows:songRows()});}
+  function playAll(from){
+    if(!takes.length)return;checkpoint();const t=T();t.seq=null;liveV.order=liveV.mute=null;songPlaying=true;
+    initAudio();ready.then(()=>{tx({type:'live',tr:t.i,ord:null,mute:null});tx({type:'song',rows:songRows(),from});});
+    computeLayout();renderSession();
+  }
+  function stopAll(){songPlaying=false;tx({type:'songStop'});renderSession();}
   function drawThumb(cv,clip,hue){
     const w=cv.clientWidth||70,h=cv.clientHeight||44,d=Math.min(2,window.devicePixelRatio||1);
     cv.width=Math.round(w*d);cv.height=Math.round(h*d);const x=cv.getContext('2d');x.scale(d,d);
     x.fillStyle=`hsl(${hue} 30% 14%)`;x.fillRect(0,0,w,h);
     if(!clip)return;
     const S=clip.slots,L=S.length,bw=w/L,top=6,hh=h-top-4;
-    for(let b=1;b<Math.ceil(L/clip.n);b++){x.fillStyle='rgba(255,255,255,.08)';x.fillRect(b*clip.n*bw,top,1,hh);}
     S.forEach((s,i)=>{
       const k=s.fx&&s.fx.length?s.fx[0].k:null,fh=k?(tracks[0].cfg[k]||{}).hue:null;
       const a=s.empty?(i%clip.n)*16/clip.cols:s.a;
-      x.globalAlpha=s.on===false||(s.empty&&clip.bg==='silence')?0.18:s.empty?0.35:1;
+      x.globalAlpha=s.on===false?0.18:s.empty?0.35:1;
       x.fillStyle=fh!=null?`hsl(${fh} 75% 60%)`:`hsl(${hue} 60% 70%)`;
       const y=top+(1-(a+0.5)/16)*hh;x.fillRect(i*bw+0.5,y-1.5,Math.max(1,bw-1.5),3);
     });
     x.globalAlpha=1;
   }
-  let songPlaying=false,sessBusy=0,sessDirty=false;
+  let sessBusy=0,sessDirty=false,clearArm=0;
+  const busy=on=>{sessBusy+=on?1:-1;if(sessBusy<0)sessBusy=0;if(!sessBusy&&sessDirty){sessDirty=false;renderSession();}};
+  function paintTakesHead(){
+    takesHead.textContent='';const nSel=takes.filter(k=>k.sel).length;
+    takesHead.appendChild(el('h2',{textContent:'Takes'+(takes.length?' · '+takes.length:'')}));
+    const pa=el('button',{type:'button',title:'Play every take in order, with its repeats'});pa.disabled=!takes.length;
+    pa.innerHTML=(songPlaying?ICON.stop:ICON.play)+'<span>'+(songPlaying?'Stop':'Play all')+'</span>';press(pa,songPlaying);
+    pa.addEventListener('click',()=>{if(songPlaying)stopAll();else playAll(0);});
+    takesHead.appendChild(pa);
+    if(nSel){const cs=el('button',{type:'button',textContent:nSel+' selected ×',title:'Clear the selection'});cs.addEventListener('click',()=>{takes.forEach(k=>{k.sel=false;});renderSession();});takesHead.appendChild(cs);}
+    const clr=el('button',{type:'button',className:'danger',textContent:clearArm?'Tap to clear all':'Clear',title:'Delete every take'});clr.disabled=!takes.length;
+    clr.addEventListener('click',()=>{
+      if(!clearArm){clearArm=setTimeout(()=>{clearArm=0;paintTakesHead();},2500);paintTakesHead();return;}
+      clearTimeout(clearArm);clearArm=0;checkpoint();if(songPlaying)stopAll();takes=[];backPos=-1;renderSession();paintIcons();
+    });
+    takesHead.appendChild(clr);
+  }
+  function takeRow(k,i){
+    const row=el('div',{className:'take'});row.dataset.i=i;
+    const hdl=el('div',{className:'hdl',title:'Drag to move this take'});hdl.innerHTML=ICON.handle;rowMover(hdl,k);
+    const th=el('button',{type:'button',className:'th',title:'Loop take '+k.num+' on the main page'});const cv=el('canvas');
+    th.appendChild(cv);th.appendChild(el('span',{textContent:String(k.num)}));th.addEventListener('click',()=>loopTake(k));
+    const reps=el('div',{className:'reps'}),lab=el('span',{textContent:'×'+k.reps});
+    const minus=el('button',{type:'button',textContent:'−',title:'Fewer repeats'}),plus=el('button',{type:'button',textContent:'+',title:'More repeats'});
+    minus.addEventListener('click',()=>{if(k.reps<=1)return;checkpoint();k.reps--;lab.textContent='×'+k.reps;pushSongRows();});
+    plus.addEventListener('click',()=>{if(k.reps>=64)return;checkpoint();k.reps++;lab.textContent='×'+k.reps;pushSongRows();});
+    reps.append(minus,lab,plus);
+    const sel=el('button',{type:'button',className:'sel',title:'Select for export'});sel.innerHTML=ICON.check;press(sel,k.sel);
+    sel.addEventListener('click',()=>{k.sel=!k.sel;press(sel,k.sel);paintTakesHead();});
+    const del=el('button',{type:'button',className:'del',textContent:'×',title:'Delete take '+k.num});
+    del.addEventListener('click',()=>{checkpoint();takes=takes.filter(x=>x!==k);if(songPlaying&&!takes.length)stopAll();pushSongRows();renderSession();paintIcons();});
+    row.append(hdl,th,reps,sel,del);
+    requestAnimationFrame(()=>drawThumb(cv,takeClip(k),TRACK_HUES[0]));
+    return row;
+  }
   // Lightweight refresh: only classes change, so a drag in progress is never rebuilt away.
   function updateSession(){
     if(!sessOn)return;
-    const t=T(),f=info(0);
-    sgrid.querySelectorAll('.slot').forEach(d=>{
-      const s=+d.dataset.s,c=clipOf(t,s);
-      d.classList.toggle('sel',t.edit===s);
-      d.classList.toggle('play',!!(c&&f.clipId===c.id&&f.clipQ===undefined));
-      d.classList.toggle('queued',!!(c&&f.clipQ===c.id)||(!c&&t.edit===s&&f.clipQ===null));
-    });
-    const pi=songPlaying&&st.song?st.song.idx:-1;
-    songGrid.querySelectorAll('.launch').forEach(b=>{const r=+b.dataset.real;b.classList.toggle('on',r===pi&&pi>=0);b.classList.toggle('queued',r>=0&&r===pendSong);});
-    songGrid.querySelectorAll('.slot').forEach(d=>{const r=+d.dataset.real;d.classList.toggle('play',r===pi&&pi>=0&&d.dataset.has==='1');d.classList.toggle('queued',r>=0&&r===pendSong&&d.dataset.has==='1');});
+    const t=T(),f=info(0),pi=songPlaying&&st.song?st.song.idx:-1;
+    takeList.querySelectorAll('.take').forEach(r=>{const i=+r.dataset.i,k=takes[i];if(!k)return;
+      const cur=!songPlaying&&!!t.seq&&t.seq.src===k.id;
+      r.classList.toggle('now',st.playing&&(pi===i||cur&&f.clipId===t.seq.id));r.classList.toggle('cur',cur);});
   }
-  const busy=on=>{sessBusy+=on?1:-1;if(sessBusy<0)sessBusy=0;if(!sessBusy&&sessDirty){sessDirty=false;renderSession();}};
-  // Clips (left) and song (right) are one column each; drag a clip across to add it to the song.
   function renderSession(){
     if(!sessOn)return;
     if(sessBusy){sessDirty=true;return;}
-    const t=T();
-    sgrid.textContent='';
-    sgrid.appendChild(el('div',{className:'ptitle'},['Clips']));
-    const stop=el('button',{type:'button',className:'stopall',title:'Stop the clip and play the plain loop'});stop.innerHTML=ICON.stop+'<span>Loop</span>';
-    stop.addEventListener('click',()=>{tx({type:'launch',tr:t.i,clip:null});songPlaying=false;pendSong=-1;tx({type:'songStop'});updateSession();});
-    sgrid.appendChild(stop);
-    for(let s=0;s<scenes;s++){
-      const c=clipOf(t,s),d=el('div',{className:'slot'});d.dataset.s=s;
-      const cv=el('canvas');d.appendChild(cv);d.appendChild(el('span',{className:'lb',textContent:String(s+1)}));
-      d.title=c?'Clip '+(s+1)+' · play and edit · drag into the song':'Clip '+(s+1)+' · empty · tap to select for recording';
-      dragSource(d,()=>c?{kind:'clip',scene:s,label:'Clip '+(s+1)}:null,()=>launchSlot(s));
-      sgrid.appendChild(d);
-      requestAnimationFrame(()=>drawThumb(cv,c,TRACK_HUES[0]));
-    }
-    const add=el('button',{type:'button',className:'addrow',textContent:'+ Add'});
-    add.addEventListener('click',()=>{checkpoint();scenes++;tracks.forEach(x=>x.slots.push(null));renderSession();});
-    sgrid.appendChild(add);
-    renderSong();updateSession();
+    paintTakesHead();takeList.textContent='';
+    if(!takes.length){takeList.appendChild(el('p',{className:'takes-empty',textContent:'Nothing yet. Press play and touch the grid: every bar that adds something is kept here as a take, oldest at the top. Tap a take to loop it on the main page; play over it and the result becomes a new take.'}));return;}
+    takes.forEach((k,i)=>takeList.appendChild(takeRow(k,i)));
+    updateSession();
   }
-  const rowClips=r=>[r.clip!=null?clipOf(T(),r.clip):null];
-  const rowFilled=r=>r.clip!=null;
-  function songRowsForEngine(){
-    return song.filter(rowFilled).map(r=>{const cl=rowClips(r);return {bars:cycleBars(cl[0]),clips:cl.map(c=>c&&clipForm(c))};});
-  }
-  function pushSong(){if(songPlaying)tx({type:'songRows',rows:songRowsForEngine()});}
-  function ensureSongTail(){if(!song.length||rowFilled(song[song.length-1]))song.push({clip:null});}
-  function playSongFrom(idx){
-    const rows=songRowsForEngine();if(!rows.length)return;
-    const real=Math.max(0,song.slice(0,idx+1).filter(rowFilled).length-1);
-    initAudio();ready.then(()=>tx({type:'song',rows,from:real}));songPlaying=true;pendSong=real;updateSession();
-  }
-  function renderSong(){
-    ensureSongTail();songGrid.textContent='';
-    songGrid.appendChild(el('div',{className:'ptitle'},['Song']));
-    const realIdx=[];let n=0;song.forEach(r=>{realIdx.push(rowFilled(r)?n++:-1);});
-    song.forEach((r,ri)=>{
-      const b=el('button',{type:'button',className:'launch grab',title:'Play the song from this row · drag up or down to move it'});
-      b.innerHTML=ICON.play;b.dataset.real=realIdx[ri];b.dataset.row=ri;b.setAttribute('aria-label','Play song from row '+(ri+1));
-      rowMover(b,ri);songGrid.appendChild(b);
-      const c=rowClips(r)[0],d=el('div',{className:'slot'});d.dataset.song=ri;d.dataset.row=ri;d.dataset.real=realIdx[ri];d.dataset.has=c?'1':'0';
-      const cv=el('canvas');d.appendChild(cv);if(r.clip!=null)d.appendChild(el('span',{className:'lb',textContent:String(r.clip+1)}));
-      d.addEventListener('click',()=>playSongFrom(ri));
-      songGrid.appendChild(d);requestAnimationFrame(()=>drawThumb(cv,c,TRACK_HUES[0]));
-      const x=el('button',{type:'button',className:'rowx',textContent:'×',title:'Remove this song row'});
-      x.addEventListener('click',()=>{checkpoint();song.splice(ri,1);ensureSongTail();pushSong();renderSong();updateSession();});
-      songGrid.appendChild(x);
-    });
-  }
-  // song rows: tap the ▶ box to play from there, or drag it up or down to move the row
-  function rowMover(node,ri){
+  // drag a take's handle up or down to move it
+  function rowMover(node,k){
     let s0=null;
-    node.addEventListener('pointerdown',e=>{s0={y:e.clientY,x:e.clientX,id:e.pointerId,drag:false};busy(true);try{node.setPointerCapture(e.pointerId);}catch(_){}});
+    const over=(x,y)=>{const n=root.elementFromPoint(x,y),r=n&&n.closest?n.closest('.take'):null;return r&&takeList.contains(r)?r:null;};
+    const clearOver=()=>takeList.querySelectorAll('.take.drop').forEach(n=>n.classList.remove('drop'));
+    node.addEventListener('pointerdown',e=>{e.preventDefault();s0={y:e.clientY,id:e.pointerId,drag:false};busy(true);try{node.setPointerCapture(e.pointerId);}catch(_){}});
     node.addEventListener('pointermove',e=>{
       if(!s0||e.pointerId!==s0.id)return;
       if(e.pointerType==='mouse'&&e.buttons===0){end(e);return;}
-      if(!s0.drag&&Math.abs(e.clientY-s0.y)>8){s0.drag=true;ghost.textContent='Row '+(ri+1);ghost.hidden=false;}
-      if(s0.drag){ghost.style.left=e.clientX+'px';ghost.style.top=e.clientY+'px';
-        songGrid.querySelectorAll('.songrow-over').forEach(n=>n.classList.remove('songrow-over'));
-        const tg=rowAt(e.clientX,e.clientY);if(tg!==null)songGrid.querySelectorAll('[data-row="'+tg+'"]').forEach(n=>n.classList.add('songrow-over'));}
+      if(!s0.drag&&Math.abs(e.clientY-s0.y)>6){s0.drag=true;ghost.textContent='Take '+k.num;ghost.hidden=false;}
+      if(s0.drag){ghost.style.left=e.clientX+'px';ghost.style.top=e.clientY+'px';clearOver();const r=over(e.clientX,e.clientY);if(r)r.classList.add('drop');
+        const b=sessScroll.getBoundingClientRect();if(e.clientY<b.top+30)sessScroll.scrollTop-=8;else if(e.clientY>b.bottom-30)sessScroll.scrollTop+=8;}
     });
     const end=e=>{
-      if(!s0||e.pointerId!==s0.id)return;const s=s0;s0=null;ghost.hidden=true;busy(false);
-      songGrid.querySelectorAll('.songrow-over').forEach(n=>n.classList.remove('songrow-over'));
-      if(!s.drag){if(e.type==='pointerup')playSongFrom(ri);return;}
-      const tg=rowAt(e.clientX,e.clientY);if(tg===null||tg===ri)return;
-      checkpoint();const [row]=song.splice(ri,1);song.splice(tg,0,row);ensureSongTail();pushSong();renderSong();updateSession();
+      if(!s0||e.pointerId!==s0.id)return;const s=s0;s0=null;ghost.hidden=true;clearOver();busy(false);
+      if(!s.drag)return;
+      const r=over(e.clientX,e.clientY);if(!r)return;const to=+r.dataset.i,from=takes.indexOf(k);if(to===from||from<0)return;
+      checkpoint();takes.splice(from,1);takes.splice(to,0,k);backPos=-1;pushSongRows();renderSession();
     };
     node.addEventListener('pointerup',end);node.addEventListener('pointercancel',end);
     node.addEventListener('lostpointercapture',e=>{if(s0&&e.pointerId===s0.id&&!s0.drag){s0=null;busy(false);}});
   }
-  function rowAt(x,y){const n=document.elementFromPoint(x,y);const r=n&&n.closest?n.closest('[data-row]'):null;return r&&songGrid.contains(r)?+r.dataset.row:null;}
-  // drag a clip into the song column
-  function dragSource(node,payload,onTap){
-    let st0=null;
-    node.addEventListener('pointerdown',e=>{st0={x:e.clientX,y:e.clientY,id:e.pointerId,drag:false,p:payload()};busy(true);try{node.setPointerCapture(e.pointerId);}catch(_){}});
-    node.addEventListener('pointermove',e=>{
-      if(!st0||e.pointerId!==st0.id)return;
-      if(e.pointerType==='mouse'&&e.buttons===0){up(e);return;}
-      if(!st0.drag&&st0.p&&Math.hypot(e.clientX-st0.x,e.clientY-st0.y)>10){st0.drag=true;ghost.textContent=st0.p.label;ghost.hidden=false;}
-      if(st0.drag){ghost.style.left=e.clientX+'px';ghost.style.top=e.clientY+'px';
-        document.querySelectorAll('.slot.over').forEach(n=>n.classList.remove('over'));
-        const tg=dropTarget(e.clientX,e.clientY);if(tg)tg.classList.add('over');}
-    });
-    const up=e=>{
-      if(!st0||e.pointerId!==st0.id)return;
-      const s=st0;st0=null;ghost.hidden=true;document.querySelectorAll('.slot.over').forEach(n=>n.classList.remove('over'));
-      busy(false);
-      if(!s.drag){if(e.type==='pointerup')onTap();return;}
-      const tg=dropTarget(e.clientX,e.clientY);if(!tg)return;
-      checkpoint();song[+tg.dataset.song].clip=s.p.scene;
-      ensureSongTail();pushSong();renderSong();updateSession();
-    };
-    node.addEventListener('pointerup',up);node.addEventListener('pointercancel',up);
-    node.addEventListener('lostpointercapture',e=>{if(st0&&e.pointerId===st0.id&&!st0.drag){st0=null;busy(false);}});
-  }
-  function dropTarget(x,y){const n=document.elementFromPoint(x,y);const s=n&&n.closest?n.closest('.slot'):null;return s&&s.dataset.song!==undefined?s:null;}
   sessBtn.addEventListener('click',()=>{
     sessOn=!sessOn;sessEl.hidden=!sessOn;wrap.hidden=sessOn;laneCv.hidden=sessOn||folded;$('trackbar').hidden=sessOn||folded;paintIcons();
-    if(sessOn)renderSession();else requestAnimationFrame(resize);
+    if(sessOn){renderSession();sessScroll.scrollTop=sessScroll.scrollHeight;}else requestAnimationFrame(resize);
   });
 
   let sessKey='';
   function onStatus(m){
     gotStatus=true;m.recv=performance.now();const was=st.playing;st=m;
-    if(was!==m.playing){if(!m.playing){intent=null;songPlaying=false;pendSong=-1;}paintIcons();}
-    if(pendSong>=0&&m.song&&m.song.idx===pendSong)pendSong=-1;
-    const i=info(view);
-    recBtn.classList.toggle('on',i.rec==='on'||i.rec==='closing');recBtn.classList.toggle('waiting',i.rec==='waiting'||i.rec==='closing');
-    recBtn.classList.toggle('dub',!!i.recDub);press(recBtn,!!i.rec);
-    clearBtn.disabled=!editClip(T());paintUndo();
-    // remember which clip steps were actually heard on their last pass
-    tracks.forEach((t,ti)=>{const f=info(ti),c=editClip(t);if(c&&f.clipId===c.id&&f.cIdx>=0)t.lg[f.cIdx]=f.gate;
-      if((f.rec==='on'||f.rec==='closing')&&!f.recOver){if(!t.recBuf||f.recFrom===0&&f.recNew&&f.recNew.length&&t.recBuf.length>f.recNew.length+2)t.recBuf=[];
-        if(f.recNew&&f.recNew.length){t.recBuf.length=Math.min(t.recBuf.length,f.recFrom);for(const s of f.recNew)t.recBuf.push(s);}}
-      else if(!f.rec)t.recBuf=null;});
-    if(sessOn){const k=tracks.map((t,ti)=>{const f=info(ti);return f.clipId+'|'+f.clipQ+'|'+t.edit;}).join()+'|'+(m.song?m.song.idx:-1)+'|'+m.playing+'|'+pendSong;if(k!==sessKey){sessKey=k;updateSession();}}
+    if(was!==m.playing){if(!m.playing){intent=null;if(songPlaying){songPlaying=false;renderSession();}capBn=-9;}paintIcons();}
+    clearBtn.disabled=!T().seq;paintUndo();$('lasttake').disabled=!takes.length;
+    if(sessOn){const f=info(0),k=f.clipId+'|'+(m.song?m.song.idx:-1)+'|'+m.playing;if(k!==sessKey){sessKey=k;updateSession();}}
     const lr=laneInfo().rows;if(lr!==laneRows)computeLayout();
   }
 
@@ -832,19 +790,19 @@
   async function hardReset(){
     gen++;
     try{if(workletNode){workletNode.port.postMessage({type:'stop'});workletNode.port.onmessage=null;workletNode.disconnect();}}catch(_){}
-    try{if(window.__keep){window.__keep.onaudioprocess=null;window.__keep.disconnect();window.__keep=null;}}catch(_){}
+    try{if(spKeep){spKeep.onaudioprocess=null;spKeep.disconnect();spKeep=null;}}catch(_){}
     const old=actx;actx=null;ready=null;send=null;workletNode=null;usingFallback=false;gotStatus=false;intent=null;
     try{if(old)await old.close();}catch(_){}
     if(mediaEl){try{mediaEl.pause();}catch(_){}}
     ptrs.clear();special.clear();laneHolds.clear();laneHold=null;trashHeld=null;diceHeld=null;
     const keep=tracks[0].kind==='break'&&tracks[0].buf&&tracks[0].buf.L.length===loopLen(48000)?tracks[0]:null;
     tracks[0]=newTrack(0,'break');if(keep){tracks[0].buf=keep.buf;tracks[0].pk=keep.pk;}
-    view=0;scenes=SCENES;song=[{clip:null}];songPlaying=false;pendSong=-1;
+    view=0;takes=[];takeNum=0;capBn=-9;backPos=-1;songPlaying=false;
     bpm=124;swing=0;stepped=true;playMode='replace';fxOnly=false;
     Object.assign(prefs,PREF0,{shown:new Set(ALL_FX)});
     Object.assign(pin,PIN0);liveV.order=liveV.mute=null;undoS.length=0;redoS.length=0;
     st={playing:false,t:0,len:1,tracks:[],hist:[],song:null,recv:0};
-    [recBtn,playBtn].forEach(b=>press(b,false));clearBtn.disabled=true;
+    press(playBtn,false);clearBtn.disabled=true;
     bpmEl.querySelector('b').textContent='124';swingEl.querySelector('b').textContent='0%';
     soundSel.value='break';
     if(sessOn){sessOn=false;sessEl.hidden=true;wrap.hidden=false;}
@@ -972,9 +930,9 @@
       const out=el('span',{className:'blen'});
       function tryShape(nc,nl){
         if(nc===cols&&nl===len){w.hidden=true;return;}
-        const count=t.slots.filter(Boolean).length,go=()=>{cols=nc;len=nl;setShape(t,nc,nl);paint();};
-        if(!count){w.hidden=true;go();return;}
-        w.ask('This deletes your '+count+(count>1?' clips':' clip')+' and empties the song.','Change',go);
+        const count=takes.length,go=()=>{cols=nc;len=nl;setShape(t,nc,nl);paint();};
+        if(!count&&!t.seq){w.hidden=true;go();return;}
+        w.ask('This clears the sequence'+(count?' and your '+count+(count>1?' takes':' take'):'')+'.','Change',go);
       }
       const btns=[16,8].map(n=>{const b=el('button',{type:'button',textContent:'1/'+n});b.dataset.n=n;
         b.addEventListener('click',()=>{const st=16/n;tryShape(n,Math.max(st,Math.round(len/st)*st));});return b;});
@@ -988,9 +946,12 @@
       gbox.appendChild(row);gbox.appendChild(w);
     });
     cardEl.appendChild(el('div',{},[el('h3',{},['Grid and bar length']),gbox]));
-    cardEl.appendChild(el('div',{},[el('h3',{},['Silence slider (random side)']),radios('p-silr',[['mute','Mutes steps; the sequence keeps moving'],['insert','Inserts silent steps; the sequence waits']],prefs.silRnd,v=>{prefs.silRnd=v;sendPref();})]));
-    cardEl.appendChild(el('div',{},[el('h3',{},['Pattern slider']),radios('p-silp',[['mute','Mutes steps; the sequence keeps moving'],['insert','Inserts silent steps; the sequence waits']],prefs.silPat,v=>{prefs.silPat=v;sendPref();})]));
-    cardEl.appendChild(el('div',{},[el('h3',{},['Late touches']),radios('p-grace',[['0','Always wait for the next slice'],['20','Count touches up to 20 ms late as on time'],['40','Count touches up to 40 ms late as on time'],['70','Count touches up to 70 ms late as on time']],String(prefs.grace),v=>{prefs.grace=+v;sendPref();})]));
+    cardEl.appendChild(el('div',{},[el('h3',{},['Second slider']),radios('p-silp',[['mute','SKIP: its steps go quiet; the sequence keeps moving'],['insert','GAP: a quiet step is inserted; the sequence waits, so every step still plays']],prefs.silPat,v=>{prefs.silPat=v;sendPref();})]));
+    const tw=el('input',{type:'checkbox',checked:prefs.touchWin});tw.addEventListener('change',()=>{prefs.touchWin=tw.checked;sendPref();});
+    cardEl.appendChild(el('div',{},[el('label',{},[tw,'Touches play through SKIP and GAP']),el('p',{},['Off: the pattern silences touched steps too.'])]));
+    const ol=outLat();
+    cardEl.appendChild(el('div',{},[el('h3',{},['Late touches']),radios('p-grace',[['0','Always wait for the next step'],['20','Count touches up to 20 ms late as on time'],['40','Count touches up to 40 ms late as on time'],['70','Count touches up to 70 ms late as on time']],String(prefs.grace),v=>{prefs.grace=+v;sendPref();}),
+      el('p',{},['A touch (or a release) this soon after a step starts counts for that step; the slice keeps its place in time. '+(ol?'This device’s '+ol+' ms output latency is added to the window.':'Any output latency the device reports is added to the window.')])]));
     const box=el('div',{className:'opt'});
     ALL_FX.forEach(k=>{const i=el('input',{type:'checkbox',checked:prefs.shown.has(k),id:'show-'+k});i.addEventListener('change',()=>{if(i.checked)prefs.shown.add(k);else prefs.shown.delete(k);computeLayout();});box.appendChild(el('label',{htmlFor:i.id},[i,FX[k].name]));});
     cardEl.appendChild(el('div',{},[el('h3',{},['Effects shown']),box,el('p',{},['Hidden effects still play when they are recorded in a sequence.'])]));
@@ -1005,15 +966,14 @@
       if(!arm){arm=setTimeout(()=>{arm=0;rb.textContent='Reset everything';},2500);rb.textContent='Tap again to reset';return;}
       clearTimeout(arm);arm=0;hardReset();
     });
-    cardEl.appendChild(el('div',{},[el('h3',{},['Testing']),rb,el('p',{},['Stops playback, shuts down the audio engine and returns every setting, track, sequence and the song to the start.'])]));
+    cardEl.appendChild(el('div',{},[el('h3',{},['Testing']),rb,el('p',{},['Stops playback, shuts down the audio engine and returns every setting, the sequence and the takes to the start.'])]));
   }));
   // ---------- export ----------
-  // Clips and the song are rendered offline (faster than real time) by a fresh engine with the same loop,
-  // effect settings, tempo and swing. Each clip plays with its stored play order, silence, pattern and
-  // randomness, so a file sounds like the clip. A clip renders one full variation cycle, after a pre-roll of
-  // the same cycle, so it loops seamlessly (delay echoes wrap into its start). Files are 24-bit WAV, or
-  // 32-bit float. Inside claude.ai the page hands them over through the downloads capability, which takes a
-  // zip (not .wav); elsewhere a single file downloads as .wav and several as a .zip.
+  // Takes and the sequence are rendered offline (faster than real time) by a fresh engine with the same
+  // loop, effect settings, tempo and swing. A single bar renders after a pre-roll of itself, so it loops
+  // seamlessly (delay echoes wrap into its start). Files are 24-bit WAV, or 32-bit float. Inside claude.ai
+  // the page hands them over through the downloads capability, which takes a zip (not .wav); elsewhere a
+  // single file downloads as .wav and several as a .zip.
   let dlCap=null;
   try{if(window.claude&&window.claude.use)window.claude.use('downloads').then(d=>{dlCap=d;},()=>{});}catch(_){}
   const expOpt={float:false,tail:false};
@@ -1044,16 +1004,17 @@
     e.setUint32(0,0x06054b50,true);e.setUint16(8,files.length,true);e.setUint16(10,files.length,true);e.setUint32(12,size,true);e.setUint32(16,off,true);
     return new Blob([...parts,...cent,new Uint8Array(e.buffer)],{type:'application/zip'});
   }
-  // a fresh engine with this track's loop and settings; the plain loop's own strips and randomness too
+  // a fresh engine with this track's loop and settings, and the plain loop's own ORDER and SKIP
   function exportEngine(){
     const t=T(),rate=t.buf.L.length===loopLen(curRate())?curRate():48000,e=new EF.Engine(rate);
     e.msg({type:'load',tr:0,L:t.buf.L,R:t.buf.R});e.msg({type:'grid',tr:0,n:t.cols});e.msg({type:'range',tr:0,s16:0,e16:t.len16});
     const keep=send;send=m=>e.msg(m);sendCfg(t);sendLoopSet(t);send=keep;
-    e.msg({type:'swing',s:swing});e.msg(prefMsg());return e;
+    e.msg({type:'swing',s:swing});e.msg(prefMsg());e.msg({type:'pref',pref:{lat:0}});return e;
   }
-  function bounceClip(c){const e=exportEngine(),n=cycleBars(c)*e.len;e.msg({type:'launch',tr:0,clip:clipForm(c)});
+  // one bar that loops seamlessly: a sequence (null: the plain loop with its ORDER and SKIP)
+  function bounceBar(c){const e=exportEngine(),n=e.len;e.msg({type:'launch',tr:0,clip:c});if(!c)e.msg({type:'play'});
     const b=EF.bounce(e,2*n);return {buf:{L:b.L.slice(n),R:b.R.slice(n)},sr:e.sr};}
-  function bounceSong(){const rows=songRowsForEngine();if(expOpt.tail)rows.push({bars:2,clips:[null]});
+  function bounceTakes(list){const rows=list.map(k=>({bars:k.reps,clips:[takeClip(k)]}));if(expOpt.tail)rows.push({bars:2,clips:[null]});
     const e=exportEngine();e.msg({type:'song',rows,from:0});
     return {buf:EF.bounce(e,rows.reduce((s,r)=>s+r.bars,0)*e.len),sr:e.sr};}
   async function offer(files,zipName,status){
@@ -1064,7 +1025,7 @@
       return;
     }
     const blob=many?zip(files):new Blob([files[0].data],{type:'audio/wav'}),name=many?zipName:files[0].name;
-    const url=URL.createObjectURL(blob),a=el('a',{href:url,download:name});document.body.appendChild(a);a.click();a.remove();
+    const url=URL.createObjectURL(blob),a=el('a',{href:url,download:name});root.appendChild(a);a.click();a.remove();
     setTimeout(()=>URL.revokeObjectURL(url),60000);status('Downloaded '+name);
   }
   // "what you just heard": the engine keeps the last 8 bars of output
@@ -1073,22 +1034,21 @@
     if(!m.L.length){w.status('Nothing has played yet');return;}
     const nm='slicefield-heard-'+Math.round(m.L.length/(barSec()*m.sr))+'bars-'+bpm+'bpm';offer([{name:nm+'.wav',data:wav(m.L,m.R,m.sr)}],nm+'.zip',w.status);}
   expBtn.addEventListener('click',()=>openSheet('Export',cardEl=>{
-    const t=T(),clips=t.slots.map((c,s)=>c?{c,s}:null).filter(Boolean),rows=songRowsForEngine(),bars=rows.reduce((s,r)=>s+r.bars,0);
+    const t=T(),sel=takes.filter(k=>k.sel),list=sel.length?sel:takes,bars=list.reduce((s,k)=>s+k.reps,0);
     const msg=el('p',{className:'expmsg'}),status=x=>{msg.textContent=x;};
-    const tag='-'+bpm+'bpm';
+    const tag='-'+bpm+'bpm',what=sel.length?'selected takes':'takes';
     const run=(label,fn)=>()=>{if(!t.buf)return;status('Rendering '+label+'…');setTimeout(()=>{try{fn();}catch(err){status('Export failed: '+err.message);}},30);};
-    const songB=el('button',{type:'button',textContent:'Export song',disabled:!rows.length});
-    songB.addEventListener('click',run('the song',()=>{const r=bounceSong();offer([{name:'slicefield-song'+tag+'.wav',data:wav(r.buf.L,r.buf.R,r.sr)}],'slicefield-song'+tag+'.zip',status);}));
+    const inOrder=el('button',{type:'button',textContent:sel.length?'Selected, in order':'All, in order',disabled:!list.length});
+    inOrder.addEventListener('click',run('the '+what,()=>{const r=bounceTakes(list);offer([{name:'slicefield-takes'+tag+'.wav',data:wav(r.buf.L,r.buf.R,r.sr)}],'slicefield-takes'+tag+'.zip',status);}));
+    const each=el('button',{type:'button',textContent:(sel.length?'Each selected':'Each take')+' ('+list.length+(list.length===1?' file)':' files)'),disabled:!list.length});
+    each.addEventListener('click',run('the '+what,()=>offer(list.map(k=>{const r=bounceBar(takeClip(k));return {name:'slicefield-take-'+k.num+tag+'.wav',data:wav(r.buf.L,r.buf.R,r.sr)};}),'slicefield-'+(sel.length?'selected':'takes')+tag+'.zip',status)));
     const tailCb=el('input',{type:'checkbox',checked:expOpt.tail});tailCb.addEventListener('change',()=>{expOpt.tail=tailCb.checked;});
-    cardEl.appendChild(el('div',{},[el('h3',{},['Song']),songB,el('p',{},[rows.length?rows.length+(rows.length>1?' rows · ':' row · ')+bars+(bars>1?' bars · ':' bar · ')+(bars*barSec()).toFixed(1)+' s':'The song is empty. Drag clips into it in the clips view.']),
-      el('label',{},[tailCb,'Add 2 bars at the end for delay echoes to ring out'])]));
-    const fileFor=(c,s)=>{const r=bounceClip(c);return {name:'slicefield-clip-'+(s+1)+tag+'.wav',data:wav(r.buf.L,r.buf.R,r.sr)};};
-    const allB=el('button',{type:'button',textContent:'Export each clip ('+clips.length+(clips.length===1?' file)':' files)'),disabled:!clips.length});
-    allB.addEventListener('click',run('the clips',()=>offer(clips.map(({c,s})=>fileFor(c,s)),'slicefield-clips'+tag+'.zip',status)));
-    const one=el('div',{className:'expclips'},clips.map(({c,s})=>{const b=el('button',{type:'button',textContent:String(s+1),title:'Export clip '+(s+1)});
-      b.addEventListener('click',run('clip '+(s+1),()=>offer([fileFor(c,s)],'slicefield-clip-'+(s+1)+tag+'.zip',status)));return b;}));
-    cardEl.appendChild(el('div',{},[el('h3',{},['Clips']),allB,clips.length?el('p',{},['Or one clip:']):el('p',{},['No clips yet.']),one,
-      el('p',{},['Each clip renders one full variation cycle and loops seamlessly.'])]));
+    cardEl.appendChild(el('div',{},[el('h3',{},['Takes'+(sel.length?' · '+sel.length+' selected':'')]),el('div',{className:'expclips'},[inOrder,each]),
+      el('p',{},[list.length?'In order: one file, '+bars+(bars>1?' bars':' bar')+' with repeats ('+(bars*barSec()).toFixed(1)+' s). Each: one seamless one-bar loop per take.'+(sel.length?'':' Select takes in the Takes list to export just those.'):'No takes yet. Every bar you play that adds something is kept as a take.']),
+      el('label',{},[tailCb,'In order: add 2 bars at the end for delay echoes to ring out'])]));
+    const seqB=el('button',{type:'button',textContent:t.seq?'This sequence':'The loop as set'});
+    seqB.addEventListener('click',run('the sequence',()=>{const r=bounceBar(t.seq?clipForm(t.seq):null),nm='slicefield-'+(t.seq?'sequence':'loop')+tag;offer([{name:nm+'.wav',data:wav(r.buf.L,r.buf.R,r.sr)}],nm+'.zip',status);}));
+    cardEl.appendChild(el('div',{},[el('h3',{},['Main page']),seqB,el('p',{},['One seamless bar, with its stored ORDER and SKIP.'])]));
     const heard=el('div',{className:'expclips'},[2,4,8].map(n=>{const b=el('button',{type:'button',textContent:'Last '+n+' bars'});
       b.addEventListener('click',()=>{if(!send){status('Nothing has played yet');return;}grabWait={status};status('Collecting…');tx({type:'grab',bars:n});});return b;}));
     cardEl.appendChild(el('div',{},[el('h3',{},['What you just heard']),heard,el('p',{},['The last whole bars that played, exactly as they sounded, live touches included.'])]));
@@ -1098,67 +1058,36 @@
   }));
 
   // ---------- undo / redo ----------
-  // Every edit gesture saves a snapshot of the clips, song and the loop's settings first. Live touches don't.
+  // Every edit gesture saves a snapshot of the sequence, the plain loop's strips and the takes list first.
+  // Live touches don't, and capture doesn't: undo never removes takes captured since the snapshot.
   const undoS=[],redoS=[];
-  function snapState(){const t=T();return {slots:t.slots.map(c=>c?cloneClip(c):null),edit:t.edit,scenes,song:song.map(r=>({clip:r.clip})),loopSet:Object.assign({},t.loopSet)};}
+  function snapState(){const t=T();return {seq:t.seq?cloneClip(t.seq):null,loopSet:Object.assign({},t.loopSet),takes:takes.map(k=>({k,reps:k.reps})),takeNum};}
   function checkpoint(){undoS.push(snapState());if(undoS.length>100)undoS.shift();redoS.length=0;paintUndo();}
   function restoreState(sn){
-    const t=T();t.slots=sn.slots;t.edit=sn.edit;scenes=sn.scenes;song=sn.song;t.loopSet=sn.loopSet;t.lg={};
-    const f=info(t.i);
-    for(const id of [f.clipId,f.clipQ]){if(!id)continue;const c=t.slots.find(c=>c&&c.id===id);if(c)tx({type:'clipEdit',tr:t.i,clip:clipForm(c)});}
-    if(f.clipId&&!t.slots.some(c=>c&&c.id===f.clipId))tx({type:'launch',tr:t.i,clip:null});
-    sendLoopSet(t);computeLayout();renderSession();pushSong();paintUndo();
+    const t=T(),f=info(t.i),newer=takes.filter(k=>k.num>sn.takeNum);
+    takes=sn.takes.map(x=>{x.k.reps=x.reps;return x.k;}).concat(newer);
+    t.loopSet=sn.loopSet;t.seq=sn.seq;liveV.order=liveV.mute=null;
+    if(!songPlaying){
+      // the same sequence is edited in place at once; a different one takes over at the next bar
+      if(t.seq&&f.clipId===t.seq.id)tx({type:'clipEdit',tr:t.i,clip:clipForm(t.seq)});
+      else tx({type:'launch',tr:t.i,clip:t.seq&&clipForm(t.seq)});
+    }
+    sendLoopSet(t);pushSongRows();computeLayout();renderSession();paintUndo();paintIcons();
   }
-  const recActive=()=>!!info(view).rec;
-  function undo(){if(!undoS.length||recActive())return;redoS.push(snapState());restoreState(undoS.pop());}
-  function redo(){if(!redoS.length||recActive())return;undoS.push(snapState());restoreState(redoS.pop());}
+  function undo(){if(!undoS.length)return;redoS.push(snapState());restoreState(undoS.pop());}
+  function redo(){if(!redoS.length)return;undoS.push(snapState());restoreState(redoS.pop());}
   const undoBtn=$('undo'),redoBtn=$('redo');
-  function paintUndo(){undoBtn.disabled=!undoS.length||recActive();redoBtn.disabled=!redoS.length||recActive();}
+  function paintUndo(){undoBtn.disabled=!undoS.length;redoBtn.disabled=!redoS.length;}
   undoBtn.addEventListener('click',undo);redoBtn.addEventListener('click',redo);
-
-  // ---------- clip settings and print ----------
-  const ordLabel=v=>{const o=orderFrom(v);return o.r>0?'random '+Math.round(o.r*100)+'% ('+(o.mode==='back'?'backward':'forward')+')':o.mode==='back'?'backward':'forward';};
-  const muteLabel=v=>{const m=muteFrom(v);return m.rnd>0?'random silence '+Math.round(m.rnd*100)+'%':m.bits?'pattern '+m.bits.map(b=>b?'■':'□').join(''):'none';};
-  function openClipSheet(){
-    const t=T(),c=editClip(t),set=ctxSet(t);
-    openSheet(c?'Clip '+(t.edit+1):'Loop · slot '+(t.edit+1)+' is empty',cardEl=>{
-      const seg=(choices,cur,on)=>{const box=el('span',{className:'seg'});choices.forEach(([v,lab])=>{const b=el('button',{type:'button',textContent:lab});press(b,v===cur);
-        b.addEventListener('click',()=>{checkpoint();on(v);box.querySelectorAll('button').forEach(x=>press(x,x===b));});box.appendChild(b);});return box;};
-      if(c)cardEl.appendChild(el('div',{},[el('h3',{},['Empty steps play']),seg([['loop','The loop'],['silence','Silence']],c.bg||'loop',v=>{c.bg=v;sendCtx(t);renderSession();}),
-        el('p',{},['An empty step plays the loop’s own slice for its position, or nothing. Hold Trash and tap a step to empty it.'])]));
-      const reroll=el('button',{type:'button',textContent:'New random version'});
-      reroll.addEventListener('click',()=>{checkpoint();set.seed=newSeed();sendCtx(t);});
-      cardEl.appendChild(el('div',{},[el('h3',{},['Randomness repeats every']),seg([[1,'1 bar'],[2,'2'],[4,'4'],[8,'8'],[0,'Never']],set.varLen,v=>{set.varLen=v;sendCtx(t);renderSession();}),
-        el('p',{},['Random play order, random silence and the Random slice effect repeat on this cycle, so what you hear is what exports. “Never” keeps them changing every pass (exports then render one pass).']),reroll]));
-      cardEl.appendChild(el('div',{},[el('h3',{},['Stored on this '+(c?'clip':'loop')]),el('p',{},['Play order: '+ordLabel(set.orderV)]),el('p',{},['Silence: '+muteLabel(set.muteV)]),
-        el('p',{},['Pin a strip (the pin box at its right) to change these by dragging; unpinned drags are live only.'])]));
-      const pr=el('button',{type:'button',textContent:'Print to steps'});
-      pr.addEventListener('click',()=>{printCtx(t);closeSheet();});
-      cardEl.appendChild(el('div',{},[el('h3',{},['Print']),pr,el('p',{},['Writes one variation cycle'+(set.varLen>1?' ('+set.varLen+' bars)':'')+' into the steps, exactly as it plays now: play order, silence, patterns and random slices become ordinary steps you can edit. The strips go back to forward and no silence.'+(c?'':' This makes a new clip in the empty slot.')])]));
-    });
-  }
-  $('clipset').addEventListener('click',()=>{initAudio();openClipSheet();});
-  function printCtx(t){
-    const c=editClip(t),set=ctxSet(t),vl=set.varLen>0?set.varLen:1,n=c?c.n:t.len16*t.cols/16,bars=(c?clipBars(c):1)*vl;
-    const e=exportEngine();if(c)e.msg({type:'launch',tr:0,clip:clipForm(c)});else e.msg({type:'play'});
-    const tr=e.tracks[0],got=[],d=tr.decide.bind(tr);tr.decide=(tt,k)=>{d(tt,k);got.push(tr.hist[tr.hist.length-1]);};
-    EF.bounce(e,bars*e.len);
-    const slots=got.slice(0,bars*n).map(x=>({on:x.on,a:x.pa,off:x.off,sid:x.sid,slen:x.slen,fx:(x.fx||[]).filter(f=>f.k!=='random')}));
-    checkpoint();
-    const nc=withSettings({id:c?c.id:'t'+t.i+'s'+t.edit+'_p'+(++idCtr),cols:c?c.cols:t.cols,n,slots,tr:t.i,scene:t.edit},{seed:set.seed,varLen:1,bg:c?c.bg:'loop'});
-    t.slots[t.edit]=nc;t.lg={};laneFollow=true;
-    const f=info(t.i);if(c&&(f.clipId===c.id||f.clipQ===c.id))tx({type:'clipEdit',tr:t.i,clip:nc});else ready&&ready.then(()=>tx({type:'launch',tr:t.i,clip:nc}));
-    computeLayout();renderSession();pushSong();
-  }
 
   // ---------- drawing ----------
   function rr(x,y,w,h,r){g.beginPath();if(g.roundRect)g.roundRect(x,y,w,h,r);else g.rect(x,y,w,h);}
   const cellX=(t,a16)=>HW+a16/16*W();
   const stepHue=(t,s)=>{const k=s.fx&&s.fx.length?s.fx[0].k:null;return k?(t.cfg[k]||{}).hue:null;};
-  function laneCell(t,s,x,y,w,h,lit,dim,fs,cont,pos,bg){
+  function laneCell(t,s,x,y,w,h,lit,dim,fs,cont,pos){
     if(s&&s.empty){
-      g.globalAlpha=s.on===false?0.4:1;g.strokeStyle=bg==='silence'?'#2a2e36':'#3a3f4a';g.lineWidth=1;g.strokeRect(x+1.5,y+0.5,w-3,h-1);
-      if(bg!=='silence'&&s.on!==false){const step=16/t.cols;g.fillStyle='rgba(236,231,220,.32)';g.font=`400 ${Math.min(fs,w<20?8:9)}px ${FONT}`;
+      g.globalAlpha=s.on===false?0.4:1;g.strokeStyle='#3a3f4a';g.lineWidth=1;g.strokeRect(x+1.5,y+0.5,w-3,h-1);
+      if(s.on!==false){const step=16/t.cols;g.fillStyle='rgba(236,231,220,.32)';g.font=`400 ${Math.min(fs,w<20?8:9)}px ${FONT}`;
         g.textAlign='center';g.textBaseline='middle';g.fillText(String(Math.floor(pos/step)+1),x+w/2,y+h/2+0.5);}
       g.globalAlpha=1;
       if(lit){g.strokeStyle=lit==='rec'?'#ff6b6b':lit==='hold'?'#fff':ACC;g.lineWidth=lit==='hold'?2:1.5;g.strokeRect(x+1,y-1,w-2,h+2);}
@@ -1168,7 +1097,9 @@
     const hue=s?stepHue(t,s):null;
     g.fillStyle=!s?'#1c1f25':hue!=null?`hsl(${hue} 50% 34%)`:'#3a3f4a';
     g.fillRect(x+(cont?0:1),y,w-(cont?1:2),h);
+    // stacked effects: the cell colour is the first, a dot for each of the next three, and a + for more
     if(s&&s.fx&&s.fx.length>1)s.fx.slice(1,4).forEach((f,q)=>{const hh=(t.cfg[f.k]||{}).hue;g.fillStyle=`hsl(${hh} 70% 60%)`;g.fillRect(x+2+q*4,y+h-4,3,3);});
+    if(s&&s.fx&&s.fx.length>4){g.fillStyle='#fff';g.fillRect(x+14,y+h-3.5,3,1);g.fillRect(x+15,y+h-4.5,1,3);}
     if(s){
       const step=16/t.cols,sn=Math.floor(s.a/step)+1,half=s.a%step;
       g.fillStyle='rgba(236,231,220,.85)';g.font=`500 ${Math.min(fs,w<20?8:9)}px ${FONT}`;g.textAlign='center';g.textBaseline='middle';
@@ -1177,31 +1108,27 @@
     g.globalAlpha=1;
     if(lit){g.strokeStyle=lit==='rec'?'#ff6b6b':lit==='hold'?'#fff':ACC;g.lineWidth=lit==='hold'?2:1.5;g.strokeRect(x+1,y-1,w-2,h+2);}
   }
-  // Which steps the silence strip will mute: a pattern is known in advance; random silence is shown
-  // from what happened on the last pass.
-  function patDim(t,idx,n,L,live){
-    const m=muteFrom(mV(t));
-    if(m.bits){if(prefs.silPat!=='mute')return false;const o=orderFrom(oV(t));
-      if(o.r>0&&!live)return t.lg[idx]===false;
-      const bp=live?idx:(o.mode==='back'?(L-1-idx):idx)%n;return !m.bits[bp%8];}
-    if(m.rnd>0)return !live&&prefs.silRnd==='mute'&&t.lg[idx]===false;
-    return false;
+  // The steps SKIP will silence (as GAP the sequence shifts instead, so nothing is dimmed)
+  function patDim(t,idx){
+    if(prefs.silPat!=='mute')return false;
+    const b=EF.skipPattern(mV(t),barSteps(t));return !!b&&!b[idx%b.length];
   }
   function drawLane(fs){
     const d=lanePageInfo(),t=d.t,i=info(view),h=laneRows*LROW+4;
     g.fillStyle='#16181d';rr(0,0,LW,h,7);g.fill();
     g.textBaseline='middle';g.textAlign='center';g.font=`600 ${fs}px ${FONT}`;
+    // LIVE: the plain loop as it plays. A take's number when one is looping (* once it's edited), SEQ otherwise.
     g.fillStyle=d.clip?`hsl(${TRACK_HUES[view]} 75% 62%)`:'#6c7380';
-    const recNow=d.clip&&(d.clip.rec||d.over);if(recNow)g.fillStyle='#ff6b6b';
-    if(recNow&&d.dub)g.fillStyle='#ffb36b';g.fillText(recNow?'REC':seqName(t),LLAB/2,h/2-(d.pages>1||!d.clip?6:0));
+    const lab=!d.clip?'LIVE':d.clip.num?'T'+d.clip.num+(d.clip.edited?'*':''):'SEQ';
+    if(lab.length>4)g.font=`600 ${fs-2}px ${FONT}`;
+    g.fillText(lab,LLAB/2,h/2-(d.pages>1?6:0));
     if(d.pages>1){g.font=`400 ${fs-1}px ${FONT}`;g.fillStyle='#8a8f99';g.fillText((d.page+1)+'/'+d.pages,LLAB/2,h/2+7);}
-    else if(!d.clip){g.font=`400 ${fs-2}px ${FONT}`;g.fillStyle='#6c7380';g.fillText('live',LLAB/2,h/2+7);}
     const w=(LW-LLAB)/d.n;
     if(d.clip){
       for(let r=0;r<d.rows;r++)for(let j=0;j<d.n;j++){
         const idx=d.page*d.per+r*d.n+j,s=d.slots[idx];if(idx>=d.slots.length)continue;
-        const lit=laneHold&&laneHold.idx===idx&&laneHold.clip===d.clip?'hold':st.playing&&idx===d.playIdx,dim=s.on===false||(!d.clip.rec&&patDim(t,idx,d.n,d.slots.length));
-        laneCell(t,s,LLAB+j*w,4+r*LROW,w,LROW-5,lit&&(d.clip.rec||d.over)?'rec':lit,dim,fs,(s.off||0)>0,j*16/t.cols,(d.clip.real||d.clip).bg);
+        const lit=laneHold&&laneHold.idx===idx&&laneHold.clip===d.clip?'hold':st.playing&&idx===d.playIdx,dim=s.on===false||patDim(t,idx);
+        laneCell(t,s,LLAB+j*w,4+r*LROW,w,LROW-5,lit,dim,fs,(s.off||0)>0,j*16/t.cols);
       }
     }else{
       // live: the current bar as it plays
@@ -1209,7 +1136,7 @@
       const at=new Map();if(st.playing)for(const e of H)if(e.bn>=w0)at.set((e.bn-w0)+':'+e.bp,e);
       for(let r=0;r<d.rows;r++)for(let j=0;j<d.n;j++){
         const s=at.get(r+':'+j)||null,now=st.playing&&bn-w0===r&&j===bp;
-        laneCell(t,s,LLAB+j*w,4+r*LROW,w,LROW-5,now,s?!s.on:patDim(t,j,d.n,d.n,true),fs,s&&(s.off||0)>0);
+        laneCell(t,s,LLAB+j*w,4+r*LROW,w,LROW-5,now,s?!s.on:patDim(t,j),fs,s&&(s.off||0)>0);
       }
     }
   }
@@ -1230,30 +1157,24 @@
       g.fillStyle=c;g.strokeStyle=c;g.lineWidth=1.6;g.beginPath();g.arc(cx,cy-3.5,3.6,0,Math.PI*2);on?g.fill():g.stroke();
       g.beginPath();g.moveTo(cx,cy);g.lineTo(cx,cy+7);g.stroke();};
     const ghost=(v,y,col)=>{if(v==null)return;g.strokeStyle=col;g.lineWidth=1.5;g.setLineDash([2,2]);rr(v*sw-3,y+2,6,h-4,3);g.stroke();g.setLineDash([]);};
-    const o=orderFrom(oV(t));
-    g.fillStyle='#1a1d23';rr(0,y0,sw,h,7);g.fill();
-    const grd=g.createLinearGradient(0,0,sw,0);grd.addColorStop(0,ACCA(0));grd.addColorStop(0.5,ACCA(.3));grd.addColorStop(1,ACCA(0));
-    g.fillStyle=grd;g.fillRect(sw*0.06,y0,sw*0.88,h);
-    g.textBaseline='middle';g.font=`600 ${fs}px ${FONT}`;
-    g.textAlign='left';g.fillStyle=o.mode==='back'&&o.r===0?ACC:'#8a8f99';g.fillText('◀ BACK',8,y0+h/2);
-    g.textAlign='center';g.fillStyle=o.r>0.5?ACC:'#8a8f99';g.fillText(o.r>0?'RANDOM '+Math.round(o.r*100)+'%':'RANDOM',sw/2,y0+h/2);
-    g.textAlign='right';g.fillStyle=o.mode==='fwd'&&o.r===0?ACC:'#8a8f99';g.fillText('FWD ▶',sw-8,y0+h/2);
-    g.fillStyle=ACC;rr(oS(t)*sw-2,y0+3,4,h-6,2);g.fill();ghost(liveV.order,y0,'#fff');
-    box(y0,pin.order);
-    y0=yMute();const mv=mV(t),m=muteFrom(mv),mid=sw/2;
-    g.fillStyle='#1a1d23';rr(0,y0,sw,h,7);g.fill();
-    if(mv!==0.5){g.fillStyle='rgba(150,170,255,.18)';const a=Math.min(mid,mv*sw),b=Math.max(mid,mv*sw);g.fillRect(a,y0,b-a,h);}
-    g.fillStyle='#3a4050';g.fillRect(mid-0.5,y0+4,1,h-8);
-    g.textAlign='left';g.font=`600 ${fs}px ${FONT}`;g.fillStyle=m.rnd>0?'#b8c4ff':'#8a8f99';g.fillText(m.rnd>0?'SILENCE '+Math.round(m.rnd*100)+'%':'◀ SILENCE',8,y0+h/2);
-    const bits=m.bits||[1,1,1,1,1,1,1,1],bw=Math.max(4,Math.min(9,(mid-100)/8-2));let bx=mid+8;
-    // the square for the step now playing glows softly
-    const pq=st.playing&&info(view).barPos>=0?info(view).barPos%8:-1;
-    for(let q=0;q<8;q++){const now=q===pq;
-      g.fillStyle=bits[q]?(m.bits?(now?'#eef1ff':'#b8c4ff'):(now?'#7d86a0':'#4a5060')):(now?'#343a4c':'#23262e');g.fillRect(bx,y0+h/2-bw/2,bw,bw);
-      if(!bits[q]){g.strokeStyle=now?'#8a93b0':'#4a5060';g.lineWidth=1;g.strokeRect(bx+0.5,y0+h/2-bw/2+0.5,bw-1,bw-1);}bx+=bw+2;}
-    g.textAlign='right';g.fillStyle=m.bits?'#b8c4ff':'#8a8f99';g.fillText('PATTERN ▶',sw-8,y0+h/2);
-    g.fillStyle='#b8c4ff';rr(mS(t)*sw-2,y0+3,4,h-6,2);g.fill();ghost(liveV.mute,y0,'#fff');
-    box(y0,pin.mute);
+    // ORDER and SKIP (GAP): the further left, the more the pattern changes; the small zone at the far right is
+    // the default. Each position is one fixed pattern, numbered. The solid marker is the stored value, the
+    // dashed one a live (unpinned) move.
+    const fine=[...special.values()].find(sp=>sp.kind==='strip'&&sp.fine);
+    const strip=(y,which,name,col,colA,defLab)=>{
+      const v=which==='order'?oV(t):mV(t),n=patNo(v),dz=EF.DEAD*sw;
+      g.fillStyle='#1a1d23';rr(0,y,sw,h,7);g.fill();
+      const grd=g.createLinearGradient(0,0,dz,0);grd.addColorStop(0,colA(.30));grd.addColorStop(1,colA(.03));
+      g.fillStyle=grd;rr(0,y,dz,h,7);g.fill();
+      g.fillStyle=n?'#262a32':colA(.22);g.fillRect(dz,y+3,sw-dz-2,h-6);
+      g.textBaseline='middle';g.font=`600 ${fs}px ${FONT}`;g.textAlign='left';g.fillStyle=n?col:'#8a8f99';g.fillText(name,8,y+h/2);
+      g.textAlign='right';g.font=`${n?600:400} ${fs}px ${FONT}`;g.fillStyle=n?col:'#6c7380';
+      g.fillText(fine&&fine.which===which?'FINE · #'+n:n?'#'+n:defLab,sw-12,y+h/2);
+      g.fillStyle=col;rr(Math.min(sw-4,ctxSet(t)[which+'V']*sw-2),y+3,4,h-6,2);g.fill();ghost(liveV[which],y,'#fff');
+      box(y,pin[which]);
+    };
+    strip(y0,'order','ORDER',ACC,ACCA,'FORWARD');
+    strip(yMute(),'mute',prefs.silPat==='insert'?'GAP':'SKIP','#b8c4ff',a=>'rgba(150,170,255,'+a+')','NONE');
   }
   function draw(){
     requestAnimationFrame(draw);
@@ -1382,4 +1303,4 @@
   paintIcons();setFold(false);dieEl.innerHTML=ICON.dice;
   (function pre(){let n=0;const nx=()=>{if(n>=tracks.length)return;const t=tracks[n++];if(!t.buf){t.buf=buildLoop(t,48000);t.pk=peaks(t.buf);}setTimeout(nx,10);};setTimeout(nx,0);})();
   requestAnimationFrame(draw);
-})();
+}

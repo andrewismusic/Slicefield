@@ -78,9 +78,37 @@ function engineFactory(){
   const emptyStep=i=>({empty:true,on:true,a:0,off:0,sid:'E'+i,slen:1,fx:[]});
 
   const ss=x=>x*x*(3-2*x); // smoothstep: fades without a corner at either end
-  // Seeded randomness: a clip's random choices (play order, silence, random slice) come from its seed and the
-  // pass number within its variation cycle, so the same cycle repeats exactly, live and in exports.
-  function seedMix(seed,pass){let h=(seed^Math.imul(pass+1,0x9E3779B1))|0;h=Math.imul(h^h>>>16,0x85EBCA6B);h=Math.imul(h^h>>>13,0xC2B2AE35);return (h^h>>>16)|0;}
+  // ORDER and SKIP: every slider position is one fixed pattern; nothing about them is random at playback.
+  // The far right (v >= DEAD) is the default: forward order, nothing skipped. Moving left, the patterns
+  // change more: next to the default zone one or two steps move (or go quiet), at the far left the bar is
+  // scrambled (or mostly quiet). There are PATN patterns across the throw, each different.
+  const DEAD=0.96,PATN=2048;
+  const patIndex=v=>v>=DEAD?-1:Math.min(PATN-1,Math.floor((DEAD-v)/DEAD*PATN));
+  function patRng(i,salt){let a=(Math.imul(i+1,0x9E3779B1)^salt)|0;
+    return ()=>{a=(a+0x6D2B79F5)|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+  // a step order for an n-step bar: perm[position] = the step (or loop slice) played there
+  function orderPattern(v,n){
+    const i=patIndex(v);if(i<0)return null;
+    const L=(i+1)/PATN,R=patRng(i,0x0D2E),p=[];for(let j=0;j<n;j++)p.push(j);
+    const ops=1+Math.floor(L*L*n*1.5),reach=Math.max(1,Math.round(L*(n-1)));
+    for(let o=0,tries=0;o<ops||(tries<8&&p.every((x,j)=>x===j));o++,tries+=o>=ops?1:0){
+      const u=R(),a=Math.floor(R()*n),d=1+Math.floor(R()*reach),b=(a+(R()<0.5?-d:d)+4*n)%n;
+      if(u<0.15+0.35*L)p[b]=p[a];                                   // a slice repeats
+      else if(u<0.85){const x=p[a];p[a]=p[b];p[b]=x;}               // two swap
+      else{let lo=Math.min(a,b),hi=Math.max(a,b);while(lo<hi){const x=p[lo];p[lo]=p[hi];p[hi]=x;lo++;hi--;}}   // a run plays backwards
+    }
+    return p;
+  }
+  // which steps of an n-step bar play (1) or are skipped (0)
+  function skipPattern(v,n){
+    const i=patIndex(v);if(i<0)return null;
+    const L=(i+1)/PATN,R=patRng(i,0x5C1F),bits=new Array(n).fill(1),m=Math.max(1,Math.round(1+L*(n*0.75-1)));
+    const per=Math.max(1,n/16);   // weights favour off-beats near the default, so the first skips feel like a groove
+    const w=bits.map((_,j)=>{const q=Math.round(j/per);return q===0?0.05+0.6*L:q%4===0?0.4+0.6*L:q%2===0?1:1.5;});
+    for(let k=0;k<m;k++){let tot=0;w.forEach((x,j)=>{if(bits[j])tot+=x;});let r=R()*tot;
+      for(let j=0;j<n;j++){if(!bits[j])continue;r-=w[j];if(r<=0){bits[j]=0;break;}}}
+    return bits;
+  }
   function rdM(b,m,pos){const i=Math.floor(pos),f=pos-i;const a=b[i&m];return a+(b[(i+1)&m]-a)*f;}
   function rdW(b,n,pos){pos=((pos%n)+n)%n;const i=Math.floor(pos),f=pos-i,j=i+1>=n?0:i+1;return b[i]+(b[j]-b[i])*f;}
   function softclip(x){if(!(x<8&&x>-8))return x>=8?1:(x<=-8?-1:0);const a=Math.abs(x);if(a<0.8)return x;return (x<0?-1:1)*(0.8+0.2*Math.tanh((a-0.8)/0.2));}
@@ -92,13 +120,13 @@ function engineFactory(){
     constructor(E,i){
       this.E=E;this.i=i;this.L=null;this.R=null;this.cols=16;this.sl=0;this.s16=0;this.e16=16;
       this.vol=1;this.muted=false;this.tg=1;this.cfg=allCfg();this.cfgV=0;
-      // play order and silence: the plain loop's own settings, a clip's stored ones, and a live (unpinned) override
-      this.ord={mode:'fwd',r:0};this.mute={rnd:0,bits:null};this.muteQ=null;this.ordLive=null;this.muteLive=null;
-      this.seed=1;this.varLen=0;this.rs=0;this.rsOn=false;this.cBar=-1;this.cCtx=undefined;
+      // ORDER and SKIP: the plain loop's own patterns, a clip's stored ones, and a live (unpinned) override
+      this.ord={perm:null};this.mute={bits:null};this.muteQ=null;this.ordLive=null;this.muteLive=null;
+      this.lp=-1;this.barCid=null;
       this.gate=true;this.gG=1;this.rest=false;
       this.touches=[];this.rotLast=null;this.rotLastO=-1;this.anch=null;
       this.clip=null;this.clipQ=undefined;this.cpos=-1;this.songSilent=false;this.launchNow=null;
-      this.rec=null;this.hist=[];this.barPos=-1;this.barN=-1;this.bsnap=null;this.recPend=null;
+      this.hist=[];this.barPos=-1;this.barN=-1;this.bsnap=null;
       this.cur=null;this.tlS=0;this.first=true;this.sidC=0;this.k=0;this.newStep=false;
       this.rp=0;this.rdir=1;this.xp=0;this.xdir=1;this.xf=0;this.xstep=1/96;
       this.dcL=0;this.dcR=0;this.lastL=0;this.lastR=0;
@@ -110,11 +138,8 @@ function engineFactory(){
     }
     get ordE(){return this.ordLive||(this.clip&&this.clip.ord)||this.ord;}
     get muteE(){return this.muteLive||(this.clip&&this.clip.mute)||this.mute;}
-    // musical randomness: seeded per pass when the context repeats, otherwise truly random
-    rnd(){
-      if(!this.rsOn)return Math.random();
-      let a=this.rs=(this.rs+0x6D2B79F5)|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;
-    }
+    // the Random slice effect is the only chance left at playback; capture writes down what it picked
+    rnd(){return Math.random();}
     get s(){return Math.round(this.s16*this.cols/16);}
     get e(){return Math.max(this.s+1,Math.round(this.e16*this.cols/16));}
     get n(){return this.e-this.s;}
@@ -131,8 +156,8 @@ function engineFactory(){
     clampTl(){const s=this.s,n=this.n;if(this.tlS<s||this.tlS>=s+n)this.tlS=s+((((this.tlS-s)%n)+n)%n);}
     reset(){
       this.cur=null;this.first=true;this.tlS=this.s;this.rotLast=null;this.anch=null;this.gr.length=0;this.dcL=this.dcR=0;
-      this.xf=0;this.rp=-1;this.rdir=1;this.hist=[];this.barPos=-1;this.barN=-1;this.cpos=-1;this.bsnap=null;this.recPend=null;
-      this.cBar=-1;this.cCtx=undefined;this.dL.fill(0);this.dR.fill(0);this.dSend=0;this.dlp1=this.dlp2=0;
+      this.xf=0;this.rp=-1;this.rdir=1;this.hist=[];this.barPos=-1;this.barN=-1;this.cpos=-1;this.bsnap=null;
+      this.lp=-1;this.barCid=null;this.dL.fill(0);this.dR.fill(0);this.dSend=0;this.dlp1=this.dlp2=0;
     }
     mkE(f){return {k:f.k,raw:f.raw,auto:f.auto||null,tid:f.tid||null,live:null,v:{},o:null,rv:NaN,cv:-1,ref:null};}
     // the raw cell position an effect plays at this moment: recorded automation, a moving finger, or a held value
@@ -148,40 +173,29 @@ function engineFactory(){
       const c=this.cur;if(!c)return;
       for(const e of c.fx){if(!e.tid)continue;const t=this.touches.find(x=>x.id===e.tid);e.live=t&&t.fx&&t.fx.k===e.k?t.fx.raw:null;}
     }
-    stepOrder(cur,n){ // next index in 0..n-1 following play order
-      const o=this.ordE;
-      if(cur<0)return o.mode==='back'?n-1:0;
-      if(this.rnd()<o.r)return Math.floor(this.rnd()*n);
-      return o.mode==='back'?(cur-1+n)%n:(cur+1)%n;
+    // ORDER: a sequence position plays the step (or loop slice) its pattern names, bar by bar
+    mapPos(pos,len){
+      const p=this.ordE.perm;if(!p)return pos;
+      const n=p.length,j=pos-pos%n+p[pos%n];return j<len?j:pos;
     }
+    // touched slices take turns in the order they were pressed
     pickTouch(L){
-      const o=this.ordE;let nx;
-      if(Math.random()<o.r)nx=L[Math.floor(Math.random()*L.length)];
-      else{
-        const i=L.findIndex(x=>x.id===this.rotLast);
-        if(o.mode==='back'){
-          if(i>0)nx=L[i-1];else if(i===0)nx=L[L.length-1];
-          else{nx=null;for(const x of L)if(x.o<this.rotLastO)nx=x;nx=nx||L[L.length-1];}
-        }else{
-          if(i>=0)nx=L[(i+1)%L.length];
-          else{nx=L.find(x=>x.o>this.rotLastO)||L[0];}
-        }
-      }
+      const i=L.findIndex(x=>x.id===this.rotLast);
+      const nx=i>=0?L[(i+1)%L.length]:(L.find(x=>x.o>this.rotLastO)||L[0]);
       this.rotLast=nx.id;this.rotLastO=nx.o;return nx;
     }
     silenced(){
       const m=this.muteE;
-      if(m.bits)return {on:!m.bits[this.barPos%m.bits.length],kind:'pat'};
-      return {on:m.rnd>0&&this.rnd()<m.rnd,kind:'rnd'};
+      return {on:!!m.bits&&!m.bits[this.barPos%m.bits.length]};
     }
     snapshot(){
-      const c=this.cur,r=this.rec;
-      return {tlS:this.tlS,first:this.first,rotLast:this.rotLast,rotLastO:this.rotLastO,cpos:this.cpos,anch:this.anch,rs:this.rs,
-        hist:this.hist.length,rec:r?r.slots.length:-1,cur:c,left:c?c.left:0,off:c?c.off:0,gate:this.gate,rest:this.rest,hadPitch:this.hadPitch};
+      const c=this.cur;
+      return {tlS:this.tlS,lp:this.lp,first:this.first,rotLast:this.rotLast,rotLastO:this.rotLastO,cpos:this.cpos,anch:this.anch,
+        hist:this.hist.length,cur:c,left:c?c.left:0,off:c?c.off:0,gate:this.gate,rest:this.rest,hadPitch:this.hadPitch};
     }
     restore(s){
-      this.tlS=s.tlS;this.first=s.first;this.rotLast=s.rotLast;this.rotLastO=s.rotLastO;this.cpos=s.cpos;this.anch=s.anch;this.rs=s.rs;
-      this.hist.length=Math.min(this.hist.length,s.hist);if(this.rec&&s.rec>=0)this.rec.slots.length=Math.min(this.rec.slots.length,s.rec);
+      this.tlS=s.tlS;this.lp=s.lp;this.first=s.first;this.rotLast=s.rotLast;this.rotLastO=s.rotLastO;this.cpos=s.cpos;this.anch=s.anch;
+      this.hist.length=Math.min(this.hist.length,s.hist);
       this.cur=s.cur;if(s.cur){s.cur.left=s.left;s.cur.off=s.off;}this.gate=s.gate;this.rest=s.rest;this.hadPitch=s.hadPitch;
     }
     // close off the automation recorded during the step that just ended
@@ -197,7 +211,16 @@ function engineFactory(){
         }
         c.recRefs=false;
       }
-      if(this.recPend){const p=this.recPend;this.recPend=null;this.E.emit({type:'clipStep',tr:this.i,id:p.id,idx:p.idx,slot:p.slot});}
+    }
+    // Capture: every whole bar that played is handed to the app as a sequence, exactly as it was heard
+    // (ORDER, SKIP and random slices written into its steps). The app decides which bars to keep.
+    capture(bn){
+      const n=this.n,at=[];let touched=false;
+      for(const x of this.hist)if(x.bn===bn&&x.bp<n)at[x.bp]=x;
+      for(let i=0;i<n;i++)if(!at[i])return;   // a partial bar (play began mid-bar, or the grid changed) is not kept
+      const slots=at.map(x=>{if(x.tch)touched=true;
+        return {on:x.on,a:x.pa,off:x.off,sid:x.sid,slen:x.slen,fx:x.fx.filter(f=>f.k!=='random').map(f=>f.auto?{k:f.k,raw:f.raw,auto:f.auto.slice()}:{k:f.k,raw:f.raw})};});
+      this.E.emit({type:'bar',tr:this.i,bn,cid:this.barCid,touched,cols:this.cols,n,slots});
     }
     boundary(t,k){
       const E=this.E;
@@ -209,42 +232,15 @@ function engineFactory(){
       if(this.launchNow){const L=this.launchNow;this.launchNow=null;this.clip=L.clip;this.songSilent=L.silent;this.clipQ=undefined;this.cpos=-1;this.barPos=0;}
       if(this.muteQ){this.mute=this.muteQ;this.muteQ=null;}
       const bar=this.barPos===0;
+      if(bar&&E.playing&&this.barN>0)this.capture(this.barN-1);
       if(bar&&this.gridQ){const g=this.gridQ;this.gridQ=0;this.applyGrid(g);}
       if(bar&&this.rangeQ){const q=this.rangeQ;this.rangeQ=null;this.s16=q.s16;this.e16=q.e16;this.clampTl();this.first=true;this.cpos=-1;this.hist=[];}
-      if(this.rec){
-        const r=this.rec;
-        if(r.wait&&bar&&!r.over)r.wait=false;
-        if(r.closing&&bar)this.finishRec();
-        else if(!r.over&&!r.wait&&bar&&r.slots.length>=r.L){
-          // a new recording that reaches the sequence length becomes the sequence and keeps recording over
-          // it (replacing or combining, following the mode) until record is pressed again
-          r.slots.length=r.L;this.finishRec();
-          this.rec={id:r.id,over:true,wait:false,closing:false,slots:[]};
-        }
-      }
       if(bar&&this.clipQ!==undefined){
         this.clip=this.clipQ;this.clipQ=undefined;this.cpos=-1;this.songSilent=false;
       }
-      if(bar){
-        // each bar of a repeating variation cycle starts from the same random numbers, so the cycle repeats
-        const c=this.clip,id=c?c.id:null;
-        if(id!==this.cCtx){this.cCtx=id;this.cBar=-1;}
-        this.cBar++;
-        const vl=c&&c.varLen!==undefined?c.varLen:this.varLen,sd=c&&c.seed!==undefined?c.seed:this.seed;
-        // a cycle is the clip's length times the variation length; positions restart with each cycle
-        const cb=c&&c.slots?Math.max(1,Math.ceil(c.slots.length/(c.n||this.n))):1;
-        if(vl>0){const pass=this.cBar%(cb*vl);if(pass===0){this.cpos=-1;this.first=true;}this.rs=seedMix(sd,pass);this.rsOn=true;}
-        else this.rsOn=false;
-      }
+      if(bar)this.barCid=this.clip?this.clip.id:null;
       this.bsnap=this.snapshot();this.bsnap.t=t;this.bsnap.k=k;
       this.decide(t,k);
-    }
-    finishRec(){
-      const r=this.rec;this.rec=null;
-      if(!r.slots.length)return;
-      const clip={id:r.id,cols:this.cols,n:this.n,slots:r.slots};
-      this.E.emit({type:'clip',tr:this.i,clip});
-      this.clip=clip;this.clipQ=undefined;this.cpos=-1;this.songSilent=false;
     }
     decide(t,k){
       const E=this.E,u=E.u,sl=this.sl,pref=E.pref;
@@ -254,14 +250,14 @@ function engineFactory(){
       //   FX only off: touched slices take turns.      FX only on: the sequence (or loop) keeps its slices.
       //   Replace: each step plays one touch's effect. Combine: every held effect stacks on each step;
       //            when one effect is held twice, the most recent touch's value wins.
-      const r=this.rec,combine=E.mode==='combine',fxOnly=E.fxOnly,dub=!!(r&&r.over&&!r.wait&&fxOnly&&clip&&clip.id===r.id);
+      const combine=E.mode==='combine',fxOnly=E.fxOnly;
       const loopT=fxOnly&&combine?[]:this.touches,applied=combine?this.touches.filter(x=>x.fx):[];
-      const pre={tlS:this.tlS,first:this.first,rotLast:this.rotLast,rotLastO:this.rotLastO,cpos:this.cpos};
-      // advance the underlying sequence positions
+      const pre={tlS:this.tlS,lp:this.lp,first:this.first,rotLast:this.rotLast,rotLastO:this.rotLastO,cpos:this.cpos};
+      // advance the underlying sequence positions; ORDER maps each position to the step (or slice) it plays
       let slot=null,cIdx=-1;
-      if(clip){cIdx=this.cpos=this.stepOrder(this.cpos,clip.slots.length);slot=clip.slots[cIdx];}
-      if(this.first){this.first=false;this.tlS=this.s+(this.ord.mode==='back'?this.n-1:0);}
-      else this.tlS=this.s+this.stepOrder(this.tlS-this.s,this.n);
+      if(clip){this.cpos=this.cpos<0?0:(this.cpos+1)%clip.slots.length;cIdx=this.mapPos(this.cpos,clip.slots.length);slot=clip.slots[cIdx];}
+      this.lp=this.first||this.lp<0?0:(this.lp+1)%this.n;this.first=false;
+      this.tlS=this.s+this.mapPos(this.lp,this.n);
       const cont=c&&c.left>0;
       let base=null;
       if(cont){}
@@ -271,8 +267,8 @@ function engineFactory(){
       }
       else if(this.songSilent){base={src:'rest',sid:'R'+(++this.sidC),a:this.tlS*sl,dur:1,slen:sl,fx:[],off:0,on:false};}
       else if(slot&&slot.empty){
-        // an empty step plays the clip's background: the loop's own slice for this position, or silence
-        const pos=this.s+(cIdx%this.n),bg=clip.bg==='silence'||slot.on===false;
+        // an empty step plays the loop's own slice for its position (switched off, it is silent)
+        const pos=this.s+(cIdx%this.n),bg=slot.on===false;
         base={src:bg?'rest':'loop',sid:'E'+(++this.sidC),a:pos*sl,dur:1,slen:sl,fx:[],off:0,on:!bg,empty:true};
       }
       else if(slot){
@@ -287,9 +283,11 @@ function engineFactory(){
       if(base&&fxOnly&&!combine&&loopT.length&&(base.src!=='rest'||base.empty)){
         const x=this.pickTouch(loopT);base.fx=x.fx?[{tid:x.id,k:x.fx.k,raw:x.fx.raw}]:[];base.picked=true;
       }
-      // silence: muted in place, or inserted as a rest that holds the sequence back
-      const sil=cont?{on:false}:this.silenced();
-      const insert=sil.on&&(sil.kind==='pat'?pref.silPat:pref.silRnd)==='insert';
+      // SKIP mutes a step in place; as GAP it inserts a rest and the sequence waits. A touched step is
+      // never skipped unless the preference says SKIP applies to touches too.
+      const touched=!!(base&&base.picked)||applied.length>0;
+      const sil=cont||(touched&&pref.touchWin)?{on:false}:this.silenced();
+      const insert=sil.on&&pref.silPat==='insert';
       if(insert)Object.assign(this,pre);
       this.rest=insert;
       if(base){
@@ -321,34 +319,19 @@ function engineFactory(){
         return f;
       });
       cc.recRefs=refs;
-      // pa: the slice actually heard (after a random-slice jump), used when printing a clip to steps
-      const rec={on:this.gate,a:cc.a/u,off:k-cc.k0,sid:cc.sid,slen:cc.slen/sl,fx,pa:(cc.rPick>=0?cc.rPick:cc.a)/u,tch:!insert&&!!cc.touched};
-      this.hist.push(Object.assign({bp:this.barPos,bn:this.barN,ci:this.cIdx},rec));
+      // pa: the slice actually heard (after a random-slice jump); capture writes it into the step
+      this.hist.push({bp:this.barPos,bn:this.barN,ci:this.cIdx,on:this.gate,a:cc.a/u,off:k-cc.k0,sid:cc.sid,slen:cc.slen/sl,fx,
+        pa:(cc.rPick>=0?cc.rPick:cc.a)/u,tch:!insert&&!!cc.touched});
       if(this.hist.length>96)this.hist.splice(0,32);
-      if(r){
-        // Recording writes only the steps you touch. Silence, play order and randomness belong to the clip
-        // (printing bakes them), so a touched step is written as on; untouched steps are left alone.
-        const take=()=>({on:cc.on!==false,a:rec.a,off:rec.off,sid:rec.sid,slen:rec.slen,fx});
-        if(r.over){
-          if(r.wait&&clip&&clip.id===r.id)r.wait=false;
-          if(!r.wait&&clip&&clip.id===r.id&&this.cIdx>=0&&rec.tch){
-            const old=clip.slots[this.cIdx];
-            // FX only: the step keeps its slice and on/off and takes the effects heard; an empty step becomes
-            // its background slice
-            const s=dub?Object.assign({},old.empty?{on:true,a:rec.a,off:0,sid:'X'+(++this.sidC),slen:1}:old,{fx,empty:undefined}):take();
-            if(s.empty===undefined)delete s.empty;
-            clip.slots[this.cIdx]=s;E.emit({type:'clipStep',tr:this.i,id:r.id,idx:this.cIdx,slot:s});this.recPend={id:r.id,idx:this.cIdx,slot:s};
-          }
-        }else if(!r.wait)r.slots.push(rec.tch?take():emptyStep(this.sidC++));
-      }
     }
-    // a touch that lands just after a slice started is treated as if it was on time
+    // A touch (or a release) that lands just after a step started counts for that step: the step is decided
+    // again as if it had been on time. Its slice keeps its place in time, so nothing restarts. The window is
+    // the grace time plus the device's output latency (the step was heard that much later than it was made).
     regrace(){
       const E=this.E,b=this.bsnap;
       if(!b||!E.playing||E.pref.grace<=0)return;
-      if(E.t-b.t>E.pref.grace*E.sr/1000||E.t<b.t)return;
+      if(E.t-b.t>(E.pref.grace+(E.pref.lat||0))*E.sr/1000||E.t<b.t)return;
       if(b.cur&&b.left>1)return;
-      this.recPend=null;
       this.restore(b);this.decide(b.t,b.k);
     }
     startStep(c){
@@ -494,14 +477,12 @@ function engineFactory(){
         const gv=this.vol*this.tg;oL[i]+=ol*gv;oR[i]+=or*gv;
       }
     }
-    recFeed(r){const from=r.sent||0;r.sent=r.slots.length;return r.slots.slice(from);}
     info(){
-      const c=this.cur,u=this.E.u,r=this.rec;
+      const c=this.cur,u=this.E.u;
       return {cols:this.cols,n:this.n,s:this.s,barPos:this.barPos,barN:this.barN,src:c?c.src:null,sid:c?c.sid:null,a:c?c.a/u:0,rest:this.rest,
         pos:this.rp/u,fx:c?c.fx.map(e=>e.k):[],gate:this.gate,clipId:this.clip?this.clip.id:null,cIdx:this.cIdx,
         clipQ:this.clipQ===undefined?undefined:(this.clipQ?this.clipQ.id:null),songSilent:this.songSilent,
-        rec:r?(r.closing?'closing':r.wait?'waiting':'on'):null,recOver:!!(r&&r.over),recDub:!!(r&&r.over&&this.E.fxOnly),recSteps:r?r.slots.length:0,recId:r?r.id:null,
-        recFrom:r?(r.sent||0):0,recNew:r&&!r.over?this.recFeed(r):null};
+        lp:this.lp};
     }
   }
 
@@ -509,7 +490,7 @@ function engineFactory(){
     // nTracks: the app uses one; more are kept possible for hosts that run several side by side
     constructor(sr,nTracks){
       this.sr=sr;this.len=0;this.u=0;this.t=0;this.playing=false;this.g=0;this.swing=0;this.stepped=false;
-      this.pref={silRnd:'mute',silPat:'mute',grace:40};this.mode='replace';this.fxOnly=false;this.fd=Math.round(0.0015*sr);
+      this.pref={silPat:'mute',grace:40,lat:0,touchWin:true};this.mode='replace';this.fxOnly=false;this.fd=Math.round(0.0015*sr);
       this.tracks=Array.from({length:nTracks||1},(_,i)=>new Track(this,i));this.view=0;this.song=null;
       this.sc=0;this.post=null;this.vol=1;this.mixL=null;this.mixR=null;this.peak=0;
       // safety limiter (untouched audio passes at unity): 1.5 ms look-ahead, ceiling −1 dBFS, 80 ms release
@@ -535,17 +516,17 @@ function engineFactory(){
           if(!this.ringL||this.ringL.length!==8*this.len){this.ringL=new Float32Array(8*this.len);this.ringR=new Float32Array(8*this.len);}
           break;}
         case 'play':if(!this.playing)this.start();break;
-        case 'stop':this.playing=false;this.song=null;for(const tr of this.tracks){tr.gridQ=0;tr.finalize();tr.rec=null;tr.songSilent=false;tr.launchNow=null;}break;
+        case 'stop':this.playing=false;this.song=null;for(const tr of this.tracks){tr.gridQ=0;tr.finalize();tr.songSilent=false;tr.launchNow=null;}break;
         case 'touches':{T.touches=d.list||[];T.relink();const sig=T.touches.map(x=>x.id+':'+x.a+':'+(x.fx?x.fx.k:'-')).join();if(sig!==T.tsig){T.tsig=sig;T.regrace();}break;}
         case 'cfg':T.cfg=Object.assign({},T.cfg,d.cfg);T.cfgV++;break;
         case 'grid':if(this.playing&&d.q){T.gridQ=d.n;}else{T.gridQ=0;T.applyGrid(d.n);}T.bsnap=null;break;
         case 'range':if(this.playing&&d.q)T.rangeQ={s16:d.s16,e16:d.e16};else{T.rangeQ=null;T.s16=d.s16;T.e16=d.e16;T.clampTl();if(T.barPos>=T.n)T.barPos%=T.n;}T.bsnap=null;break;
         case 'mode':this.mode=d.mode==='combine'?'combine':'replace';break;
         case 'fxonly':this.fxOnly=!!d.on;break;
-        case 'order':T.ord={mode:d.mode,r:d.r||0};break;
-        case 'mute':T.muteQ={rnd:d.rnd||0,bits:d.bits||null};break;
+        // patterns come from orderPattern / skipPattern (the app sends them with the slider position)
+        case 'order':T.ord={perm:d.perm||null};break;
+        case 'mute':T.muteQ={bits:d.bits||null};break;
         case 'live':if('ord' in d)T.ordLive=d.ord||null;if('mute' in d)T.muteLive=d.mute||null;break;
-        case 'rand':T.seed=d.seed|0;T.varLen=d.varLen|0;break;
         case 'grab':{   // the last `bars` whole bars that played, ending at the most recent bar line
           if(!this.ringL||!this.len)break;const N=this.ringL.length,end=Math.floor(this.t/this.len)*this.len,
             n=Math.min(d.bars*this.len,end,N),L=new Float32Array(n),R=new Float32Array(n);
@@ -557,30 +538,6 @@ function engineFactory(){
         case 'stepped':this.stepped=!!d.on;break;
         case 'pref':Object.assign(this.pref,d.pref);break;
         case 'view':this.view=d.tr;break;
-        case 'rec':{
-          if(d.on&&d.over){
-            // record over an existing sequence in place: it keeps its length
-            if(!this.playing)this.start();
-            const r={id:d.over.id,over:true,wait:true,closing:false,slots:[]};
-            if(!(T.clip&&T.clip.id===d.over.id))T.clipQ=d.over;
-            T.rec=r;
-          }else if(d.on){
-            if(!this.playing)this.start();
-            const n=T.n,bp=T.barPos;
-            const r={id:d.id,wait:false,closing:false,slots:[],L:n};   // sequences are one bar
-            if(bp<0){}                                     // not started yet: begins on the first step
-            else if(bp/n<0.5){r.slots=T.hist.slice(-(bp+1)).map((x,j)=>x.tch?{on:true,a:x.a,off:x.off,sid:x.sid,slen:x.slen,fx:x.fx}:emptyStep('h'+j));}
-            else r.wait=true;
-            T.rec=r;
-          }else if(T.rec&&T.rec.over){
-            const id=T.rec.id;T.rec=null;this.emit({type:'overDone',tr:d.tr,id});
-          }else if(T.rec){
-            const r=T.rec,n=T.n,bp=T.barPos;
-            if(r.wait){T.rec=null;break;}
-            if(bp/n<0.5&&r.slots.length>bp+1){r.slots.length-=bp+1;T.finishRec();}
-            else r.closing=true;
-          }
-          break;}
         case 'launch':{
           if(!this.playing){this.start();T.clip=d.clip||null;T.clipQ=undefined;T.songSilent=false;}
           else T.clipQ=d.clip||null;
@@ -655,5 +612,5 @@ function engineFactory(){
     for(let t=0;t<samples;t+=BL){const n=Math.min(BL,samples-t);e.render(bl,br,BL);L.set(n<BL?bl.subarray(0,n):bl,t);R.set(n<BL?br.subarray(0,n):br,t);}
     e.post=post;return {L,R};
   }
-  return {Engine,bounce,seedMix,emptyStep,DT,FX,semi,semiQ,scaleNotes,SCALES,maskOf,NOTES,stMs,DIV,step,defCfg,allCfg,resolve,rowBip,AUTO};
+  return {Engine,bounce,orderPattern,skipPattern,DEAD,PATN,emptyStep,DT,FX,semi,semiQ,scaleNotes,SCALES,maskOf,NOTES,stMs,DIV,step,defCfg,allCfg,resolve,rowBip,AUTO};
 }

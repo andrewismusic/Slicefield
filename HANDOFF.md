@@ -1,8 +1,8 @@
 # Slicefield — handoff for the iOS app
 
-This guide and the `prototype/` folder are everything needed to build Slicefield as a native iPhone app. The prototype is a single-page web app (version 17) designed through about fifteen rounds of hands-on testing on a phone. Treat its behaviour as the specification: when this document and the code disagree, the code in `prototype/src/` is what was actually played and approved. Say so in the pull request if you change any behaviour on purpose.
+This guide and the `prototype/` folder are everything needed to build Slicefield as a native iPhone app. The prototype is a single-page web app (version 18) designed through about fifteen rounds of hands-on testing on a phone. Treat its behaviour as the specification: when this document and the code disagree, the code in `prototype/src/` is what was actually played and approved. Say so in the pull request if you change any behaviour on purpose.
 
-**For Claude Code:** read this whole file first, then `prototype/src/engine.js` (about 580 lines, the heart of it). Section 13 gives the build order. Section 14 lists decisions the owner (Andrew) hasn't made yet. Ask him about those instead of guessing. Section 18 covers using Slicefield as the sound engine inside a larger app, and sections 19–20 list what changed in versions 16 and 17.
+**For Claude Code:** read this whole file first, then `prototype/src/engine.js` (about 580 lines, the heart of it). Section 13 gives the build order. Section 14 lists decisions the owner (Andrew) hasn't made yet. Ask him about those instead of guessing. Section 18 covers using Slicefield as the sound engine inside a larger app, and sections 19–21 list what changed in versions 16, 17 and 18. **Version 18 replaced recording, clips and the song with capture and a Takes list, and the play-order and silence strips with fixed ORDER and SKIP patterns.** Where §5.4, §5.5, §8, §9, §10.4 or §20 disagree with §21, §21 wins.
 
 ---
 
@@ -28,6 +28,7 @@ This guide and the `prototype/` folder are everything needed to build Slicefield
 18. Slicefield as an engine inside a larger app
 19. Changes in version 16
 20. Changes in version 17
+21. Changes in version 18 (and the planned next steps)
 
 ---
 
@@ -54,19 +55,21 @@ CLAUDE.md                      short project memory to drop into the new repo
 prototype/
   slicefield.html              the complete prototype (open in any browser; tap Play)
   build.py                     rebuilds slicefield.html from src/
-  src/engine.js                audio engine: tracks, step decisions, effects, recording, song (pure JS, no DOM)
-  src/synth.js                 demo-loop synthesiser (9 loops) + resample/normalize helpers
-  src/ui.js                    the whole UI: touch handling, drawing, sheets, session, song
-  src/shell.html               HTML + CSS
+  src/engine.js                audio engine: tracks, step decisions, effects, capture, ORDER/SKIP patterns, song (pure JS, no DOM)
+  src/synth.js                 demo-loop synthesiser (9 loops) + resample helper, inside synthFactory()
+  src/ui.js                    the whole UI: touch handling, drawing, sheets, Takes list, export
+  src/app.html                 the instrument's CSS + markup (lives in its shadow root)
+  src/page.html                the host page: title, font, one <div id="slicefield">
   tests/engine.test.js         behaviour tests (node tests/engine.test.js) — port these to XCTest
   tools/render-reference.js    renders scripted scenarios to WAV + step logs for parity testing
-  tools/scenarios/*.json       four scenarios (plain loop, every effect, 4 engine tracks + swing, record/FX only/combine)
+  tools/scenarios/*.json       five scenarios (plain loop, every effect, 4 engine tracks + swing, capture/FX only/combine, patterns + delay)
 ```
 
 To regenerate the reference renders (written to `tools/out/`, about 20 MB, not checked in), run `node tools/render-reference.js`. Running it twice gives byte-identical step logs.
 
 How the prototype is put together:
 
+- The built page defines exactly one global, the class `Slicefield` (v18). The engine factory, the loop synth, the markup and the interface code are its static members, and `new Slicefield(element)` draws a complete instrument into that element's shadow root, so its CSS and element ids never touch the host page. Several instances can sit on one page.
 - `engine.js` exports `engineFactory()`. In the browser it runs inside an AudioWorklet and talks to the UI only through messages (`msg()` in, `post()` out). That boundary maps directly onto a real-time audio thread plus a UI thread on iOS.
 - `ui.js` keeps all user-facing state: the track, effect settings, clips, song and prefs. It pushes what the engine needs, and it draws everything on two `<canvas>` elements (the sequencer lane and the effect grid), plus HTML for the header, tabs, sheets and session view.
 
@@ -224,6 +227,8 @@ Inputs: the track's current touches (from the UI), its playing sequence (`clip`)
 **Grace window** (`regrace`): when the set of touches changes (`id:a:fx` signature) within `grace` ms after a step started, the engine rolls back to that step's snapshot and decides again. This makes a slightly late tap sound on time. It doesn't apply when the current step spans more than one step. Default 40 ms; options 0/20/40/70.
 
 ### 5.4 Play order (`ord = {mode: fwd|back, r}`)
+> **Replaced in v18** by fixed ORDER patterns (`ord = {perm}`); see §21.
+
 - `stepOrder(cur, n)`: with probability `r`, jump to a random index; otherwise step forward or back with wraparound. Start: 0 (fwd) or n−1 (back).
 - `pickTouch(list)` does the same over held touches, remembering the last one played (by id and order number) so it rotates correctly when touches are added or removed.
 - Strip mapping (strip value `v` 0…1, laid out ◀ BACK · RANDOM · FWD ▶):
@@ -234,6 +239,8 @@ Inputs: the track's current touches (from the UI), its playing sequence (`clip`)
   - Default `v = 1`.
 
 ### 5.5 Silence and patterns (`mute = {rnd, bits}`)
+> **Replaced in v18** by fixed SKIP patterns (`mute = {bits}`), 16 steps, no random side; see §21.
+
 - Strip value `v`: within ±0.015 of 0.5 → none (snaps to 0.5).
 - `v < 0.5` → random silence with probability `(0.5−v)/0.5`.
 - `v > 0.5` → pattern index `round((v−0.5)/0.5 · 127)`; index 0 = no pattern.
@@ -341,6 +348,8 @@ The engine stores the track's `cfg` and re-resolves whenever raw or cfg changes 
 
 ## 8. Recording and sequences
 
+> **Replaced in v18:** there is no record button. Every bar is captured and kept on the Takes list (§21). Lane editing (§8.5), smooth/stepped automation (§8.3) and grid changes (§8.6) still apply to the main page's sequence.
+
 ### 8.1 Rules (as approved)
 - **Starting into an empty slot** creates a new sequence:
   - if Record is pressed in the first half of a bar, that bar's steps so far are taken from history (no lost downbeat)
@@ -398,6 +407,8 @@ Removed in v16 (Andrew's call). The engine keeps its 96-step history ring only f
 
 ## 9. Clips, song and export
 
+> **Replaced in v18** by the Takes list and its export (§21).
+
 - Toggle with the clips/effects icon (two-columns-of-lines icon ↔ 4×4 dots). The clips view replaces the lane, loop row and grid.
 - Two columns side by side, each one column wide and scrolling on its own:
   - **Clips** (left): a **■ Loop** button on top (stops the clip and plays the plain loop, ends the song), then the slots, then "+ Add".
@@ -438,6 +449,8 @@ Portrait only; lock the orientation. Side gutter 16 pt. Top to bottom:
 - The loop row holds the "Loop" picker (9 demo loops + "Load your own…") and, on the right, the **fold chevron** (§10.4). There are no track tabs.
 
 ### 10.4 Strips and fold
+> **v18:** the strips are ORDER and SKIP (GAP); see §21 for their layout and fine control. The pin and fold rules below still apply.
+
 - Two 28 pt strips:
   - **Play order:** ◀ BACK · RANDOM n% · FWD ▶, with an accent marker.
   - **Silence / pattern:** ◀ SILENCE n% on the left half; on the right half, 8 small squares showing the pattern, where the square for the current step **glows softly**; PATTERN ▶.
@@ -563,15 +576,17 @@ When you are unsure how something should feel, open the prototype on a phone and
 
 ## 14. Open questions for Andrew
 
-1. **Resampling** (discussed, not built): a one-button "resample this clip into a new loop", mainly to extend pitch range and, once it exists, time-stretching. See §20.
-2. **Effect combining per row / custom "slice field maps."** It was discussed and parked ("not yet"). A suggested design was in the conversation: 1–3 effects per row, each effect at most once per track, a fixed in-row order, plus presets.
-3. **Reverb as a per-clip "space" setting** (agreed in principle, not built yet). And a cap on visible rows with a quick effect picker, now that Delay makes nine rows.
+1. **Resampling** (discussed, not built): a one-button "resample this take into a new loop", mainly to extend pitch range and, once it exists, time-stretching. See §20.
+2. **Fields, signal order and overlapping cells** (agreed direction, not built; design notes in §21). Still open: how fields are picked mid-performance, what a random field may contain, and whether overlap needs its own edit mode.
+3. **Reverb** (agreed in principle, not built yet). Probably a cell in a field now, rather than a per-clip setting.
 4. **Persistence and projects.** One autosaved project, or named projects? Share sequences?
 5. **Imported audio:** resample to a bar (current behaviour, changes pitch) or trim and time-stretch?
 6. **Background audio, Ableton Link and MIDI clock**: wanted?
 7. **iPad layout**: the prototype is portrait iPhone only.
-8. **Default variation length.** New clips and the plain loop repeat their randomness every 1 bar. Is 1 the right default, or 2/4?
-9. **Filter resonance level-matching.** Freeze is now level-matched (§20); the filter's resonant peak (+3.5 dB at the default resonance) is not compensated yet.
+8. **Takes housekeeping.** There is no cap on the Takes list yet, and takes live only in memory. How many to keep, and do they persist between launches?
+9. **The shooting game** (§21): scoring, round length, and whether it ships in the instrument or in the larger platform.
+10. **Desktop input** for web and VST versions, which have no multi-touch (§18).
+11. **Filter resonance level-matching.** Freeze is now level-matched (§20); the filter's resonant peak (+3.5 dB at the default resonance) is not compensated yet.
 
 ---
 
@@ -619,28 +634,26 @@ Add scenarios as you go. Every bug fixed in either implementation should get one
 | type | fields | effect |
 |---|---|---|
 | `load` / `loadAll` | `tr, L, R` / `bufs[4]` | set loop buffers; if the length changed, rescale running positions |
-| `play` / `stop` | — | start from t = 0 (resets all tracks) / stop (ends recordings, clears song) |
+| `play` / `stop` | — | start from t = 0 (resets all tracks) / stop (clears song) |
 | `touches` | `tr, list:[{id, a, n, o, fx:{k, raw}|null, glob}]` | the current held touches for a track (a, n in sixteenths; o = touch order); may trigger a grace re-decide |
 | `cfg` | `tr, cfg:{fx: EffectConfig}` | replace effect settings; bumps the version counter |
 | `grid` | `tr, n, q` | grid 16/8, queued to the bar if `q` and playing |
 | `range` | `tr, s16, e16, q` | bar length, queued to the bar if `q` and playing |
 | `mode` | `mode: replace|combine` | Replace / Combine |
 | `fxonly` | `on` | FX only (§5.3) |
-| `order` | `tr, mode, r` | the plain loop's play order (a clip carries its own `ord`) |
-| `mute` | `tr, rnd, bits` | the plain loop's silence (queued to the next step) |
-| `live` | `tr, ord?, mute?` | live (unpinned) strip override; `null` clears it. Effective = live ∥ playing clip's stored ∥ the loop's own |
-| `rand` | `tr, seed, varLen` | the plain loop's repeating randomness (varLen 0 = never repeats) |
+| `order` | `tr, perm|null` | the plain loop's ORDER pattern from `orderPattern(v, n)` (a sequence carries its own `ord = {perm}`) |
+| `mute` | `tr, bits|null` | the plain loop's SKIP pattern from `skipPattern(v, n)`, queued to the next step (a sequence carries `mute = {bits}`) |
+| `live` | `tr, ord?, mute?` | live (unpinned) strip override; `null` clears it. Effective = live ∥ playing sequence's stored ∥ the loop's own |
 | `grab` | `bars` | post back the last whole bars of output (`grabbed {L, R, sr}`) |
 | `tmute` / `tvol` | `tr, on` / `tr, v` | track mute / gain (the app doesn't send these; for multi-track hosts) |
 | `swing` / `stepped` | `s` / `on` | |
-| `pref` | `{silRnd, silPat, grace}` | |
+| `pref` | `{silPat: mute|insert, grace, lat, touchWin}` | SKIP or GAP; late-touch window = `grace + lat` ms (`lat`: reported output latency); touches play through SKIP when `touchWin` |
 | `view` | `tr` | which track's history to report |
-| `rec` | `tr, on, id` / `over: clip` | start new / record over existing / stop |
 | `launch` | `tr, clip|null` | queue a sequence (null = raw loop) at the next bar; starts transport if stopped; ends song |
 | `clipEdit` | `clip` | replace a sequence everywhere it's referenced (steps edited, blank replacement) |
 | `song` / `songRows` / `songStop` | `rows:[{bars, clips[nTracks]}], from` | play the song from a row (next global bar) / update rows live / stop the song |
 
-Engine → UI events: `clip {tr, clip}` (a recording became a sequence), `grabbed {L, R, sr}`, `clipStep {tr, id, idx, slot}` (recording wrote a step; sent at step start and again with final automation), `overDone`, `grid {tr, n}`, `songRow {idx}`, plus `status`.
+Engine → UI events: `bar {tr, bn, cid, touched, cols, n, slots}` (capture: every whole bar as heard, §21), `grabbed {L, R, sr}`, `grid {tr, n}`, `songRow {idx}`, plus `status`. The v17 `rec`, `rand`, `clip`, `clipStep` and `overDone` are gone.
 
 ### B. Constants
 - AUTO = 16 automation points per step
@@ -702,8 +715,14 @@ Andrew may run Slicefield as the sound and performance engine inside a larger, p
 - Events out (`clip`, `clipStep`, `songRow`, status) should be subscribable, not a single callback, so several UIs (the grid plus a host overview) can watch one engine.
 - One-channel UI, multi-channel core: the engine still takes `nTracks` and song rows carry one clip per track. A host that wants four Slicefields side by side can use one engine with four tracks (shared clock, one render call) or four engines. Either works; one engine is simpler for sync.
 
+**Input without multi-touch (web, VST, desktop).** Andrew wants iOS first, but web and VST versions could be useful, and a mouse is one pointer. Ideas to settle later (§14):
+- latch: click a cell to hold it until clicked again (the prototype had a latch mode in earlier versions), so several cells can be "held" at once
+- the computer keyboard as a second hand: rows of keys mapped to columns or to cells of the current field
+- MIDI notes and controllers mapped to cells (the touch messages already take abstract `{id, slice, effect, raw}`, so this needs no engine change)
+- moving holds: drag with the mouse while a key is down, or map a controller to the held cell's `raw`
+
 **Things to avoid**
-- Singletons, `static` state or a global RNG (the RNG is already injectable for parity).
+- Singletons, `static` state or a global RNG (the RNG is already injectable for parity). The web prototype now follows the same rule: one class, no globals (§2).
 - Calls from the engine back into Swift, ObjC or the UI on the audio thread.
 - Assuming the app's window, orientation or safe area inside `SlicefieldUI`. Take a size and lay out from it, so the grid can sit in a host's panel or sheet.
 - Persisting anything from inside the core.
@@ -816,3 +835,197 @@ Agreed with Andrew after v16. The model has three layers, with two actions that 
 - re-slicing a sequenced result gives a new slice grid ("chop the chop"), which stacked effects can't do
 
 Repeating most effects adds little, so it's parked as an open question (§14).
+
+---
+
+## 21. Changes in version 18 (and the planned next steps)
+
+Agreed with Andrew after v17. Two big shifts: **capture replaces recording**, and **ORDER and SKIP are fixed patterns** with no randomness. Together they remove seeds, variation length, the Clip sheet and Print: what you hear is what is kept and what exports.
+
+### 21.1 Capture and the Takes list
+
+**Engine.**
+- At every bar line while playing, the track hands over the bar that just ended as a sequence: `bar {tr, bn, cid, touched, cols, n, slots}`.
+- `slots` are the steps exactly as heard:
+  - ORDER, SKIP/GAP and any random-slice pick are written in (`a` is the slice actually played; Random is removed from the effects)
+  - an off step is `on: false`
+  - smooth-mode automation is included
+- `touched` is true when any step in the bar was played by a finger.
+- `cid` is the sequence (or take) that was playing.
+- A partial bar (play began mid-bar, or the grid changed) is not handed over.
+- The JS builds these objects on the audio thread. Natively, write each bar into a preallocated ring of bars and let the UI thread copy it out.
+
+**Which bars become takes (UI).** A bar is kept as a new take unless:
+- it equals the plain loop (forward, nothing skipped, no effects); or
+- it is untouched and equals a take already kept (looping a take, or Play all, adds nothing).
+
+The same bar again straight after (contiguous bar numbers) is a **repeat** of the last take: `×2`, `×3`… Only touched bars add repeats, so a sequence left looping doesn't run the count up. The count can also be set by hand (− / +, 1–64).
+
+**Takes view** (the list button in the header, row 1 column 7, with a count badge that pulses on each new take). One scrolling column, oldest at the top, new takes appended and auto-scrolled. Each row has:
+- a **drag handle**: drag up or down to move the take
+- a **thumbnail** with the take's number: tap it to loop the take on the main page
+- the **repeats** control
+- a **select** toggle (for export)
+- **delete**
+
+The header has **Play all** / **Stop** (every take in order with its repeats, through the engine's song player; rows update live), a "*n* selected ×" chip, and **Clear** (tap twice).
+
+**The main page's sequence** (`seq`, or none for the plain loop):
+- Looping a take puts a **copy** on the main page, so takes never change. The lane label shows `T12`, and `T12*` once it's edited. Play over it, and what you play becomes new takes. This is how you layer.
+- **◀ Take** (loop row) loops the newest take; each further tap loops the one before. An edited copy reloads first.
+- Touching a lane step on the plain loop starts a blank sequence of empty steps. Tap toggles a step on/off; hold a step and tap a cell to assign it.
+- **Trash** tap clears the sequence (back to the plain loop). Hold Trash and tap steps (or the reverse) to empty them. **Empty steps always play the loop's own slice**; the "silence" background is gone.
+- **Play all** clears the main page's sequence (undoable).
+
+**Undo/redo:**
+- Snapshots cover the sequence, the plain loop's strips and the takes list (order, repeats, deletions).
+- Capture is never undone: takes captured after a snapshot survive undoing it.
+- Undo works while playing.
+
+**Export** (share icon):
+- Takes, **in order** with repeats: one file, with an optional 2-bar tail for echoes.
+- Takes, **each** as a seamless one-bar loop.
+- Both use only the selected takes when any are selected.
+- **The main page's sequence** (or the loop as set), one seamless bar.
+- **What you just heard** and **32-bit float**, as in v17.
+
+**Grid or bar-length changes** clear the sequence and the takes, after asking.
+
+### 21.2 ORDER and SKIP (GAP)
+
+Both strips are fully static. Every slider position is one fixed pattern, and nothing is re-rolled at playback.
+
+**Patterns (engine).**
+- **The default zone.** `orderPattern(v, n)` and `skipPattern(v, n)` return `null` for `v ≥ DEAD` (0.96): forward order, nothing skipped. This is the small zone at the far right.
+- **Position to pattern.** Below `DEAD`, the position maps to an index `i = floor((DEAD − v)/DEAD · PATN)` with `PATN = 2048`, and amount `L = (i+1)/PATN`. A generator seeded from `i` makes the pattern, so each index is always the same pattern.
+- **ORDER** (`perm[position] = step played`) starts from forward order and applies `1 + floor(L²·n·1.5)` operations. Each operation reaches up to `max(1, round(L·(n−1)))` steps away and is one of:
+  - repeat a slice: probability `0.15 + 0.35·L`
+  - swap two steps: up to 0.85 cumulatively
+  - play a run backwards: the rest
+  - The result is never forward order.
+- **SKIP** (`bits[step] = 1 plays`) silences `max(1, round(1 + L·(0.75·n − 1)))` steps.
+  - The steps are chosen by weight: off-beats first near the default, the downbeat almost never, until `L` grows.
+- Patterns are 16 steps on the 1/16 grid (8 on 1/8).
+- About 1,700 of the 2,048 positions give a different pattern on each slider. Positions next to the default zone repeat a little, since one change can only land in a few places.
+
+**Engine playback.**
+- A position counter walks the sequence (`cpos`) or the loop (`lp`), and `mapPos` sends it through `perm`.
+- Positions don't reset at the bar line.
+  - With SKIP they stay aligned with the bar anyway.
+  - With **GAP** (SKIP set to insert rests: the sequence waits), a skipped step holds the sequence back. It plays through every step and drifts against the bar, deterministically.
+- Touched slices take turns in the order they were pressed; ORDER doesn't apply to them.
+
+**Strip interface.**
+- Each strip is labelled **ORDER** or **SKIP**. SKIP reads **GAP** when Preferences sets it to insert.
+- Each strip has:
+  - a gradient showing that change grows to the left
+  - the default zone at the right
+  - the pattern number on the right (`#614`), or FORWARD / NONE
+- **Fine control:** while dragging, move the finger above or below the strip and the value slows down, to a tenth at about 200 pt away, so every pattern can be reached. The label shows `FINE · #n`.
+- **Pins and resets.**
+  - Pins work as in v17 (ORDER pinned, SKIP unpinned by default).
+  - **Unpinning SKIP puts its stored value back to the default.**
+  - Double-tap still resets.
+- The lane dims the steps SKIP will silence. As GAP the sequence shifts instead, so nothing dims.
+
+### 21.3 Touches, timing and the randomizer
+
+- **Touches play through SKIP and GAP** by default (`pref.touchWin`). A Preferences switch applies the pattern to touched steps too.
+- **Late touches:**
+  - A touch, or a release, that lands up to `grace + lat` ms after a step starts counts for that step. The step is decided again from its snapshot.
+  - The slice keeps its place in time (it continues from where it is, it doesn't restart). Slice playback stays quantised.
+  - `lat` is the output latency the device reports, plus 43 ms on the backup ScriptProcessor engine. Without it, the 40 ms window was mostly used up before the touch arrived.
+  - Natively, use the touch timestamp against the render clock instead of a fixed window if you can.
+- **The randomizer follows the play mode:**
+  - **Replace:** a rolled step ends with at most one effect; an added effect replaces what was there.
+  - **Combine:** effects stack.
+  - **FX ONLY:** slices never move.
+
+### 21.4 Interface details
+
+- **Header row 1:** gear, tempo, swing, export, Takes, play.
+- **Header row 2:** stepped, die slider (four columns), REPLACE/COMBINE, FX ONLY, trash. REPLACE/COMBINE is now all caps and one column, the same size as FX ONLY.
+- The die shows just five larger pips; the button is the die's edge.
+- **Lane steps:**
+  - more than four stacked effects show a small "+" after the three dots
+  - the lane label reads LIVE, SEQ, or `T12` / `T12*`
+- **Loop row:** loop picker, undo, redo, ◀ Take, fold. The Clip button is gone.
+- **Removed:**
+  - the record button
+  - clips and song columns
+  - the Clip sheet, seeds, variation length and Print
+  - the "silence" background
+  - the random half of the silence strip
+- **Fixed:** a v17 slip had commented out the line that names an imported file in the loop picker.
+
+### 21.5 One self-contained class (web)
+
+`build.py` now emits a page whose only global is `class Slicefield`.
+- **Static members:** `engineFactory`, `synthFactory`, `markup` (CSS + HTML) and `ui` (the interface code).
+- **Constructor:** `new Slicefield(element)` attaches a shadow root and builds a complete, independent instrument in it.
+- **Shadow root:** element ids, CSS and the backup engine's ScriptProcessor reference are all per instance. Font loading stays in the host page, because `@font-face` doesn't work inside shadow roots in every browser.
+- **Tests:** the headless test checks that the page adds nothing to `window`.
+- **Native counterpart:** this is the §18 rule — no globals, no singletons, everything in an instance.
+
+### 21.6 Tests and scenarios
+
+- `engine.test.js` has 33 cases. Recording tests became capture tests. New cases cover:
+  - ORDER/SKIP repeat exactly and follow their patterns
+  - the default zone
+  - more than 1,000 patterns per slider
+  - GAP plays through
+  - touches over SKIP
+  - the late-touch window with and without latency
+  - a late release taking an effect off
+- Scenario `04-capture-fxonly` replaces `04-record-fxonly`, and `05-patterns-delay` replaces `05-variation-delay`.
+- Scenarios can give ORDER/SKIP as a slider position, `{"type":"order","v":0.4}`, and the renderer turns it into the pattern.
+
+### 21.7 Planned: fields, signal order and overlapping cells (not built)
+
+Andrew's direction: cell layouts become **fields**, presets you can switch on the fly (and generate at random); row order sets signal order; and resizing cells lets them overlap to make combinations.
+
+- **What steps store.** With fields and overlap, a raw touch position no longer means anything on its own: the same spot can drive two or three effects, each over part of its range. Steps should store the **resolved effect chain**: each effect's id and parameter values, in signal order.
+  - Then a sequence and its takes play the same in any field, so loading a field never has to clear anything.
+  - The cost: changing an effect's settings no longer re-maps steps already played (today a scale change re-maps them).
+  - Andrew's alternative is that loading a field keeps the sample but clears the sequence. It's simpler, but it would also strand the takes.
+  - **Recommendation:** store resolved values; takes are meant to outlive the field they were made in.
+- **Signal order:**
+  - the playback stage (slice choice, stutter, reverse, random, freeze, pitch) composes in one fixed way
+  - the processing stage (crush, filter, delay, later reverb) runs top to bottom in field order
+  - natively, an index array per step
+- **Overlap:**
+  - cells are rectangles on a coarse snap grid (about 12 × 16)
+  - a touch inside several cells drives each by its position within that cell
+  - resizing and moving need an edit mode, so they never fight with playing
+- **Switching fields mid-performance:**
+  - held touches keep their effect until released
+  - a picker in the header, not a swipe, which would clash with multi-touch
+- **Random fields** need rules:
+  - minimum cell size
+  - always some plain slice cells
+  - a cap on overlaps
+
+### 21.8 Planned: the shooting game (not built)
+
+An optional layer over the grid. Hitting an enemy touches the cell under it, and capture keeps every bar, so a round leaves a pile of takes. Agreed so far:
+- **Drones: tap.** Quick hits.
+- **Armoured: hold for 1–4 beats.** They regenerate if you let go early.
+- **Serpents: hold and follow.**
+  - paths generated at random, never longer than a bar
+  - the finger slides through cells and their value ranges
+- **Linked groups: hold two or three at once.**
+- **Mines:** touching one costs you. This stops mashing.
+- **Spawning on the beat** is for feel, not scored. Touches are quantised anyway.
+- **Difficulty = tempo.**
+
+**Proposed scoring** (for Andrew):
+- **Points per enemy:**
+  - drone 10
+  - armoured 25 per beat held
+  - serpent 5 per step tracked, plus a 50 bonus for staying on to the end without lifting
+  - linked group: the sum of its members × the number of fingers
+- **Streak multiplier** ×1 → ×4: it climbs with consecutive kills and drops to ×1 on a mine or an enemy that escapes off the grid.
+- **Variety bonus** (+10 % per different effect row hit in a bar, up to +50 %). It rewards what makes good loops without rewarding timing.
+- **Rounds** of 32 bars rather than lives, so each round gives a predictable batch of takes. The next round is +8 BPM.
+
+The game should drive the engine through the same touch messages as fingers (`touches`), so it is just another host of the engine (§18).
