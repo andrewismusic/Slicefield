@@ -5,6 +5,8 @@ function engineFactory(){
   const step=(v,n)=>Math.min(n-1,Math.max(0,Math.floor(v*n)));
   const semi=v=>v===0?0:Math.sign(v)*Math.min(12,Math.floor(Math.abs(v)*12)+1);
   const stMs=v=>250*Math.pow(8/250,v);
+  const rvSec=v=>0.3*Math.pow(30,v);   // reverb decay time (RT60): 0.3 s … 9 s
+  const RVL=[1427,1693,1949,2203];      // reverb line lengths at 48 kHz (prime, about 30–46 ms)
   const envMs=v=>3*Math.pow(100,v/0.985);
   const lpHz=v=>18000*Math.pow(180/18000,v), hpHz=v=>25*Math.pow(5000/25,v), crHz=v=>500*Math.pow(32,v);
   const fmtHz=f=>f>=1000?(f/1000).toFixed(f>=10000?0:1)+' kHz':Math.round(f)+' Hz';
@@ -43,10 +45,18 @@ function engineFactory(){
     crush:{name:'Crush',hue:262,cells:['rate'],
       params:{rate:{name:'Rate',def:0.5,lab:v=>fmtHz(crHz(v))}}},
     // a send: touched steps feed a tempo-synced ping-pong delay whose echoes carry on across later steps
+    // Tails: 'ring' lets echoes carry on; 'cut' silences them at the next step without the effect.
     delay:{name:'Delay',hue:130,cells:['send'],
+      opts:{tails:{name:'Tails',def:'ring',choices:[['ring','Always ring out'],['cut','Cut at the next step without delay']]}},
       params:{send:{name:'Send',def:1,lab:pct},
               time:{name:'Time',def:(2+0.5)/6,lab:v=>DLAB[step(v,6)]},
               fb:{name:'Feedback',def:0.55,lab:pct}}},
+    // a send into a small feedback-delay-network reverb (four lines, Hadamard mixing, damped)
+    reverb:{name:'Reverb',hue:214,cells:['send'],
+      opts:{tails:{name:'Tails',def:'ring',choices:[['ring','Always ring out'],['cut','Cut at the next step without reverb']]}},
+      params:{send:{name:'Send',def:1,lab:pct},
+              size:{name:'Size',def:0.5,lab:v=>rvSec(v).toFixed(1)+' s'},
+              tone:{name:'Tone',def:0.6,lab:pct}}},
     filter:{name:'Filter',hue:40,cells:['cut'],
       params:{cut:{name:'Cutoff',def:0,bip:true,lab:v=>v>0?'HP '+fmtHz(hpHz(v)):v<0?'LP '+fmtHz(lpHz(-v)):'off'},
               res:{name:'Resonance',def:0.7,lab:pct}}}
@@ -109,6 +119,20 @@ function engineFactory(){
       for(let j=0;j<n;j++){if(!bits[j])continue;r-=w[j];if(r<=0){bits[j]=0;break;}}}
     return bits;
   }
+  // A-weighting filter (IEC 61672) by the bilinear transform: two 20.6 Hz poles, one 107.7 Hz, one 737.9 Hz and
+  // two 12.2 kHz poles, as three biquads. Used only to measure loudness (Crush's compensation).
+  function aWeight(sr){
+    const T=1/sr,w=f=>2*sr*Math.tan(Math.PI*f/sr),pw=[w(20.598997),w(107.65265),w(737.86223),w(12194.217)];
+    // analog H(s) = k·s^4 / ((s+p1)^2 (s+p2)(s+p3)(s+p4)^2); split into (s^2/(s+p1)^2), (s^2/((s+p2)(s+p3))), (1/(s+p4)^2)
+    const bl=(b0,b1,b2,a0,a1,a2)=>{const c=2*sr,c2=c*c,A0=a0*c2+a1*c+a2;
+      return [(b0*c2+b1*c+b2)/A0,(2*b2-2*b0*c2)/A0,(b0*c2-b1*c+b2)/A0,(2*a2-2*a0*c2)/A0,(a0*c2-a1*c+a2)/A0];};
+    const S=[bl(1,0,0,1,2*pw[0],pw[0]*pw[0]),bl(1,0,0,1,pw[1]+pw[2],pw[1]*pw[2]),bl(0,0,1,1,2*pw[3],pw[3]*pw[3])];
+    // normalise to 0 dB at 1 kHz
+    const at=f=>{const z=Math.PI*2*f/sr;let g=1;for(const q of S){const re=x=>x[0]+x[1]*Math.cos(z)+x[2]*Math.cos(2*z),im=x=>-(x[1]*Math.sin(z)+x[2]*Math.sin(2*z));
+      const nr=re(q),ni=im(q),dr=1+q[3]*Math.cos(z)+q[4]*Math.cos(2*z),di=-(q[3]*Math.sin(z)+q[4]*Math.sin(2*z));g*=Math.hypot(nr,ni)/Math.hypot(dr,di);}return g;};
+    const k=1/at(1000),st=new Float64Array(6);
+    return {run(x){x*=k;for(let i=0;i<3;i++){const q=S[i],y=q[0]*x+st[2*i];st[2*i]=q[1]*x-q[3]*y+st[2*i+1];st[2*i+1]=q[2]*x-q[4]*y;x=y;}return x;},reset(){st.fill(0);}};
+  }
   function rdM(b,m,pos){const i=Math.floor(pos),f=pos-i;const a=b[i&m];return a+(b[(i+1)&m]-a)*f;}
   function rdW(b,n,pos){pos=((pos%n)+n)%n;const i=Math.floor(pos),f=pos-i,j=i+1>=n?0:i+1;return b[i]+(b[j]-b[i])*f;}
   function softclip(x){if(!(x<8&&x>-8))return x>=8?1:(x<=-8?-1:0);const a=Math.abs(x);if(a<0.8)return x;return (x<0?-1:1)*(0.8+0.2*Math.tanh((a-0.8)/0.2));}
@@ -133,7 +157,16 @@ function engineFactory(){
       this.rN=1<<14;this.rm=this.rN-1;this.rL=new Float32Array(this.rN);this.rR=new Float32Array(this.rN);
       this.pPh=0;this.pSem=0;this.pMix=0;this.hadPitch=false;
       this.gr=[];this.gNext=0;this.cAcc=1;this.cl=0;this.cr=0;this.fs=new Float64Array(4);
-      this.dN=1<<17;this.dm=this.dN-1;this.dL=new Float32Array(this.dN);this.dR=new Float32Array(this.dN);this.dW=0;
+      this.hadCrush=false;this.cEi=0;this.cEo=0;this.cG=1;this.cK=1-Math.exp(-1/(0.08*E.sr));
+      this.cAi=aWeight(E.sr);this.cAo=aWeight(E.sr);
+      this.dN=1<<17;this.dm=this.dN-1;this.dL=new Float32Array(this.dN);this.dR=new Float32Array(this.dN);this.dW=0;this.dWet=1;
+      // reverb: four delay lines (one buffer each, lengths scaled to the rate), two input allpasses
+      const rk=E.sr/48000;this.rvLen=RVL.map(x=>Math.round(x*rk));this.rvN=1<<Math.ceil(Math.log2(Math.max(...this.rvLen)+2));this.rvM=this.rvN-1;
+      this.rvB=this.rvLen.map(()=>new Float32Array(this.rvN));this.rvLp=new Float64Array(4);this.rvG=new Float64Array(4);this.rvW=0;
+      this.apLen=[Math.round(142*rk),Math.round(379*rk)];this.apB=this.apLen.map(n=>new Float32Array(n));this.apI=[0,0];
+      this.rSend=0;this.rWet=1;this.rDamp=0.5;this.rKey=-1;
+      // the loop this track plays: base (from 'load') unless the playing sequence names one of the engine's loops
+      this.base=null;
       this.dSend=0;this.dTime=0;this.dFb=0.55;this.dTv=0;this.dlp1=0;this.dlp2=0;
     }
     get ordE(){return this.ordLive||(this.clip&&this.clip.ord)||this.ord;}
@@ -157,7 +190,13 @@ function engineFactory(){
     reset(){
       this.cur=null;this.first=true;this.tlS=this.s;this.rotLast=null;this.anch=null;this.gr.length=0;this.dcL=this.dcR=0;
       this.xf=0;this.rp=-1;this.rdir=1;this.hist=[];this.barPos=-1;this.barN=-1;this.cpos=-1;this.bsnap=null;
-      this.lp=-1;this.recW=null;this.dL.fill(0);this.dR.fill(0);this.dSend=0;this.dlp1=this.dlp2=0;
+      this.lp=-1;this.recW=null;this.dL.fill(0);this.dR.fill(0);this.dSend=0;this.dlp1=this.dlp2=0;this.dWet=1;
+      this.rvB.forEach(b=>b.fill(0));this.apB.forEach(b=>b.fill(0));this.rvLp.fill(0);this.rSend=0;this.rWet=1;
+    }
+    // A sequence may name a loop the engine holds (`loop` key, see 'loopBuf'); otherwise the track's own plays.
+    setClip(c){
+      this.clip=c||null;const b=(c&&c.loop&&this.E.bufs.get(c.loop))||this.base;
+      if(b&&b.L.length===this.E.len){this.L=b.L;this.R=b.R;}
     }
     mkE(f){return {k:f.k,raw:f.raw,auto:f.auto||null,tid:f.tid||null,live:null,v:{},o:null,rv:NaN,cv:-1,ref:null};}
     // the raw cell position an effect plays at this moment: recorded automation, a moving finger, or a held value
@@ -221,13 +260,13 @@ function engineFactory(){
       const n=this.n;
       this.barPos=this.barPos<0?0:(this.barPos+1)%n;
       if(this.barPos===0)this.barN++;
-      if(this.launchNow){const L=this.launchNow;this.launchNow=null;this.clip=L.clip;this.songSilent=L.silent;this.clipQ=undefined;this.cpos=-1;this.barPos=0;}
+      if(this.launchNow){const L=this.launchNow;this.launchNow=null;this.setClip(L.clip);this.songSilent=L.silent;this.clipQ=undefined;this.cpos=-1;this.barPos=0;}
       if(this.muteQ){this.mute=this.muteQ;this.muteQ=null;}
       const bar=this.barPos===0;
       if(bar&&this.gridQ){const g=this.gridQ;this.gridQ=0;this.applyGrid(g);}
       if(bar&&this.rangeQ){const q=this.rangeQ;this.rangeQ=null;this.s16=q.s16;this.e16=q.e16;this.clampTl();this.first=true;this.cpos=-1;this.hist=[];}
       if(bar&&this.clipQ!==undefined){
-        this.clip=this.clipQ;this.clipQ=undefined;this.cpos=-1;this.songSilent=false;
+        this.setClip(this.clipQ);this.clipQ=undefined;this.cpos=-1;this.songSilent=false;
       }
       this.bsnap=this.snapshot();this.bsnap.t=t;this.bsnap.k=k;
       this.decide(t,k);
@@ -253,7 +292,9 @@ function engineFactory(){
       if(cont){}
       else if(loopT.length&&!fxOnly){
         const x=this.pickTouch(loopT);
-        base={src:'touch',sid:'T'+x.id+'#'+(++this.sidC),a:x.a*u,dur:Math.max(1,Math.round(x.n*u/sl)),slen:x.n*u,fx:x.fx&&!combine?[{tid:x.id,k:x.fx.k,raw:x.fx.raw}]:[],off:0,on:true,picked:true};
+        // Combine: the touched slice plays with the step's own effects, and every held effect stacks on them
+        const own=combine&&slot&&!slot.empty?slot.fx||[]:[];
+        base={src:'touch',sid:'T'+x.id+'#'+(++this.sidC),a:x.a*u,dur:Math.max(1,Math.round(x.n*u/sl)),slen:x.n*u,fx:x.fx&&!combine?[{tid:x.id,k:x.fx.k,raw:x.fx.raw}]:own,off:0,on:true,picked:true};
       }
       else if(this.songSilent){base={src:'rest',sid:'R'+(++this.sidC),a:this.tlS*sl,dur:1,slen:sl,fx:[],off:0,on:false};}
       else if(slot&&slot.empty){
@@ -277,7 +318,7 @@ function engineFactory(){
       // never skipped unless the preference says SKIP applies to touches too.
       const touched=!!(base&&base.picked)||applied.length>0;
       const sil=cont||(touched&&pref.touchWin)?{on:false}:this.silenced();
-      const insert=sil.on&&pref.silPat==='insert';
+      const insert=sil.on&&((clip&&clip.silPat)||pref.silPat)==='insert';   // a sequence may carry its own SKIP/GAP mode
       if(insert)Object.assign(this,pre);
       this.rest=insert;
       if(base){
@@ -338,7 +379,7 @@ function engineFactory(){
       this.restore(b);this.decide(b.t,b.k);
     }
     startStep(c){
-      let pitch=false;
+      let pitch=false,crush=false;
       for(const e of c.fx){
         if(e.k==='stutter'&&e.o.mode==='ms')e.rep=Math.max(64,Math.round(this.E.sr*stMs(e.v.len)/1000));
         else if(e.k==='random'){
@@ -349,10 +390,10 @@ function engineFactory(){
           }
         }
         else if(e.k==='pitch'){pitch=true;if(!this.hadPitch){const s0=semiQ(e.v.semi,e.o);this.pSem=s0;this.pMix=s0!==0?1:0;}}
-        else if(e.k==='crush')this.cAcc=1;
+        else if(e.k==='crush'){this.cAcc=1;if(!this.hadCrush){this.cEi=this.cEo=0;this.cG=1;this.cAi.reset();this.cAo.reset();}crush=true;}
       }
       c.fc=c.rPick>=0?c.rPick:c.a;
-      this.hadPitch=pitch;
+      this.hadPitch=pitch;this.hadCrush=crush;
     }
     render(oL,oR,i0,i1,t0,swing){
       if(!this.L||!this.sl||this.L.length!==this.E.len)return;
@@ -445,7 +486,14 @@ function engineFactory(){
             e.sr_=e.sr_===undefined?v.rate:e.sr_+(v.rate-e.sr_)*0.002;
             this.cAcc+=crHz(e.sr_)/sr;
             if(this.cAcc>=1){this.cAcc-=Math.floor(this.cAcc);this.cl=l;this.cr=r;}
-            l=this.cl;r=this.cr;
+            // Loudness compensation: the aliasing moves energy to where the ear is most sensitive, so the
+            // input and output are compared A-weighted (about 80 ms envelopes) and the output is only ever
+            // turned down to match.
+            const pi=this.cAi.run(l+r),po=this.cAo.run(this.cl+this.cr);
+            this.cEi+=(pi*pi-this.cEi)*this.cK;this.cEo+=(po*po-this.cEo)*this.cK;
+            const cg=this.cEo>this.cEi?Math.max(0.3,Math.sqrt((this.cEi+1e-12)/this.cEo)):1;
+            this.cG+=(cg-this.cG)*0.003;
+            l=this.cl*this.cG;r=this.cr*this.cG;
           }
           else if(k==='filter'){
             e.sc=e.sc===undefined?v.cut:e.sc+(v.cut-e.sc)*0.002;
@@ -462,21 +510,40 @@ function engineFactory(){
         this.gG+=((this.gate?1:0)-this.gG)*0.01;
         this.tg+=((this.muted?0:1)-this.tg)*0.003;
         let ol=l*this.gG,or=r*this.gG;
-        if(ol!==ol||or!==or){ol=or=0;this.lastL=this.lastR=this.dcL=this.dcR=0;this.fs.fill(0);this.dL.fill(0);this.dR.fill(0);this.dlp1=this.dlp2=0;this.cl=this.cr=0;this.xf=0;this.pMix=0;this.gr.length=0;this.rL.fill(0);this.rR.fill(0);}
+        if(ol!==ol||or!==or){ol=or=0;this.lastL=this.lastR=this.dcL=this.dcR=0;this.fs.fill(0);this.dL.fill(0);this.dR.fill(0);this.dlp1=this.dlp2=0;this.rvB.forEach(b=>b.fill(0));this.apB.forEach(b=>b.fill(0));this.rvLp.fill(0);this.cl=this.cr=0;this.xf=0;this.pMix=0;this.gr.length=0;this.rL.fill(0);this.rR.fill(0);}
         if(this.newStep){this.newStep=false;this.dcL=this.lastL-ol;this.dcR=this.lastR-or;}
         ol+=this.dcL;or+=this.dcR;this.dcL*=0.992;this.dcR*=0.992;
         this.lastL=ol;this.lastR=or;
         // delay send: ping-pong, darkened a little on each repeat; the tail keeps going after the step ends
+        // With tails set to cut, a step without the effect fades its echoes out in a few ms and stops
+        // feeding them back, so the buffer empties and nothing old comes back with the next delayed step.
+        const dry=ol+or;
         {let dv=null;for(let j=0;j<F.length;j++)if(F[j].k==='delay'){dv=F[j].v;break;}
           if(dv){this.dTv=len*DT[step(dv.time,6)]/16;this.dFb=Math.min(0.95,dv.fb);}
           this.dSend+=((dv&&this.gate?dv.send:0)-this.dSend)*0.004;
+          const cut=!dv&&this.cfg.delay.o.tails==='cut';this.dWet+=((cut?0:1)-this.dWet)*0.005;
           if(this.dTv>0){
             if(this.dTime<=0)this.dTime=this.dTv;else this.dTime+=(this.dTv-this.dTime)*0.0005;
-            const w=this.dW,dm=this.dm,rp=w-this.dTime,wl=rdM(this.dL,dm,rp),wr=rdM(this.dR,dm,rp);
+            const w=this.dW,dm=this.dm,rp=w-this.dTime,wl=rdM(this.dL,dm,rp),wr=rdM(this.dR,dm,rp),fb=cut?0:this.dFb;
             this.dlp1+=(wl-this.dlp1)*0.35;this.dlp2+=(wr-this.dlp2)*0.35;
-            this.dL[w&dm]=(ol+or)*0.5*this.dSend+this.dlp2*this.dFb;this.dR[w&dm]=this.dlp1*this.dFb;this.dW=(w+1)&dm;
-            ol+=wl;or+=wr;
+            this.dL[w&dm]=dry*0.5*this.dSend+this.dlp2*fb;this.dR[w&dm]=this.dlp1*fb;this.dW=(w+1)&dm;
+            ol+=wl*this.dWet;or+=wr*this.dWet;
           }}
+        // reverb send: a four-line feedback delay network after two diffusing allpasses
+        {let rv=null;for(let j=0;j<F.length;j++)if(F[j].k==='reverb'){rv=F[j].v;break;}
+          if(rv){const key=rv.size*1000+rv.tone;if(key!==this.rKey){this.rKey=key;const T60=rvSec(rv.size)*sr;
+            for(let q=0;q<4;q++)this.rvG[q]=Math.pow(10,-3*this.rvLen[q]/T60);this.rDamp=0.12+0.85*rv.tone;}}
+          this.rSend+=((rv&&this.gate?rv.send:0)-this.rSend)*0.004;
+          const cut=!rv&&this.cfg.reverb.o.tails==='cut';this.rWet+=((cut?0:1)-this.rWet)*0.005;
+          let x=dry*0.5*this.rSend;
+          for(let q=0;q<2;q++){const b=this.apB[q],i=this.apI[q],d=b[i],y=d-0.6*x;b[i]=x+0.6*y;this.apI[q]=i+1>=b.length?0:i+1;x=y;}
+          const B=this.rvB,M=this.rvM,w=this.rvW,lp=this.rvLp,dmp=this.rDamp;
+          for(let q=0;q<4;q++){lp[q]+=(B[q][(w-this.rvLen[q])&M]-lp[q])*dmp;}
+          const a=lp[0],b=lp[1],c=lp[2],d=lp[3],fk=cut?0:0.5;
+          B[0][w]=x+(a+b+c+d)*fk*this.rvG[0];B[1][w]=x+(a-b+c-d)*fk*this.rvG[1];
+          B[2][w]=x+(a+b-c-d)*fk*this.rvG[2];B[3][w]=x+(a-b-c+d)*fk*this.rvG[3];this.rvW=(w+1)&M;
+          ol+=(a+c)*0.45*this.rWet;or+=(b+d)*0.45*this.rWet;
+        }
         const gv=this.vol*this.tg;oL[i]+=ol*gv;oR[i]+=or*gv;
       }
     }
@@ -495,6 +562,7 @@ function engineFactory(){
       this.sr=sr;this.len=0;this.u=0;this.t=0;this.playing=false;this.g=0;this.swing=0;this.stepped=false;
       this.pref={silPat:'mute',grace:40,lat:0,touchWin:true};this.mode='replace';this.fxOnly=false;this.fd=Math.round(0.0015*sr);
       this.tracks=Array.from({length:nTracks||1},(_,i)=>new Track(this,i));this.view=0;this.song=null;
+      this.bufs=new Map();
       this.sc=0;this.post=null;this.vol=1;this.mixL=null;this.mixR=null;this.peak=0;
       // safety limiter (untouched audio passes at unity): 1.5 ms look-ahead, ceiling −1 dBFS, 80 ms release
       this.LA=Math.max(1,Math.round(0.0015*sr));this.laL=new Float32Array(this.LA);this.laR=new Float32Array(this.LA);this.laI=0;
@@ -510,7 +578,8 @@ function engineFactory(){
       switch(d.type){
         case 'loadAll':{d.bufs.forEach((b,i)=>{if(b&&this.tracks[i]){this.tracks[i].L=b.L;this.tracks[i].R=b.R;}});this.msg({type:'load',tr:0,L:d.bufs[0]?d.bufs[0].L:this.tracks[0].L,R:d.bufs[0]?d.bufs[0].R:this.tracks[0].R});break;}
         case 'load':{
-          const old=this.len;T.L=d.L;T.R=d.R;
+          const old=this.len;T.base={L:d.L,R:d.R};
+          if(!(T.clip&&T.clip.loop&&this.bufs.has(T.clip.loop))){T.L=d.L;T.R=d.R;}
           if(d.L.length!==this.len){
             this.len=d.L.length;this.u=Math.floor(this.len/16);
             if(old){const k=this.len/old;this.t=Math.round(this.t*k);if(this.song)this.song.nextT=Math.round(this.song.nextT*k);
@@ -519,6 +588,8 @@ function engineFactory(){
           for(const tr of this.tracks)tr.sl=Math.floor(this.len/tr.cols);
           if(!this.ringL||this.ringL.length!==8*this.len){this.ringL=new Float32Array(8*this.len);this.ringR=new Float32Array(8*this.len);}
           break;}
+        // a loop sequences can name by key (the Clips list plays clips made on different loops)
+        case 'loopBuf':this.bufs.set(d.key,{L:d.L,R:d.R});for(const tr of this.tracks)if(tr.clip&&tr.clip.loop===d.key)tr.setClip(tr.clip);break;
         case 'play':if(!this.playing)this.start();break;
         case 'stop':this.stop();break;
         case 'touches':{T.touches=d.list||[];T.relink();const sig=T.touches.map(x=>x.id+':'+x.a+':'+(x.fx?x.fx.k:'-')).join();if(sig!==T.tsig){T.tsig=sig;T.regrace();}break;}
@@ -545,7 +616,7 @@ function engineFactory(){
         // Launching a sequence never starts playback. While playing it takes over at the next bar line, or
         // at once with now:true (a blank sequence made from the plain loop picks up where the loop is).
         case 'launch':{
-          if(!this.playing||d.now){T.clip=d.clip||null;T.clipQ=undefined;T.songSilent=false;if(d.now&&this.playing)T.cpos=T.lp;}
+          if(!this.playing||d.now){T.setClip(d.clip);T.clipQ=undefined;T.songSilent=false;if(d.now&&this.playing)T.cpos=T.lp;}
           else T.clipQ=d.clip||null;
           this.song=null;
           break;}

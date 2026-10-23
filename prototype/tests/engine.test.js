@@ -134,6 +134,16 @@ const blank=id=>({id,cols:16,n:16,ord:{perm:null},mute:{bits:null},slots:Array.f
  const heard=h.filter(x=>x.bn===0&&x.on).map(x=>x.a);
  ok('GAP: slices after a gap are not lost',heard.join()===[0,1,2,3,4,5,6,7,8,9,10,11,12,13].join(),heard);}
 
+// GAP drifts against the bar and comes round after L / gcd(steps played per bar, L) bars (the app's
+// "full cycle" export length).
+{const v=0.45,bits=EF.skipPattern(v,16),per=bits.reduce((x,y)=>x+y,0),gcd=(a,b)=>b?gcd(b,a%b):a,N=16/gcd(per,16);
+ const e=mk({silPat:'insert'});const T=e.tracks[0];const seq={id:'gp',cols:16,n:16,ord:{perm:EF.orderPattern(0.5,16)},mute:{bits},
+   slots:Array.from({length:16},(_,i)=>({on:true,a:(i*5)%16,off:0,sid:'g'+i,slen:1,fx:[]}))};
+ e.msg({type:'launch',tr:0,clip:seq});e.msg({type:'play'});const h=tap(T);run(e,steps(e,16*(2*N+1))+1);
+ const bar=b=>h.filter(x=>x.bn===b).map(x=>x.on?x.a:'-').join(' ');
+ const firstRepeat=[...Array(N).keys()].slice(1).find(k=>bar(1+k)===bar(1));
+ ok('GAP repeats exactly after its cycle ('+N+' bars), not sooner',N>1&&bar(1)===bar(1+N)&&bar(2)===bar(2+N)&&firstRepeat===undefined,[N,per]);}
+
 // Touches play through SKIP by default; a preference applies SKIP to them too.
 {const e=mk();const T=e.tracks[0];const bits=new Array(16).fill(0);bits[0]=1;
  e.msg({type:'mute',tr:0,bits});e.msg({type:'play'});run(e,steps(e,3));
@@ -166,6 +176,45 @@ const blank=id=>({id,cols:16,n:16,ord:{perm:null},mute:{bits:null},slots:Array.f
  for(let i=0;i<steps(e,8);i++){e.render(B,C,128);if(T.cIdx>=3)for(const v of B)pk=Math.max(pk,Math.abs(v));}
  ok('delay tail sounds over silent steps',pk>0.02,pk);}
 
+// Combine (FX only off): a touched slice keeps the step's own effects, and held effects stack on them.
+{const e=mk();e.msg({type:'play'});e.msg({type:'mode',mode:'combine'});const T=e.tracks[0];
+ const seq={id:'cb',cols:16,n:16,ord:{perm:null},mute:{bits:null},slots:Array.from({length:16},(_,i)=>({on:true,a:i,off:0,sid:'c'+i,slen:1,fx:[{k:'crush',raw:0.3}]}))};
+ e.msg({type:'launch',tr:0,clip:seq});run(e,steps(e,17));e.msg({type:'rec',tr:0,on:true,id:'cb'});
+ e.msg({type:'touches',tr:0,list:[{id:'p',a:7,n:1,o:1,fx:{k:'pitch',raw:0.6}}]});run(e,steps(e,2));
+ const heard=T.cur.fx.map(x=>x.k).sort().join();run(e,steps(e,3));e.msg({type:'touches',tr:0,list:[]});run(e,steps(e,1));
+ const w=seq.slots.filter(x=>x.a===7&&x.sid!=='c7');
+ ok('Combine: the touched slice plays with the step’s effects plus the held one',heard==='crush,pitch'&&T.cur.a!==undefined,heard);
+ ok('…and recording writes the new slice with both effects',w.length>=3&&w.every(x=>x.fx.map(f=>f.k).sort().join()==='crush,pitch'),w.map(x=>x.fx.map(f=>f.k).join('+')));}
+
+// Delay and reverb tails: 'ring' carries on over steps without the effect, 'cut' silences them.
+{function tail(k,tails){const e=mk();const c=EF.defCfg(k);c.o.tails=tails;e.msg({type:'cfg',tr:0,cfg:{[k]:c}});e.msg({type:'play'});const T=e.tracks[0];run(e,steps(e,2));
+   const q={id:'q',cols:16,n:16,ord:{perm:null},mute:{bits:null},slots:Array.from({length:16},(_,i)=>({on:false,a:i,off:0,sid:'q'+i,slen:1,fx:[]}))};
+   q.slots[0]={on:true,a:0,off:0,sid:'k',slen:1,fx:[{k,raw:1}]};
+   e.msg({type:'launch',tr:0,clip:q});run(e,steps(e,16));let pk=0;
+   for(let i=0;i<steps(e,8);i++){e.render(B,C,128);if(T.cIdx>=3)for(const v of B)pk=Math.max(pk,Math.abs(v));}return pk;}
+ const dr=tail('delay','ring'),dc=tail('delay','cut'),rr=tail('reverb','ring'),rc=tail('reverb','cut');
+ ok('delay tail rings over silent steps',dr>0.02,dr);ok('…and is cut when tails are set to cut',dc<0.002,dc);
+ ok('reverb tail rings over silent steps',rr>0.01,rr);ok('…and is cut when tails are set to cut',rc<0.002,rc);}
+
+// A sequence can carry its own SKIP/GAP mode and name a loop the engine holds.
+{const e=mk();const T=e.tracks[0];const bits=new Array(16).fill(1);bits[2]=bits[3]=0;
+ const g={id:'g',cols:16,n:16,silPat:'insert',ord:{perm:null},mute:{bits},slots:Array.from({length:16},(_,i)=>({empty:true,on:true,a:0,off:0,sid:'e'+i,slen:1,fx:[]}))};
+ e.msg({type:'launch',tr:0,clip:g});e.msg({type:'play'});const h=tap(T);run(e,steps(e,16)+1);
+ const heard=h.filter(x=>x.bn===0&&x.on).map(x=>x.a);
+ ok('a sequence set to GAP waits at its gaps (the app’s mode is SKIP)',heard.join()===[0,1,2,3,4,5,6,7,8,9,10,11,12,13].join(),heard);
+ const other=ML('acid',sr,124);e.msg({type:'loopBuf',key:'acid',L:other.L,R:other.R});
+ e.msg({type:'launch',tr:0,clip:Object.assign({},g,{id:'g2',loop:'acid'})});run(e,steps(e,17));const onAcid=T.L===other.L;
+ e.msg({type:'launch',tr:0,clip:null});run(e,steps(e,17));
+ ok('a sequence that names a loop plays it, and the track’s own comes back after',onAcid&&T.L!==other.L&&T.L===T.base.L);}
+
+// Crush: its aliasing doesn't make the loop louder (A-weighted, within 1.5 dB at its lowest rate).
+{const aw=(()=>{const s=src('engine.js');return eval('('+s.slice(s.indexOf('function aWeight'),s.indexOf('  function rdM'))+')');})();
+ const lp=ML('dub',sr,124);
+ function lvl(fx){const e=new EF.Engine(sr);e.msg({type:'load',tr:0,L:lp.L,R:lp.R});e.msg({type:'mode',mode:'combine'});e.msg({type:'fxonly',on:true});e.msg({type:'play'});
+   if(fx)e.msg({type:'touches',tr:0,list:[{id:'c',a:0,n:1,o:1,fx}]});const o=EF.bounce(e,e.len*3),a=aw(sr);let q=0;
+   for(let i=0;i<o.L.length;i++){const y=a.run(o.L[i]+o.R[i]);if(i>=e.len)q+=y*y;}return 10*Math.log10(q);}
+ const d=lvl({k:'crush',raw:0})-lvl(null);ok('Crush is loudness-compensated',d<1.5,d.toFixed(2)+' dB');}
+
 // Master: untouched audio passes at unity (delayed by the limiter look-ahead); peaks stay under the ceiling.
 {const e=new EF.Engine(sr);const len=Math.round(sr*240/124/64)*64,L=new Float32Array(len);for(let i=0;i<len;i++)L[i]=0.5*Math.sin(2*Math.PI*37*i/len);  // loops seamlessly
  e.msg({type:'load',tr:0,L,R:L});e.msg({type:'play'});const o=EF.bounce(e,len*2).L;let err=0;
@@ -180,7 +229,7 @@ const blank=id=>({id,cols:16,n:16,ord:{perm:null},mute:{bits:null},slots:Array.f
 
 // Every effect renders without NaN.
 {const e=mk();e.msg({type:'play'});let nan=false,pk=0;
- for(const k of ['stutter','random','reverse','freeze','crush','pitch','env','filter','delay']){e.msg({type:'touches',tr:0,list:[{id:k,a:2,n:1,o:1,fx:{k,raw:0.7}}]});
+ for(const k of ['stutter','random','reverse','freeze','crush','pitch','env','filter','delay','reverb']){e.msg({type:'touches',tr:0,list:[{id:k,a:2,n:1,o:1,fx:{k,raw:0.7}}]});
   for(let i=0;i<200;i++){e.render(B,C,128);for(const v of B){if(v!==v)nan=true;pk=Math.max(pk,Math.abs(v));}}}
  ok('all effects render',!nan&&pk>0.01);}
 console.log(fails?fails+' failed':'all passed');process.exitCode=fails?1:0;

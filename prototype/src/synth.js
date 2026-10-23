@@ -9,8 +9,10 @@ function synthFactory(){
     const L=new Float32Array(N),R=new Float32Array(N);
     const fn={break:synthBreak,boombap:synthBoomBap,acid:synthAcid,reese:synthReese,dub:synthDub,lead:synthLead,keys:synthKeys,kalimba:synthKalimba,vox:synthVox}[kind]||synthBreak;
     fn(L,R,sr,s16,N);
-    return normalize({L:L.slice(len),R:R.slice(len)});
+    // peak-normalised, then a few dense loops are trimmed so they sit level with the rest
+    return normalize({L:L.slice(len),R:R.slice(len)},0.82*(TRIM[kind]||1));
   }
+  const TRIM={acid:0.47,lead:0.63};   // −6.5 dB and −4 dB
   function normalize(b,target=0.82){let pk=1e-6;for(let i=0;i<b.L.length;i++){pk=Math.max(pk,Math.abs(b.L[i]),Math.abs(b.R[i]));}const k=target/pk;for(let i=0;i<b.L.length;i++){b.L[i]*=k;b.R[i]*=k;}return b;}
 
   function synthBreak(L,R,sr,s16,N){

@@ -1,6 +1,6 @@
 # Slicefield — handoff for the iOS app
 
-This guide and the `prototype/` folder are everything needed to build Slicefield as a native iPhone app. The prototype is a single-page web app (version 19) designed through about fifteen rounds of hands-on testing on a phone. Treat its behaviour as the specification: when this document and the code disagree, the code in `prototype/src/` is what was actually played and approved. Say so in the pull request if you change any behaviour on purpose.
+This guide and the `prototype/` folder are everything needed to build Slicefield as a native iPhone app. The prototype is a single-page web app (version 20) designed through about fifteen rounds of hands-on testing on a phone. Treat its behaviour as the specification: when this document and the code disagree, the code in `prototype/src/` is what was actually played and approved. Say so in the pull request if you change any behaviour on purpose.
 
 **For Claude Code:** read this whole file first, then `prototype/src/engine.js` (about 580 lines, the heart of it). Section 13 gives the build order. Section 14 lists decisions the owner (Andrew) hasn't made yet. Ask him about those instead of guessing. Section 18 covers using Slicefield as the sound engine inside a larger app, and sections 19–21 list what changed in versions 16, 17 and 18. **Version 18 replaced recording, clips and the song with capture and a Takes list, and the play-order and silence strips with fixed ORDER and SKIP patterns.** Where §5.4, §5.5, §8, §9, §10.4 or §20 disagree with §21, §21 wins.
 
@@ -30,6 +30,7 @@ This guide and the `prototype/` folder are everything needed to build Slicefield
 20. Changes in version 17
 21. Changes in version 18 (and the planned next steps)
 22. Changes in version 19
+23. Changes in version 20
 
 ---
 
@@ -205,7 +206,7 @@ Inputs: the track's current touches (from the UI), its playing sequence (`clip`)
    | | FX only **off** (touches pick slices) | FX only **on** (slices come from the sequence or loop) |
    |---|---|---|
    | **Replace** | Touched slices take turns; each step plays its touch's own effect. | The step keeps its slice; the touches take turns giving it *their* effect (a dry tap gives none), in place of the step's own effects. |
-   | **Combine** | Touched slices take turns; *every* held effect plays on each of them. If one effect is held twice, the most recent touch's value wins. | Every held effect stacks on whatever plays (the step's own effects stay, same effect = replaced). Dry taps are ignored. |
+   | **Combine** | Touched slices take turns; *every* held effect plays on each of them, **layered on the step's own effects** (v20; the plain loop and empty steps have none). If one effect is held twice, or a held effect is already on the step, the most recent touch's value wins. | Every held effect stacks on whatever plays (the step's own effects stay, same effect = replaced). Dry taps are ignored. |
 
    In code: *looping* touches (`loopT`) are all touches except in FX only + Combine; *applied* touches are all effect touches in Combine.
 2. **Advance the underlying positions** even if something else plays:
@@ -304,7 +305,9 @@ Value functions (normalised `v` → real units):
 | Reverse | 1 unit (no cell parameter) | — | — | Mirror time within each slice-length chunk. |
 | Decay | 1 unit | `dec` (default range 0→1; ≥ 0.985 = full slice) | — | Amp envelope per slice (restarts on each stutter repeat): `exp(−t/τ)`, τ = envMs, 32-sample attack. |
 | Freeze | 1 unit, bipolar | `semi` (grain pitch, same scale system as Pitch) | option: scale | Granular hold at the slice start. Grains of 30.3 ms, Hann window, a new one every glen/12 samples, start jitter up to 20 ms, rate `2^(semi/12)`, sum × 0.28. Size and spray are fixed and hidden. |
-| Crush | 1 unit | `rate` (500 Hz…16 kHz) | — | Sample-and-hold at `crHz(rate)` with a smoothed rate (×0.002). No bit reduction. |
+| Crush | 1 unit | `rate` (500 Hz…16 kHz) | — | Sample-and-hold at `crHz(rate)` with a smoothed rate (×0.002). No bit reduction. Loudness-compensated (v20, §23.5). |
+| Delay | 1 unit | `send` | `time` (1/16…1/2), `fb`; option: Tails ring / cut | Tempo-synced ping-pong send, darkened repeats. Tails (v20, §23.4). |
+| Reverb | 1 unit | `send` | `size` (RT60 0.3…9 s), `tone`; option: Tails ring / cut | Send into a 4-line FDN (§23.4). |
 | Filter | loop row bands | `cut` (bipolar: + = HP, − = LP) | `res` 0.7 | TPT state-variable filter, k = 2−1.9·res, cutoff smoothed (×0.002), clamped to 0.45·sr. |
 
 **Removed on purpose; don't bring back without asking:** tape stop, vocoder, delay, wavefold, stutter decay, freeze OTT, crush bit depth, pitch grain size, effect colour choice.
@@ -586,7 +589,7 @@ When you are unsure how something should feel, open the prototype on a phone and
 5. **Imported audio:** resample to a bar (current behaviour, changes pitch) or trim and time-stretch?
 6. **Background audio, Ableton Link and MIDI clock**: wanted?
 7. **iPad layout**: the prototype is portrait iPhone only.
-8. **Clips housekeeping.** Clips live only in memory. Do they persist between launches, and per project?
+8. **Clips housekeeping.** v20 saves and opens whole projects as files (§23.7). Still open: autosave between launches, and a project list inside the app.
 9. **The shooting game** (§21): scoring, round length, and whether it ships in the instrument or in the larger platform.
 10. **Desktop input** for web and VST versions, which have no multi-touch (§18).
 11. **Filter resonance level-matching.** Freeze is now level-matched (§20); the filter's resonant peak (+3.5 dB at the default resonance) is not compensated yet.
@@ -636,7 +639,8 @@ Add scenarios as you go. Every bug fixed in either implementation should get one
 ### A. Engine message protocol (UI → engine)
 | type | fields | effect |
 |---|---|---|
-| `load` / `loadAll` | `tr, L, R` / `bufs[4]` | set loop buffers; if the length changed, rescale running positions |
+| `load` / `loadAll` | `tr, L, R` / `bufs[4]` | set the track's own loop (`base`); if the length changed, rescale running positions |
+| `loopBuf` | `key, L, R` | hold a loop that sequences can name with `clip.loop = key` (clips made on other loops, §23.2) |
 | `play` / `stop` | — | start from t = 0 (resets all tracks) / stop (clears song) |
 | `touches` | `tr, list:[{id, a, n, o, fx:{k, raw}|null, glob}]` | the current held touches for a track (a, n in sixteenths; o = touch order); may trigger a grace re-decide |
 | `cfg` | `tr, cfg:{fx: EffectConfig}` | replace effect settings; bumps the version counter |
@@ -1098,3 +1102,65 @@ With FX ONLY on, the effect rows have **no column divisions**: each row is one s
 
 - Combine while recording without FX only writes what was heard, which (as approved for §5.3) drops the step's own effects when a touched slice plays. If "combine with the sequence" should keep the step's effects too, that is a change to §5.3 and needs Andrew's sign-off.
 - Clips are not persisted between launches (§14).
+
+---
+
+## 23. Changes in version 20
+
+Agreed with Andrew after v19.
+
+### 23.1 Combine layers onto the sequence
+
+With Combine on and FX ONLY off, a touched step now plays the touched slice **with the step's own effects**, and every held effect stacks on top (the same effect held = the touch's value replaces the step's). Before, the touched slice dropped the step's effects. Because recording writes what is heard, recording in Combine now updates the slice and layers the new effects onto the old ones. Replace and FX ONLY are unchanged. In `decide()`: the touch base takes `slot.fx` when Combine is on and the step isn't empty.
+
+### 23.2 Clips keep their loop and SKIP/GAP mode
+
+- A clip is now `{id, num, cols, n, slots, orderV, muteV, silPat, loop}`. `loop` is the loop it was captured on: a demo loop's name or `f:<id>` for imported audio. Imported files are kept by id (`files`), so several can be in use.
+- **SKIP or GAP belongs to the sequence** (or the plain loop), like ORDER and SKIP's pattern. The Preferences radio changes the current sequence's (or loop's) mode and is undoable. The engine uses `clip.silPat` when the playing sequence has one, else `pref.silPat` (the plain loop's).
+- The Clips list plays each clip on its own loop: the app sends the loop once (`loopBuf {key, L, R}`) and the clip names it. `Track.setClip()` swaps the loop with the clip, at the same bar line; a sequence without `loop` plays the track's own (`base`, from `load`). Native: keep a small table of loaded loops on the engine side, filled from the UI thread.
+- **Load to Sequencer** also switches the loop picker to the clip's loop. Undo puts the loop back.
+- A clip whose loop differs from the current one shows the loop's name on its row.
+
+### 23.3 Exporting GAP
+
+GAP shifts the sequence against the bar, so the output repeats exactly only after **L / gcd(p, L)** bars, where L is the sequence length and p the steps played per bar (16 − gaps). The Export sheet has a choice for sequences set to GAP: **One bar**, or **The full cycle** (up to 16 bars at 16 steps). It applies to individual, selected and in-order clip exports and to the sequencer's sequence. Each render is pre-rolled by the same length so it loops seamlessly. The sheet lists the GAP clips and their cycle lengths.
+
+### 23.4 Reverb, and Tails for Delay and Reverb
+
+- **Reverb** is a new effect row (hue 214), a send like Delay: `send` on the cell; `size` = RT60 0.3…9 s (`0.3·30^v`); `tone` = damping (one-pole low-pass in each line, coefficient 0.12 + 0.85·tone).
+  - DSP: two input allpasses (142 and 379 samples at 48 kHz, g = 0.6), then four delay lines (1427, 1693, 1949, 2203 samples at 48 kHz, scaled to the rate) mixed by a 4×4 Hadamard matrix (×0.5) with per-line gain `10^(−3·len/(RT60·sr))`. Left out = lines 1 + 3, right = 2 + 4, × 0.45. Buffers are preallocated per track.
+- **Tails** (option on both Delay and Reverb): **Always ring out** (default, as before) or **Cut at the next step without** the effect. Cutting fades the wet output to zero in a few ms (×0.005 per sample) and stops the feedback, so the lines empty and nothing old comes back the next time the effect plays.
+
+### 23.5 Loudness
+
+- **Crush** is compensated: its aliasing moves energy into the range the ear is most sensitive to, so it sounded louder even though RMS was unchanged. The engine compares Crush's input and output A-weighted (an IEC 61672 A-weighting filter as three biquads, 80 ms envelopes) and turns the output down to match, never up (floor ×0.3). Measured A-weighted change at the lowest rate is now within about ±1 dB on every demo loop (it was up to +5.7 dB on Dub stabs).
+- **Acid bass** is 6.5 dB and **Synth lead** 4 dB quieter (`TRIM` in `synth.js`); acid's RMS was 7 dB above the others.
+
+### 23.6 Sequencer, header and Clips page
+
+- **Lane:** steps are 36 pt tall (two rows of 8). A **rotate column** at the right: the upper arrow moves the whole sequence one step left, the lower one step right, wrapping. Empty steps are first fixed to the loop slice they play, so rotating the plain loop works and makes a sequence. Each rotate is one undo step.
+- The lane label shows the clip's **plain number inside the Capture icon's corner ticks** (with `*` once changed); SEQ or LIVE otherwise. Clip rows show plain numbers too.
+- **Touching a lane step while stopped starts playback** (trash, die and rotate still don't).
+- **Fold is gone.**
+- **Swing** reads 50 (straight) to 75 (the swung step three quarters of the way to the next): value = 50 + 50·s, the engine's `s` unchanged (0…0.5).
+- **Header:** gear · BPM · swing · export · project · Record · Play. The **Clips button** moved to the right end of the loop bar, directly above Capture; the loop bar's last three columns line up with the header's.
+- The Clips count (and Capture) **flash only after a capture** (the class is cleared on `animationend`; it used to replay whenever the button was redrawn).
+- **Clips page:** a **Duplicate** button (two overlapping pages) copies the selected clip right after it, with the next number, and selects it. **Delete Duplicates** moved into the trash: a tap on the trash alone opens a sheet with "Delete duplicates (n)" and "Delete all".
+- **Dragging a clip** shows a line in the gap where it will land, instead of outlining a row.
+- **Thumbnails** split each step's mark into one colour per effect (up to four).
+- **The die** does more at the right: an effect is added (Combine) or swapped in (Replace) with chance a/2 + a³/2, so every step gets one at the far right; in Combine a second effect stacks with chance 0.7·a³; a slice moves with chance a + a³. The extra random numbers are drawn after the old ones, so dragging further still only adds change.
+
+### 23.7 Projects
+
+The **project** button (folder) opens a sheet: **Save project**, **Open project…**, **New project** (tap twice). A project is one JSON file holding tempo, swing, stepped, Replace/Combine, FX ONLY, preferences, pins, the loop (imported audio as base64 float32), grid, effect settings and row order, the plain loop's strips, the sequence, and every clip with the selection and LOOP. Undo history isn't saved. Inside claude.ai the page can only hand over zips, so the file is saved as a (stored) zip with the JSON inside; Open reads either. Effects added after a project was saved get their defaults and a row.
+
+### 23.8 Tests and scenarios
+
+- `engine.test.js` has 48 cases. New ones:
+  - Combine layering, live and recorded
+  - delay and reverb tails, ring and cut
+  - a sequence's own GAP mode
+  - a sequence naming another loop, and the track's own coming back
+  - Crush loudness within 1.5 dB (A-weighted)
+  - GAP repeating after exactly its cycle and not sooner
+- Scenario `06-reverb-tails-combine` covers a clip on another loop with reverb and crush steps, recording in Combine (each written step keeps its effect and gains the held one), and both tails switched to cut. The renderer gained two shorthands: `{"type":"loopBuf","key","kind"}` and `{"type":"cfgOpt","tr","k","o"}`.

@@ -4,18 +4,18 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   const EF=engineFactory(),FX=EF.FX,{makeLoop,resample}=synth;
   const root=hostEl.attachShadow({mode:'open'});root.innerHTML=markup;this.root=root;
   const FONT='"Martian Mono", ui-monospace, Menlo, monospace';
-  const ALL_FX=['stutter','random','pitch','reverse','env','freeze','crush','delay'];
+  const ALL_FX=['stutter','random','pitch','reverse','env','freeze','crush','delay','reverb'];
   const HUES=[8,24,44,90,138,166,190,214,262,318,340];
   const TRACK_HUES=[40];
-  const LOOP_NAMES={break:'Breakbeat',boombap:'Boom bap',acid:'Acid bass',reese:'Reese bass',dub:'Dub stabs',lead:'Synth lead',keys:'Electric piano',kalimba:'Kalimba',vox:'Vocal chops',file:'Your file'};
-  const BAND_LO=0.42,BAND_HI=0.58,STRIP=28,HW=30,LROW=26,LLAB=34;
+  const LOOP_NAMES={break:'Breakbeat',boombap:'Boom bap',acid:'Acid bass',reese:'Reese bass',dub:'Dub stabs',lead:'Synth lead',keys:'Electric piano',kalimba:'Kalimba',vox:'Vocal chops',};
+  const BAND_LO=0.42,BAND_HI=0.58,STRIP=28,HW=30,LROW=36,LLAB=34,LROT=30;   // LROT: the lane's rotate column
   const $=id=>root.getElementById(id);
   const clamp=(v,a,b)=>v<a?a:v>b?b:v;
   const canvas=$('grid'),wrap=$('gridwrap'),laneCv=$('lane'),laneG=laneCv.getContext('2d'),gridG=canvas.getContext('2d');
   let g=gridG,LW=300,laneDpr=1;
   const ACC='#ffc65c',ACCRGB='255,198,92';const ACCA=a=>'rgba('+ACCRGB+','+a+')';
   const BG='#111317';
-  const playBtn=$('play'),bpmEl=$('bpm'),swingEl=$('swing'),expBtn=$('export'),modeBtn=$('recmode'),fxoBtn=$('fxonly'),clearBtn=$('clear'),steppedBtn=$('stepped'),diceEl=$('dice'),dieEl=$('die'),diceVal=$('diceval'),prefsBtn=$('prefs'),sessBtn=$('sessbtn'),recBtn=$('rec'),capBtn=$('capture'),loopBtn=$('cliploop'),dedupBtn=$('dedupe'),loadBtn=$('loadclip');
+  const playBtn=$('play'),bpmEl=$('bpm'),swingEl=$('swing'),expBtn=$('export'),modeBtn=$('recmode'),fxoBtn=$('fxonly'),clearBtn=$('clear'),steppedBtn=$('stepped'),diceEl=$('dice'),dieEl=$('die'),diceVal=$('diceval'),prefsBtn=$('prefs'),sessBtn=$('sessbtn'),recBtn=$('rec'),capBtn=$('capture'),loopBtn=$('cliploop'),dupBtn=$('dupclip'),loadBtn=$('loadclip'),projBtn=$('project'),projIn=$('projfile');
   const soundSel=$('sound'),fileIn=$('file'),sheet=$('sheet'),card=$('card');
   const sessEl=$('session'),takeList=$('takelist'),takesHead=$('takeshead'),sessScroll=$('sessScroll'),ghost=$('ghost');
 
@@ -26,12 +26,14 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   }
   // One channel: a single track (the engine could run more side by side, the app uses one).
   // seq: the sequence on the main page (null: the plain loop plays). loopSet: the plain loop's own strips.
-  const newTrack=(i,kind)=>({i,kind,file:null,cols:16,len16:16,rows:['stutter','random','pitch','center','reverse','env','freeze','crush','delay'],
-    cfg:defCfg(),loopSet:{orderV:1,muteV:1},seq:null,buf:null,pk:null});
+  // kind: the loop playing, a demo loop's name or 'f:<id>' for an imported file (see files).
+  // silPat: the second strip's mode, SKIP ('mute') or GAP ('insert'), kept with the sequence or loop.
+  const newTrack=(i,kind)=>({i,kind,cols:16,len16:16,rows:['stutter','random','pitch','center','reverse','env','freeze','crush','delay','reverb'],
+    cfg:defCfg(),loopSet:{orderV:1,muteV:1,silPat:'mute'},seq:null,buf:null,pk:null});
   const tracks=[newTrack(0,'break')];
   let view=0;
-  // touchWin: touches play through SKIP. silPat: 'mute' (SKIP) or 'insert' (GAP: the sequence waits).
-  const PREF0={silPat:'mute',grace:40,touchWin:true};
+  // touchWin: touches play through SKIP.
+  const PREF0={grace:40,touchWin:true};
   const prefs=Object.assign({},PREF0,{shown:new Set(ALL_FX)});
   // Strips: the stored value belongs to the sequence (or the plain loop). With the pin on, moving a strip
   // changes the stored value. With it off, the move is live only and the strip snaps back on release.
@@ -40,6 +42,10 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   const ctxSet=t=>t.seq||t.loopSet;
   const oS=t=>ctxSet(t).orderV, mS=t=>ctxSet(t).muteV;   // stored
   const oV=t=>liveV.order!=null?liveV.order:oS(t), mV=t=>liveV.mute!=null?liveV.mute:mS(t);   // heard
+  const silOf=t=>ctxSet(t).silPat||'mute';
+  // imported audio, by id: {id, name, L, R} at the file's own rate and level
+  const files=new Map();
+  const loopName=k=>k&&k.startsWith('f:')?(files.get(k.slice(2))||{}).name||'Your file':LOOP_NAMES[k]||k;
   let bpm=124,swing=0,stepped=true,sessOn=false,playMode='replace',fxOnly=false;
   // Clips: sequences saved with Capture, in list order. While any exist, one is selected.
   // songPlaying: the Clips list is playing (songList: the clips it was sent, in its order).
@@ -47,7 +53,6 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   let clips=[],clipNum=0,selClip=null,clipLoop=false,songPlaying=false,songList=[],recOn=false,recBn=-1;
   let st={playing:false,t:0,len:1,tracks:[],hist:[],song:null,recv:0};
   const ptrs=new Map();let orderCtr=0,tsCtr=0,idCtr=0;
-  const SLIM=24;let folded=false;
   let cssW=300,cssH=400,dpr=1,lay=[],laneRows=1,TOP=100;
   let lanePage=0,laneFollow=true;
   const T=()=>tracks[view];
@@ -151,11 +156,20 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
 
   // ---------- loops ----------
   const loopLen=rate=>Math.round(rate*240/bpm/64)*64;
-  function buildLoop(t,rate){
-    const len=loopLen(rate);
-    if(t.kind==='file'&&t.file)return {L:resample(t.file.L,len),R:resample(t.file.R,len)};
-    return makeLoop(t.kind,rate,bpm);
+  function buildLoop(t,rate){return loopBuf(t.kind,rate);}
+  // Loops are built once per tempo and rate and kept, since clips made on other loops can play too.
+  const loopCache=new Map();
+  function loopBuf(key,rate){
+    const len=loopLen(rate),ck=key+'|'+len,hit=loopCache.get(ck);if(hit)return hit;
+    let b;
+    if(key.startsWith('f:')){const f=files.get(key.slice(2));b=f?{L:resample(f.L,len),R:resample(f.R,len)}:makeLoop('break',rate,bpm);}
+    else b=makeLoop(key,rate,bpm);
+    if(loopCache.size>24)loopCache.clear();
+    loopCache.set(ck,b);return b;
   }
+  // the engine keeps the loops sequences can name; each is sent once per length
+  const sentLoops=new Map();
+  function engineLoop(key){const b=loopBuf(key,curRate());if(sentLoops.get(key)===b)return;sentLoops.set(key,b);tx({type:'loopBuf',key,L:b.L,R:b.R});}
   function peaks(b){
     const B=720,out=new Float32Array(B*2),n=b.L.length;
     for(let k=0;k<B;k++){let lo=1,hi=-1;const a=Math.floor(k*n/B),z=Math.floor((k+1)*n/B);for(let i=a;i<z;i++){const v=(b.L[i]+b.R[i])*0.5;if(v<lo)lo=v;if(v>hi)hi=v;}out[k*2]=lo;out[k*2+1]=hi;}
@@ -180,6 +194,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
       if(i<tracks.length){const t=tracks[i];bufs[i]=buildLoop(t,rate);i++;genTimer=setTimeout(nx,20);return;}
       tracks.forEach((t,j)=>{t.buf=bufs[j];t.pk=peaks(bufs[j]);});
       tx({type:'loadAll',bufs:bufs.map(b=>({L:b.L,R:b.R}))});
+      if(songPlaying)songList.forEach(k=>engineLoop(k.loop));
     };
     genTimer=setTimeout(nx,0);
   }
@@ -191,10 +206,11 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   }
   // the output latency the device reports (plus the backup engine's large blocks) widens the late-touch window
   const outLat=()=>actx?Math.round(((actx.outputLatency||0)+(actx.baseLatency||0))*1000+(usingFallback?2048/sr*1000:0)):0;
-  const prefMsg=()=>({type:'pref',pref:{silPat:prefs.silPat,grace:prefs.grace,lat:outLat(),touchWin:prefs.touchWin}});
+  const prefMsg=()=>({type:'pref',pref:{silPat:tracks[0].loopSet.silPat||'mute',grace:prefs.grace,lat:outLat(),touchWin:prefs.touchWin}});
   // the engine works out every effect value from these settings, so edits reach recorded sequences too
   function sendCfg(t){const c={};for(const k in t.cfg){const x=t.cfg[k];c[k]={cells:x.cells.slice(),lo:Object.assign({},x.lo),hi:Object.assign({},x.hi),x:Object.assign({},x.x),o:Object.assign({},x.o,x.o.mask?{mask:x.o.mask.slice()}:{})};}tx({type:'cfg',tr:t.i,cfg:c});}
   function syncAll(){
+    sentLoops.clear();   // a new engine holds none of the loops yet
     tx({type:'swing',s:swing});tx({type:'stepped',on:stepped});tx({type:'live',tr:0,ord:null,mute:null});if(tracks[0].seq)tx({type:'launch',tr:0,clip:clipForm(tracks[0].seq)});sendRec();tx({type:'mode',mode:playMode});tx({type:'fxonly',on:fxOnly});tx(prefMsg());tx({type:'view',tr:view});
     tracks.forEach(t=>{fitTrack(t);syncTrack(t);});
     // regenerate at the device rate in the background for best quality
@@ -211,7 +227,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   const tr0=()=>tracks[0];
   // a sequence carries its patterns in engine form too, so it plays (and exports) the same anywhere
   function clipForm(c){const t=tr0();c.ord=ordOf(t,c.orderV);c.mute=muteOf(t,c.muteV);return c;}
-  function withSettings(c,from){const f=from||{};c.orderV=f.orderV!=null?f.orderV:1;c.muteV=f.muteV!=null?f.muteV:1;return clipForm(c);}
+  function withSettings(c,from){const f=from||{};c.orderV=f.orderV!=null?f.orderV:1;c.muteV=f.muteV!=null?f.muteV:1;c.silPat=f.silPat||'mute';return clipForm(c);}
   function sendLoopSet(t){const L=t.loopSet;tx({type:'order',tr:t.i,perm:ordOf(t,L.orderV).perm});tx({type:'mute',tr:t.i,bits:muteOf(t,L.muteV).bits});}
   function sendCtx(t){if(t.seq){clipForm(t.seq);tx({type:'clipEdit',tr:t.i,clip:t.seq});}else sendLoopSet(t);}
   const STRIP_DEF={order:1,mute:1};
@@ -252,7 +268,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   function hasCell(t,k){return t.cfg[k].cells.length>0;}
   function computeLayout(){
     laneRows=laneInfo().rows;
-    TOP=folded?SLIM+6:STRIP+4+STRIP+6;
+    TOP=STRIP+4+STRIP+6;
     sizeLane();
     // every row, including ones with no cell parameter (Reverse), is at least one unit tall
     const t=T(),rows=visRows(t),gap=3;
@@ -291,7 +307,6 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   const yOrder=()=>0,yMute=()=>yOrder()+STRIP+4;
   function hit(x,y){
     const t=T();
-    if(folded&&y<TOP-3)return {unfold:true};
     if(y<yMute()-2)return {strip:'order',snapBox:x<SX-2};
     if(y<TOP-3)return {strip:'mute',snapBox:x<SX-2};
     let ri=lay.findIndex(r=>y<r.y+r.h);if(ri<0)ri=lay.length-1;
@@ -318,7 +333,8 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   // ---------- pointer handling ----------
   function pos(e){const b=canvas.getBoundingClientRect();return [e.clientX-b.left,e.clientY-b.top];}
   const special=new Map();
-  function ensurePlaying(){if(!st.playing&&!intent){intent={type:'play'};tx(intent);}}
+  // start playback (waiting for the audio engine if this is the first touch)
+  function ensurePlaying(){if(st.playing||intent)return;intent={type:'play'};initAudio();ready.then(()=>{if(intent)tx(intent);});paintIcons();}
   function update(ptr){
     const h=hit(ptr.x,ptr.y);if(!h.cell)return;
     const t=tracks[ptr.tr];
@@ -346,7 +362,6 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
       special.set(e.pointerId,{kind:'strip',which:h.strip,held:dbl,keep,x,v});await ready;
       setStrip(t,h.strip,v,keep);return;
     }
-    if(h.unfold){setFold(false);return;}
     if(h.handle){special.set(e.pointerId,{kind:'handle',id:h.id,y0:y,y,moved:false});return;}
     if(laneHold&&h.cell){special.set(e.pointerId,{kind:'assign'});assignStep(h);return;}
     const ptr={x,y,tr:view,col:-1,fx:null,raw:0,ri:-1,order:-1,ts:0,hid:null,live:false};ptrs.set(e.pointerId,ptr);
@@ -401,19 +416,33 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   function laneDown(id,x,y){
     let d=lanePageInfo();
     if(x<LLAB){if(d.pages>1){laneFollow=false;lanePage=(d.page+1)%d.pages;}return;}
-    const row=clamp(Math.floor((y-4)/LROW),0,d.rows-1),col=Math.floor((x-LLAB)/(LW-LLAB)*d.pr);
+    // the rotate column: the upper half moves every step one to the left, the lower half one to the right
+    if(x>=LW-LROT){if(trashHeld||diceHeld)return;rotateSeq(d.t,y<(d.rows*LROW+4)/2?-1:1);return;}
+    const row=clamp(Math.floor((y-4)/LROW),0,d.rows-1),col=Math.floor((x-LLAB)/(LW-LLAB-LROT)*d.pr);
     const idx=d.page*d.per+row*d.pr+col;
     if(col<0||col>=d.pr||row*d.pr+col>=d.n)return;
     // a held Trash empties tapped steps; a held die randomizes them
     if(trashHeld){trashHeld.used=true;clearSteps(d.t,[idx]);return;}
     if(diceHeld){diceStep(idx);return;}
-    // on the plain loop, touching a step starts a sequence of empty steps (the loop plays through them)
+    // on the plain loop, touching a step starts a sequence of empty steps (the loop plays through them);
+    // touching a step while stopped starts playback
     if(!d.clip){checkpoint();loadSeq(d.t,blankClip(d.t),true);d=lanePageInfo();}
+    ensurePlaying();
     if(idx>=d.slots.length)return;
     const h={id,idx,clip:d.clip,t:d.t,used:false};laneHolds.set(id,h);laneHold=h;
     // a cell already held on the grid is pasted straight into the step
     let finger=null;for(const p of ptrs.values())if(p.live&&p.fx&&p.tr===view&&(!finger||p.ts>finger.ts))finger=p;
     if(finger)assignStep({col:finger.col,fx:finger.fx,raw:finger.raw});
+  }
+  // Rotate: the whole sequence moves one step left (dir −1) or right (+1), wrapping round. Empty steps are
+  // first fixed to the loop slice they play, so the loop moves with them; on the plain loop this makes
+  // a sequence of the loop's own slices.
+  function rotateSeq(t,dir){
+    checkpoint();if(!t.seq)loadSeq(t,blankClip(t),true);
+    const c=t.seq,n=c.slots.length,step=16/c.cols;
+    const fixed=c.slots.map((s,i)=>{if(!s.empty)return s;const x={on:s.on!==false,a:(i%c.n)*step,off:0,sid:'R'+(++idCtr),slen:1,fx:[]};return x;});
+    c.slots=fixed.map((_,i)=>fixed[((i-dir)%n+n)%n]);
+    seqEdited(t);
   }
   function assignStep(h){
     const L=laneHold;if(!L)return;const t=L.t;if(!L.used)checkpoint();L.used=true;
@@ -466,7 +495,9 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   }
   let bpmTimer=0;
   dragNumber(bpmEl,()=>bpm,v=>{const nb=clamp(Math.round(v),60,200);if(nb!==bpm){bpm=nb;clearTimeout(bpmTimer);bpmTimer=setTimeout(regenAll,350);}},4,v=>String(v));
-  dragNumber(swingEl,()=>Math.round(swing*100),v=>{swing=clamp(Math.round(v),0,50)/100;tx({type:'swing',s:swing});},4,v=>v+'%');
+  // Swing as the swung step's place between its neighbours: 50 is straight, 75 is three quarters of the way
+  // (the engine's swing s = (value − 50) / 50, 0…0.5)
+  dragNumber(swingEl,()=>Math.round(50+swing*50),v=>{swing=(clamp(Math.round(v),50,75)-50)/50;tx({type:'swing',s:swing});},4,v=>String(v));
   const press=(b,on)=>b.setAttribute('aria-pressed',on?'true':'false');
   // Replace: each step plays one touch's effect. Combine: every held effect stacks on each step.
   modeBtn.addEventListener('click',()=>{playMode=playMode==='replace'?'combine':'replace';tx({type:'mode',mode:playMode});paintIcons();});
@@ -527,6 +558,12 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     for(let i=0;i<n;i++)slots.push(EF.emptyStep(++idCtr));
     return withSettings({id:'q'+(++idCtr),cols,n,slots},t.loopSet);
   }
+  // the loop picker: the demo loops, then each imported file, then "Load your own…"
+  function setLoop(t,key){t.kind=key;fileOption(key);soundSel.value=key;genTrack(t);}
+  function fileOption(key){
+    if(!key.startsWith('f:')||soundSel.querySelector('option[value="'+key+'"]'))return;
+    const o=el('option',{value:key,textContent:loopName(key)});soundSel.insertBefore(o,soundSel.querySelector('option[value="pick"]'));
+  }
   soundSel.addEventListener('change',()=>{
     const v=soundSel.value,t=T();
     if(v==='pick'){soundSel.value=t.kind;initAudio();fileIn.click();return;}
@@ -538,11 +575,9 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
       const ab=await actx.decodeAudioData(await f.arrayBuffer());
       const max=Math.min(ab.length,Math.round(ab.sampleRate*4));
       const l=ab.getChannelData(0).slice(0,max),r=(ab.numberOfChannels>1?ab.getChannelData(1):ab.getChannelData(0)).slice(0,max);
-      t.file={L:l,R:r};t.kind='file';   // kept at its own level: untouched audio plays and exports at unity
-      LOOP_NAMES.file=f.name.replace(/\.[^.]+$/,'').slice(0,18);
-      let opt=soundSel.querySelector('option[value="file"]');
-      if(!opt){opt=document.createElement('option');opt.value='file';soundSel.appendChild(opt);}
-      opt.textContent=LOOP_NAMES.file;soundSel.value='file';genTrack(t);
+      // kept at its own level: untouched audio plays and exports at unity
+      const id=Math.random().toString(36).slice(2,10);files.set(id,{id,name:f.name.replace(/\.[^.]+$/,'').slice(0,18),L:l,R:r});
+      setLoop(t,'f:'+id);
     }catch(err){soundSel.value=t.kind;}
     fileIn.value='';
   });
@@ -564,12 +599,12 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     grid:svg('<circle cx="3.5" cy="3.5" r="1.25" fill="currentColor" stroke="none"/><circle cx="7.83" cy="3.5" r="1.25" fill="currentColor" stroke="none"/><circle cx="12.16" cy="3.5" r="1.25" fill="currentColor" stroke="none"/><circle cx="16.49" cy="3.5" r="1.25" fill="currentColor" stroke="none"/><circle cx="3.5" cy="7.83" r="1.25" fill="currentColor" stroke="none"/><circle cx="7.83" cy="7.83" r="1.25" fill="currentColor" stroke="none"/><circle cx="12.16" cy="7.83" r="1.25" fill="currentColor" stroke="none"/><circle cx="16.49" cy="7.83" r="1.25" fill="currentColor" stroke="none"/><circle cx="3.5" cy="12.16" r="1.25" fill="currentColor" stroke="none"/><circle cx="7.83" cy="12.16" r="1.25" fill="currentColor" stroke="none"/><circle cx="12.16" cy="12.16" r="1.25" fill="currentColor" stroke="none"/><circle cx="16.49" cy="12.16" r="1.25" fill="currentColor" stroke="none"/><circle cx="3.5" cy="16.49" r="1.25" fill="currentColor" stroke="none"/><circle cx="7.83" cy="16.49" r="1.25" fill="currentColor" stroke="none"/><circle cx="12.16" cy="16.49" r="1.25" fill="currentColor" stroke="none"/><circle cx="16.49" cy="16.49" r="1.25" fill="currentColor" stroke="none"/>'),
     gear:svg('<circle cx="10" cy="10" r="2.6"/><path d="M10 2.5v2.2M10 15.3v2.2M2.5 10h2.2M15.3 10h2.2M4.7 4.7l1.6 1.6M13.7 13.7l1.6 1.6M4.7 15.3l1.6-1.6M13.7 6.3l1.6-1.6"/><circle cx="10" cy="10" r="5.4"/>'),
     x:svg('<path d="M5 5L15 15M15 5L5 15"/>'),
-    fold:svg('<path d="M5 12.5L10 7.5L15 12.5"/>'),
-    unfold:svg('<path d="M5 7.5L10 12.5L15 7.5"/>'),
     undo:svg('<path d="M7.5 5L4 8.5L7.5 12M4 8.5H12.5A4 4 0 0 1 12.5 16.5H9"/>'),
     redo:svg('<path d="M12.5 5L16 8.5L12.5 12M16 8.5H7.5A4 4 0 0 0 7.5 16.5H11"/>'),
     trash:svg('<path d="M3.5 5.5H16.5M8 5.5V3.5H12V5.5M5.5 5.5L6.3 16.5H13.7L14.5 5.5M8.5 8.5V13.5M11.5 8.5V13.5"/>'),
     share:svg('<path d="M10 12.5V3M6.5 6.5L10 3L13.5 6.5M5 10H4V17H16V10H15"/>'),
+    dup:svg('<rect x="7" y="7" width="9.5" height="10.5" rx="1.5"/><path d="M13 4.5V4A1.5 1.5 0 0 0 11.5 2.5H5A1.5 1.5 0 0 0 3.5 4V13A1.5 1.5 0 0 0 5 14.5H5.5"/>'),
+    folder:svg('<path d="M2.5 5.5A1.5 1.5 0 0 1 4 4H8L9.5 6H16A1.5 1.5 0 0 1 17.5 7.5V14.5A1.5 1.5 0 0 1 16 16H4A1.5 1.5 0 0 1 2.5 14.5Z"/>'),
     // capture: a frame with a plus (save what is in the sequencer now)
     capture:svg('<path d="M3 7V3H7M13 3H17V7M17 13V17H13M7 17H3V13M10 7V13M7 10H13"/>')
   };
@@ -579,9 +614,9 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     press(recBtn,recOn);recBtn.setAttribute('aria-label',recOn?'Record (on)':'Record');
     capBtn.disabled=sessOn;press(loopBtn,clipLoop);
     root.querySelectorAll('.fieldonly').forEach(n=>{n.hidden=sessOn;});root.querySelectorAll('.clipsonly').forEach(n=>{n.hidden=!sessOn;});
-    loopBtn.disabled=dedupBtn.disabled=loadBtn.disabled=!clips.length;foldBtn.disabled=sessOn;
+    loopBtn.disabled=dupBtn.disabled=loadBtn.disabled=!clips.length;dupBtn.innerHTML=ICON.dup;projBtn.innerHTML=ICON.folder;
     clearBtn.disabled=sessOn?!clips.length:!T().seq;
-    clearBtn.title=sessOn?'Hold and tap clips to delete them · tap: delete all clips':'Tap: clear the sequence · hold and tap steps: empty just those';
+    clearBtn.title=sessOn?'Hold and tap clips to delete them · tap: delete duplicates or all clips':'Tap: clear the sequence · hold and tap steps: empty just those';
     const cmb=playMode==='combine';modeBtn.textContent=cmb?'COMBINE':'REPLACE';press(modeBtn,cmb);
     modeBtn.title=cmb?'Combine: every held effect plays on each step':'Replace: each step plays one touch and its effect';
     press(fxoBtn,fxOnly);fxoBtn.title=fxOnly?'FX only: slices come from the sequence or loop; touches only bring effects':'FX only is off: touched slices play';
@@ -605,12 +640,13 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   const dicePool=t=>ALL_FX.filter(k=>prefs.shown.has(k)&&(hasCell(t,k)||k==='reverse')).concat('filter');
   function rollStep(orig,a,R,t,clip,idx){
     const n=clip.n,step=16/clip.cols,combine=playMode==='combine';
-    const uAff=R(),uSl=R(),uSlD=R(),uAdd=R(),uAddK=R(),uAddR=R(),uAddS=R(),dev=[R(),R(),R(),R()],rem=[R(),R(),R(),R()];
+    const uAff=R(),uSl=R(),uSlD=R(),uAdd=R(),uAddK=R(),uAddR=R(),uAddS=R(),dev=[R(),R(),R(),R()],rem=[R(),R(),R(),R()],u2=R(),u2K=R(),u2R=R(),u2S=R();
+    const a3=a*a*a;   // extra change that only builds up towards the right of the slider
     if(uAff>=a)return copySlot(orig);                      // chance a step is touched at all: a
     // an empty step is rolled as its loop slice; if nothing ends up changing it stays empty
     const s=orig.empty?{on:orig.on!==false,a:(idx%n)*step,off:0,sid:'D'+(++idCtr),slen:1,fx:[]}:orig;
     const y=copySlot(s);let moved=false;
-    if(!fxOnly&&uSl<a){                                    // chance its slice moves: a (so a² overall), up to ±a·bar away
+    if(!fxOnly&&uSl<Math.min(1,a+a3)){                     // chance its slice moves: a + a³ (capped), up to ±a·bar away
       const cur=Math.round(s.a/step),d=Math.round((uSlD*2-1)*a*n)||(uSlD<0.5?-1:1);
       y.a=((((cur+d)%n)+n)%n)*step;moved=y.a!==s.a;
     }
@@ -619,11 +655,12 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
       const lo=fxBip(t,f.k)?-1:0,nr=clamp(f.raw+(dev[j%4]*2-1)*a,lo,1),dd=nr-f.raw;f.raw=nr;
       if(f.auto)f.auto=f.auto.map(v=>clamp(v+dd,lo,1));
     });
-    if(uAdd<a*0.5){                                        // an effect added (Combine) or swapped in (Replace): a/2
-      const pool=dicePool(t).filter(k=>!y.fx.some(f=>f.k===k));
-      if(pool.length){const k=pool[Math.min(pool.length-1,Math.floor(uAddK*pool.length))],f={k,raw:fxBip(t,k)?(uAddS<0.5?-1:1)*(0.15+0.85*uAddR):uAddR};
-        if(combine)y.fx.push(f);else y.fx=[f];}
-    }
+    // an effect added (Combine) or swapped in (Replace): a/2 + a³/2, so every step gets one at the far right
+    const addFx=(uK,uR,uS,swap)=>{const pool=dicePool(t).filter(k=>!y.fx.some(f=>f.k===k));
+      if(pool.length){const k=pool[Math.min(pool.length-1,Math.floor(uK*pool.length))],f={k,raw:fxBip(t,k)?(uS<0.5?-1:1)*(0.15+0.85*uR):uR};
+        if(swap)y.fx=[f];else y.fx.push(f);}};
+    if(uAdd<a*0.5+a3*0.5)addFx(uAddK,uAddR,uAddS,!combine);
+    if(combine&&u2<a3*0.7)addFx(u2K,u2R,u2S,false);       // Combine: a second effect stacks, mostly near the right
     if(!combine&&y.fx.length>1)y.fx=y.fx.slice(-1);        // Replace: a rolled step plays one effect
     if(orig.empty&&!moved&&!y.fx.length)return copySlot(orig);
     if(moved){y.sid='D'+(++idCtr);y.off=0;y.slen=1;}
@@ -682,32 +719,50 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     const t=T();ready.then(()=>diceAll({a:0.5,t,seed:(Math.random()*4294967296)>>>0}));});
 
   // ---------- clips ----------
-  // Capture saves the sequence as it is now (or the plain loop, with its ORDER and SKIP) to the end of the
-  // Clips list and selects it. Clips never change once saved: Load copies one into the sequencer to edit.
-  // On the Clips page, tapping a clip selects it and plays the list from there (at the next bar line if
-  // something is playing); the selection follows playback. LOOP repeats just the selected clip; otherwise
-  // the list plays to its end and stops.
+  // Capture saves the sequence as it is now (or the plain loop), with its loop, ORDER, SKIP and SKIP/GAP
+  // mode, to the end of the Clips list and selects it. Clips never change once saved: Load copies one into
+  // the sequencer to edit. On the Clips page, tapping a clip selects it and plays the list from there (at
+  // the next bar line if something is playing); the selection follows playback. LOOP repeats just the
+  // selected clip; otherwise the list plays to its end and stops.
   const fxKey=f=>f.k+(f.auto?f.auto.map(x=>x.toFixed(3)).join('/'):(+f.raw).toFixed(3));
   const stepKey=s=>s.empty?(s.on===false?'e0':'e1'):(s.on===false?0:1)+':'+(+s.a).toFixed(3)+':'+(s.off||0)+':'+(+(s.slen||1)).toFixed(3)+':'+(s.fx||[]).map(fxKey).join(',');
-  const clipKey=k=>k.cols+'/'+k.n+'/'+patNo(k.orderV)+'/'+patNo(k.muteV)+'|'+k.slots.map(stepKey).join('|');
-  const clipEngine=k=>({id:k.id,cols:k.cols,n:k.n,slots:k.slots,ord:ordOf(tr0(),k.orderV),mute:muteOf(tr0(),k.muteV)});
+  const clipKey=k=>k.loop+'/'+k.cols+'/'+k.n+'/'+patNo(k.orderV)+'/'+patNo(k.muteV)+'/'+(k.silPat||'mute')+'|'+k.slots.map(stepKey).join('|');
+  // a clip in engine form: its patterns, its SKIP/GAP mode and the key of its loop (sent to the engine first)
+  function clipEngine(k,send){if(send!==false)engineLoop(k.loop);
+    return {id:k.id,cols:k.cols,n:k.n,slots:k.slots,ord:ordOf(tr0(),k.orderV),mute:muteOf(tr0(),k.muteV),silPat:k.silPat||'mute',loop:k.loop};}
+  const newClipId=()=>'k'+(++idCtr)+Math.random().toString(36).slice(2,6);
   capBtn.addEventListener('click',()=>{
     if(sessOn)return;const t=T(),src=t.seq||blankClip(t);checkpoint();
-    const k={id:'k'+(++idCtr),num:++clipNum,cols:src.cols,n:src.n,slots:src.slots.map(copySlot),orderV:src.orderV,muteV:src.muteV};
+    const k={id:newClipId(),num:++clipNum,cols:src.cols,n:src.n,slots:src.slots.map(copySlot),orderV:src.orderV,muteV:src.muteV,silPat:src.silPat||'mute',loop:t.kind};
     clips.push(k);selClip=k;
-    if(t.seq){t.seq.src=k.id;t.seq.num=k.num;t.seq.edited=false;}   // the lane now names it C<num>
-    capBtn.classList.remove('flash');void capBtn.offsetWidth;capBtn.classList.add('flash');
-    sessBtn.classList.remove('flash');void sessBtn.offsetWidth;sessBtn.classList.add('flash');
+    if(t.seq){t.seq.src=k.id;t.seq.num=k.num;t.seq.edited=false;}   // the lane now shows its number
+    for(const b of [capBtn,sessBtn]){b.classList.remove('flash');void b.offsetWidth;b.classList.add('flash');}
     paintIcons();
   });
-  // Load: the selected clip goes into the sequencer (a copy; the clip itself stays as it is) and the field
-  // page opens. If the list was playing, the loaded clip carries on playing there.
+  // Load: the selected clip goes into the sequencer (a copy; the clip itself stays as it is), with its loop,
+  // and the field page opens. If the list was playing, the loaded clip carries on playing there.
   loadBtn.addEventListener('click',()=>{
-    const k=selClip;if(!k)return;checkpoint();
-    loadSeq(T(),withSettings({id:'q'+(++idCtr),cols:k.cols,n:k.n,slots:k.slots.map(copySlot),src:k.id,num:k.num},k));
+    const k=selClip;if(!k)return;checkpoint();const t=T();
+    if(k.loop&&k.loop!==t.kind)setLoop(t,k.loop);
+    loadSeq(t,withSettings({id:'q'+(++idCtr),cols:k.cols,n:k.n,slots:k.slots.map(copySlot),src:k.id,num:k.num},k));
     showClips(false);
   });
-  function songRowsOf(list){return list.map(k=>({bars:1,clips:[clipEngine(k)]}));}
+  // Duplicate: a copy of the selected clip goes right after it, with the next number, and is selected
+  dupBtn.addEventListener('click',()=>{
+    const k=selClip;if(!k)return;checkpoint();
+    const c=Object.assign({},k,{id:newClipId(),num:++clipNum,slots:k.slots.map(copySlot)});
+    clips.splice(clips.indexOf(k)+1,0,c);selClip=c;resyncSong();renderSession();paintIcons();
+  });
+  // GAP makes a sequence drift against the bar: it repeats exactly after L / gcd(steps played per bar, L)
+  // bars (L: its length). With SKIP, or no gaps, that is one bar.
+  const gcd=(a,b)=>b?gcd(b,a%b):a;
+  function cycleBars(k){
+    if((k.silPat||'mute')!=='insert')return 1;
+    const bits=EF.skipPattern(k.muteV,k.n);if(!bits)return 1;
+    const per=bits.reduce((s,b)=>s+b,0),L=k.slots.length;
+    return per?L/gcd(per,L):1;
+  }
+  function songRowsOf(list,full){return list.map(k=>({bars:full?cycleBars(k):1,clips:[clipEngine(k)]}));}
   function playClips(k){
     if(!clips.includes(k))return;selClip=k;songPlaying=true;
     songList=clipLoop?[k]:clips.slice();
@@ -744,13 +799,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     if(clipLoop){songList=[selClip];tx({type:'song',rows:songRowsOf(songList),from:0,once:false});}
     else{songList=clips.slice();tx({type:'song',rows:songRowsOf(songList),from:clips.indexOf(selClip)+1,once:true});}
   });
-  // Delete duplicates: the first of any identical clips stays, the rest go
-  dedupBtn.addEventListener('click',()=>{
-    const seen=new Set(),drop=clips.filter(k=>{const key=clipKey(k);if(seen.has(key))return true;seen.add(key);return false;});
-    const lab=dedupBtn.innerHTML;dedupBtn.textContent=drop.length?drop.length+' DELETED':'NONE FOUND';
-    setTimeout(()=>{dedupBtn.innerHTML=lab;},1300);
-    if(drop.length)deleteClips(drop);
-  });
+  const duplicatesOf=()=>{const seen=new Set();return clips.filter(k=>{const key=clipKey(k);if(seen.has(key))return true;seen.add(key);return false;});};
   function deleteClips(list){
     const gone=new Set(list.filter(k=>clips.includes(k)));if(!gone.size)return;checkpoint();
     if(selClip&&gone.has(selClip)){
@@ -760,26 +809,33 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     clips=clips.filter(k=>!gone.has(k));
     resyncSong();renderSession();paintIcons();
   }
+  // the trash tapped on its own on the Clips page: delete the duplicates (the first of each stays) or everything
   function askDeleteAll(){
     if(!clips.length)return;
-    openSheet('Delete all clips',cardEl=>{
-      const go=el('button',{type:'button',className:'danger',textContent:'Delete '+clips.length+(clips.length>1?' clips':' clip')}),no=el('button',{type:'button',textContent:'Cancel'});
+    openSheet('Delete clips',cardEl=>{
+      const dups=duplicatesOf();
+      const dd=el('button',{type:'button',textContent:dups.length?'Delete duplicates ('+dups.length+')':'No duplicates',disabled:!dups.length});
+      const go=el('button',{type:'button',className:'danger',textContent:'Delete all '+clips.length+(clips.length>1?' clips':' clip')}),no=el('button',{type:'button',textContent:'Cancel'});
+      dd.addEventListener('click',()=>{closeSheet();deleteClips(dups);});
       go.addEventListener('click',()=>{closeSheet();deleteClips(clips.slice());});no.addEventListener('click',()=>closeSheet());
-      cardEl.appendChild(el('p',{},['Undo brings them back.']));cardEl.appendChild(el('div',{className:'delall'},[go,no]));
+      cardEl.appendChild(el('p',{},['Duplicates: clips identical to an earlier one (the first of each stays). Undo brings deleted clips back.']));
+      cardEl.appendChild(el('div',{className:'delall'},[dd,go,no]));
     });
   }
+  // Thumbnail: one mark per step at its slice's height; a step with several effects is split into one
+  // colour per effect (up to four).
   function drawThumb(cv,clip,hue){
     const w=cv.clientWidth||70,h=cv.clientHeight||44,d=Math.min(2,window.devicePixelRatio||1);
     cv.width=Math.round(w*d);cv.height=Math.round(h*d);const x=cv.getContext('2d');x.scale(d,d);
     x.fillStyle=`hsl(${hue} 30% 14%)`;x.fillRect(0,0,w,h);
     if(!clip)return;
-    const S=clip.slots,L=S.length,bw=w/L,top=6,hh=h-top-4;
+    const S=clip.slots,L=S.length,bw=w/L,top=6,hh=h-top-4,cfg=tracks[0].cfg;
     S.forEach((s,i)=>{
-      const k=s.fx&&s.fx.length?s.fx[0].k:null,fh=k?(tracks[0].cfg[k]||{}).hue:null;
-      const a=s.empty?(i%clip.n)*16/clip.cols:s.a;
+      const a=s.empty?(i%clip.n)*16/clip.cols:s.a,y=top+(1-(a+0.5)/16)*hh,fx=(s.fx||[]).slice(0,4);
       x.globalAlpha=s.on===false?0.18:s.empty?0.35:1;
-      x.fillStyle=fh!=null?`hsl(${fh} 75% 60%)`:`hsl(${hue} 60% 70%)`;
-      const y=top+(1-(a+0.5)/16)*hh;x.fillRect(i*bw+0.5,y-1.5,Math.max(1,bw-1.5),3);
+      const x0=i*bw+0.5,ww=Math.max(1,bw-1.5);
+      if(!fx.length){x.fillStyle=`hsl(${hue} 60% 70%)`;x.fillRect(x0,y-1.5,ww,3);return;}
+      const sw=ww/fx.length;fx.forEach((f,j)=>{x.fillStyle=`hsl(${(cfg[f.k]||{}).hue} 75% 60%)`;x.fillRect(x0+j*sw,y-2,Math.max(1,sw-(j<fx.length-1?0.5:0)),4);});
     });
     x.globalAlpha=1;
   }
@@ -795,8 +851,8 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   function takeRow(k,i){
     const row=el('div',{className:'take'});row.dataset.i=i;
     const hdl=el('div',{className:'hdl',title:'Drag to move this clip'});hdl.innerHTML=ICON.handle;rowMover(hdl,k);
-    const th=el('button',{type:'button',className:'th',title:'Play from clip '+k.num});const cv=el('canvas');
-    th.appendChild(cv);th.appendChild(el('span',{textContent:'C'+k.num}));
+    const th=el('button',{type:'button',className:'th',title:'Play from clip '+k.num+' · '+loopName(k.loop)});const cv=el('canvas');
+    th.appendChild(cv);th.appendChild(el('span',{textContent:String(k.num)+(k.loop!==T().kind?' · '+loopName(k.loop):'')}));
     th.addEventListener('pointerdown',e=>{
       if(trashHeld){trashHeld.used=true;deleteClips([k]);return;}
       clipHolds.set(e.pointerId,{k,used:false,row});row.classList.add('held');
@@ -820,28 +876,33 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     if(!sessOn)return;
     if(sessBusy){sessDirty=true;return;}
     paintTakesHead();takeList.textContent='';clipHolds.clear();
-    if(!clips.length){takeList.appendChild(el('p',{className:'takes-empty',textContent:'Nothing captured yet. On the field page, press Capture (top right of the tools) to save the sequence as it is now. Clips are added here in order.'}));return;}
+    if(!clips.length){takeList.appendChild(el('p',{className:'takes-empty',textContent:'Nothing captured yet. On the field page, press Capture (right of the tools, under this button) to save the sequence as it is now. Clips are added here in order.'}));return;}
     clips.forEach((k,i)=>takeList.appendChild(takeRow(k,i)));
     updateSession();
   }
-  // drag a clip's handle up or down to move it
+  // Drag a clip's handle up or down to move it: a line between two clips shows where it will land.
   function rowMover(node,k){
-    let s0=null;
-    const over=(x,y)=>{const n=root.elementFromPoint(x,y),r=n&&n.closest?n.closest('.take'):null;return r&&takeList.contains(r)?r:null;};
-    const clearOver=()=>takeList.querySelectorAll('.take.drop').forEach(n=>n.classList.remove('drop'));
+    let s0=null;const line=el('div',{className:'dropline'});
+    // the gap the finger is nearest: 0 is above the first clip, clips.length below the last
+    const gapAt=y=>{const rows=[...takeList.querySelectorAll('.take')];let g=rows.length;
+      for(let i=0;i<rows.length;i++){const b=rows[i].getBoundingClientRect();if(y<b.top+b.height/2){g=i;break;}}return {g,rows};};
+    const showLine=y=>{const {g,rows}=gapAt(y),from=clips.indexOf(k);
+      if(g===from||g===from+1||!rows.length){line.remove();return;}
+      const lb=takeList.getBoundingClientRect(),rb=rows[Math.min(g,rows.length-1)].getBoundingClientRect();
+      const top=g<rows.length?rb.top-2:rb.bottom+2;line.style.top=(top-lb.top)+'px';if(!line.parentNode)takeList.appendChild(line);};
     node.addEventListener('pointerdown',e=>{e.preventDefault();s0={y:e.clientY,id:e.pointerId,drag:false};busy(true);try{node.setPointerCapture(e.pointerId);}catch(_){}});
     node.addEventListener('pointermove',e=>{
       if(!s0||e.pointerId!==s0.id)return;
       if(e.pointerType==='mouse'&&e.buttons===0){end(e);return;}
-      if(!s0.drag&&Math.abs(e.clientY-s0.y)>6){s0.drag=true;ghost.textContent='C'+k.num;ghost.hidden=false;}
-      if(s0.drag){ghost.style.left=e.clientX+'px';ghost.style.top=e.clientY+'px';clearOver();const r=over(e.clientX,e.clientY);if(r)r.classList.add('drop');
+      if(!s0.drag&&Math.abs(e.clientY-s0.y)>6){s0.drag=true;ghost.textContent=String(k.num);ghost.hidden=false;}
+      if(s0.drag){ghost.style.left=e.clientX+'px';ghost.style.top=e.clientY+'px';showLine(e.clientY);
         const b=sessScroll.getBoundingClientRect();if(e.clientY<b.top+30)sessScroll.scrollTop-=8;else if(e.clientY>b.bottom-30)sessScroll.scrollTop+=8;}
     });
     const end=e=>{
-      if(!s0||e.pointerId!==s0.id)return;const s=s0;s0=null;ghost.hidden=true;clearOver();busy(false);
+      if(!s0||e.pointerId!==s0.id)return;const s=s0;s0=null;ghost.hidden=true;line.remove();busy(false);
       if(!s.drag)return;
-      const r=over(e.clientX,e.clientY);if(!r)return;const to=+r.dataset.i,from=clips.indexOf(k);if(to===from||from<0)return;
-      checkpoint();clips.splice(from,1);clips.splice(to,0,k);resyncSong();renderSession();
+      const {g}=gapAt(e.clientY),from=clips.indexOf(k);if(from<0||g===from||g===from+1)return;
+      checkpoint();clips.splice(from,1);clips.splice(g>from?g-1:g,0,k);resyncSong();renderSession();
     };
     node.addEventListener('pointerup',end);node.addEventListener('pointercancel',end);
     node.addEventListener('lostpointercapture',e=>{if(s0&&e.pointerId===s0.id&&!s0.drag){s0=null;busy(false);}});
@@ -850,7 +911,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   // the next bar line if the list was playing).
   function showClips(on){
     if(on===sessOn)return;
-    sessOn=on;sessEl.hidden=!on;wrap.hidden=on;laneCv.hidden=on||folded;
+    sessOn=on;sessEl.hidden=!on;wrap.hidden=on;laneCv.hidden=on;
     for(const id of [...special.keys(),...ptrs.keys()])end({pointerId:id});laneHolds.clear();laneHold=null;
     if(on){if(!selClip&&clips.length)selClip=clips[clips.length-1];renderSession();
       const r=takeList.querySelector('.take.sel');if(r)r.scrollIntoView({block:'nearest'});else sessScroll.scrollTop=sessScroll.scrollHeight;}
@@ -890,10 +951,11 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     Object.assign(pin,PIN0);liveV.order=liveV.mute=null;undoS.length=0;redoS.length=0;
     st={playing:false,t:0,len:1,tracks:[],hist:[],song:null,recv:0};
     press(playBtn,false);clearBtn.disabled=true;
-    bpmEl.querySelector('b').textContent='124';swingEl.querySelector('b').textContent='0%';
+    bpmEl.querySelector('b').textContent='124';swingEl.querySelector('b').textContent='50';
+    files.clear();soundSel.querySelectorAll('option[value^="f:"]').forEach(o=>o.remove());sentLoops.clear();
     soundSel.value='break';
-    if(sessOn){sessOn=false;sessEl.hidden=true;wrap.hidden=false;clipHolds.clear();}
-    setFold(false);
+    if(sessOn){sessOn=false;sessEl.hidden=true;wrap.hidden=false;laneCv.hidden=false;clipHolds.clear();}
+    computeLayout();
     sheet.hidden=true;paintIcons();requestAnimationFrame(resize);
     (function pre(){let n=0;const nx=()=>{if(n>=tracks.length)return;const t=tracks[n++];if(!t.buf){t.buf=buildLoop(t,48000);t.pk=peaks(t.buf);}setTimeout(nx,10);};setTimeout(nx,0);})();
   }
@@ -1033,7 +1095,9 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
       gbox.appendChild(row);gbox.appendChild(w);
     });
     cardEl.appendChild(el('div',{},[el('h3',{},['Grid and bar length']),gbox]));
-    cardEl.appendChild(el('div',{},[el('h3',{},['Second slider']),radios('p-silp',[['mute','SKIP: its steps go quiet; the sequence keeps moving'],['insert','GAP: a quiet step is inserted; the sequence waits, so every step still plays']],prefs.silPat,v=>{prefs.silPat=v;sendPref();})]));
+    // SKIP or GAP belongs to the sequence (or the plain loop), so it is saved with clips
+    cardEl.appendChild(el('div',{},[el('h3',{},['Second slider · this '+(T().seq?'sequence':'loop')]),radios('p-silp',[['mute','SKIP: its steps go quiet; the sequence keeps moving'],['insert','GAP: a quiet step is inserted; the sequence waits, so every step still plays']],silOf(T()),v=>{
+      const t=T();checkpoint();ctxSet(t).silPat=v;if(t.seq)seqEdited(t);else sendPref();}),el('p',{},['Kept with the sequence, and with clips captured from it.'])]));
     const tw=el('input',{type:'checkbox',checked:prefs.touchWin});tw.addEventListener('change',()=>{prefs.touchWin=tw.checked;sendPref();});
     cardEl.appendChild(el('div',{},[el('label',{},[tw,'Touches play through SKIP and GAP']),el('p',{},['Off: the pattern silences touched steps too.'])]));
     const ol=outLat();
@@ -1063,7 +1127,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   // single file downloads as .wav and several as a .zip.
   let dlCap=null;
   try{if(window.claude&&window.claude.use)window.claude.use('downloads').then(d=>{dlCap=d;},()=>{});}catch(_){}
-  const expOpt={float:false,tail:false};
+  const expOpt={float:false,tail:false,cycle:false};
   function wav(L,R,rate){
     const fl=expOpt.float,bps=fl?4:3,n=L.length,b=new Uint8Array(44+n*2*bps),v=new DataView(b.buffer),w=(o,s)=>{for(let i=0;i<s.length;i++)b[o+i]=s.charCodeAt(i);};
     w(0,'RIFF');v.setUint32(4,36+n*2*bps,true);w(8,'WAVE');w(12,'fmt ');v.setUint32(16,16,true);v.setUint16(20,fl?3:1,true);v.setUint16(22,2,true);
@@ -1098,11 +1162,17 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     const keep=send;send=m=>e.msg(m);sendCfg(t);sendLoopSet(t);send=keep;
     e.msg({type:'swing',s:swing});e.msg(prefMsg());e.msg({type:'pref',pref:{lat:0}});return e;
   }
-  // one bar that loops seamlessly: a sequence (null: the plain loop with its ORDER and SKIP)
-  function bounceBar(c){const e=exportEngine(),n=e.len;e.msg({type:'launch',tr:0,clip:c});e.msg({type:'play'});
+  // the export engine gets the loops of the clips it plays, at its own rate
+  function expClip(e,k){const b=loopBuf(k.loop,e.sr);e.msg({type:'loopBuf',key:k.loop,L:b.L,R:b.R});return clipEngine(k,false);}
+  // bars that loop seamlessly (a pre-roll of the same length first): a sequence (null: the plain loop with
+  // its ORDER and SKIP). bars > 1 for a GAP sequence's full cycle.
+  function bounceBar(c,bars){const e=exportEngine(),n=e.len*(bars||1);e.msg({type:'launch',tr:0,clip:c});e.msg({type:'play'});
     const b=EF.bounce(e,2*n);return {buf:{L:b.L.slice(n),R:b.R.slice(n)},sr:e.sr};}
-  function bounceClips(list){const rows=songRowsOf(list);if(expOpt.tail)rows.push({bars:2,clips:[null]});
-    const e=exportEngine();e.msg({type:'song',rows,from:0});
+  const expBars=k=>expOpt.cycle?cycleBars(k):1;
+  function bounceClip(k){const e0=exportEngine(),n=e0.len*expBars(k),c=expClip(e0,k);e0.msg({type:'launch',tr:0,clip:c});e0.msg({type:'play'});
+    const b=EF.bounce(e0,2*n);return {buf:{L:b.L.slice(n),R:b.R.slice(n)},sr:e0.sr};}
+  function bounceClips(list){const e=exportEngine(),rows=list.map(k=>({bars:expBars(k),clips:[expClip(e,k)]}));if(expOpt.tail)rows.push({bars:2,clips:[null]});
+    e.msg({type:'song',rows,from:0});
     return {buf:EF.bounce(e,rows.reduce((s,r)=>s+r.bars,0)*e.len),sr:e.sr};}
   async function offer(files,zipName,status){
     const many=files.length>1;
@@ -1125,20 +1195,26 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     const msg=el('p',{className:'expmsg'}),status=x=>{msg.textContent=x;};
     const tag='-'+bpm+'bpm';
     const run=(label,fn)=>()=>{if(!t.buf)return;status('Rendering '+label+'…');setTimeout(()=>{try{fn();}catch(err){status('Export failed: '+err.message);}},30);};
-    const one=(c,nm)=>{const r=bounceBar(clipEngine(c));return {name:nm,data:wav(r.buf.L,r.buf.R,r.sr)};};
+    const one=(c,nm)=>{const r=bounceClip(c);return {name:nm,data:wav(r.buf.L,r.buf.R,r.sr)};};
+    const gapN=clips.filter(c=>cycleBars(c)>1).length;
     const inOrder=el('button',{type:'button',textContent:'All clips in order, one file',disabled:!n});
     inOrder.addEventListener('click',run('the clips',()=>{const r=bounceClips(clips);offer([{name:'slicefield-clips'+tag+'.wav',data:wav(r.buf.L,r.buf.R,r.sr)}],'slicefield-clips'+tag+'.zip',status);}));
     const each=el('button',{type:'button',textContent:'All individual clips ('+n+(n===1?' file)':' files)'),disabled:!n});
-    each.addEventListener('click',run('the clips',()=>offer(clips.map(c=>one(c,'slicefield-C'+c.num+tag+'.wav')),'slicefield-clips-each'+tag+'.zip',status)));
-    const selB=el('button',{type:'button',textContent:k?'Selected clip only (C'+k.num+')':'Selected clip only',disabled:!k});
-    selB.addEventListener('click',run('the clip',()=>offer([one(k,'slicefield-C'+k.num+tag+'.wav')],'slicefield-C'+k.num+tag+'.zip',status)));
+    each.addEventListener('click',run('the clips',()=>offer(clips.map(c=>one(c,'slicefield-clip-'+c.num+tag+'.wav')),'slicefield-clips-each'+tag+'.zip',status)));
+    const selB=el('button',{type:'button',textContent:k?'Selected clip only ('+k.num+')':'Selected clip only',disabled:!k});
+    selB.addEventListener('click',run('the clip',()=>offer([one(k,'slicefield-clip-'+k.num+tag+'.wav')],'slicefield-clip-'+k.num+tag+'.zip',status)));
+    // GAP drifts against the bar, so a GAP sequence can be exported as one bar or its whole cycle
+    const gapBox=radios('p-cyc',[['bar','One bar'],['cycle','The full cycle, until it repeats exactly']],expOpt.cycle?'cycle':'bar',v=>{expOpt.cycle=v==='cycle';});
     const tailCb=el('input',{type:'checkbox',checked:expOpt.tail});tailCb.addEventListener('change',()=>{expOpt.tail=tailCb.checked;});
     cardEl.appendChild(el('div',{},[el('h3',{},['Clips']),el('div',{className:'expclips'},[inOrder,each,selB]),
-      el('p',{},[n?'In order: one file, '+n+(n>1?' bars':' bar')+' ('+(n*barSec()).toFixed(1)+' s). Individual and selected: one seamless one-bar loop per clip.':'No clips yet. Press Capture on the field page to save the sequence as a clip.']),
+      el('p',{},[n?'In order: one file, each clip once (one bar, or its GAP cycle). Individual and selected: one seamless loop per clip. Each clip plays on the loop it was captured with.':'No clips yet. Press Capture on the field page to save the sequence as a clip.']),
       el('label',{},[tailCb,'In order: add 2 bars at the end for delay echoes to ring out'])]));
+    cardEl.appendChild(el('div',{},[el('h3',{},['Sequences set to GAP']),gapBox,
+      el('p',{},[gapN?gapN+(gapN>1?' clips use':' clip uses')+' GAP. With GAP the sequence shifts against the bar, so it takes several bars to come round: '+clips.filter(c=>cycleBars(c)>1).slice(0,6).map(c=>c.num+': '+cycleBars(c)+' bars').join(', ')+'.':'No clip uses GAP yet; this applies to the sequencer too.'])]));
     const seqB=el('button',{type:'button',textContent:t.seq?'This sequence':'The loop as set'});
-    seqB.addEventListener('click',run('the sequence',()=>{const r=bounceBar(t.seq?clipForm(t.seq):null),nm='slicefield-'+(t.seq?'sequence':'loop')+tag;offer([{name:nm+'.wav',data:wav(r.buf.L,r.buf.R,r.sr)}],nm+'.zip',status);}));
-    cardEl.appendChild(el('div',{},[el('h3',{},['Sequencer']),seqB,el('p',{},['One seamless bar, with its stored ORDER and SKIP.'])]));
+    const seqK=()=>t.seq||{silPat:t.loopSet.silPat,muteV:t.loopSet.muteV,n:barSteps(t),slots:{length:barSteps(t)}};
+    seqB.addEventListener('click',run('the sequence',()=>{const r=bounceBar(t.seq?clipForm(t.seq):null,expBars(seqK())),nm='slicefield-'+(t.seq?'sequence':'loop')+tag;offer([{name:nm+'.wav',data:wav(r.buf.L,r.buf.R,r.sr)}],nm+'.zip',status);}));
+    cardEl.appendChild(el('div',{},[el('h3',{},['Sequencer']),seqB,el('p',{},['A seamless loop with its stored ORDER and SKIP (one bar, or its GAP cycle as chosen above).'])]));
     const heard=el('div',{className:'expclips'},[2,4,8].map(n=>{const b=el('button',{type:'button',textContent:'Last '+n+' bars'});
       b.addEventListener('click',()=>{if(!send){status('Nothing has played yet');return;}grabWait={status};status('Collecting…');tx({type:'grab',bars:n});});return b;}));
     cardEl.appendChild(el('div',{},[el('h3',{},['What you just heard']),heard,el('p',{},['The last whole bars that played, exactly as they sounded, live touches included.'])]));
@@ -1147,17 +1223,103 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     cardEl.appendChild(msg);
   }));
 
+  // ---------- projects ----------
+  // A project is the whole state: tempo, swing, modes, preferences, the loop (imported audio included),
+  // grid, effect settings and row order, the plain loop's strips, the sequence, and the Clips list.
+  // It is saved as one JSON file (inside a zip where the page can only hand over zips) and opened from
+  // either. Undo history is not kept.
+  const b64=a=>{const u=new Uint8Array(a.buffer,a.byteOffset,a.byteLength);let s='';for(let i=0;i<u.length;i+=0x8000)s+=String.fromCharCode.apply(null,u.subarray(i,i+0x8000));return btoa(s);};
+  const unb64=s=>{const b=atob(s),u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return new Float32Array(u.buffer);};
+  const plainClip=c=>{const o=Object.assign({},c,{slots:c.slots.map(copySlot)});delete o.ord;delete o.mute;return o;};
+  function projectState(){
+    const t=T();
+    return {app:'slicefield',version:20,bpm,swing,stepped,playMode,fxOnly,
+      prefs:{grace:prefs.grace,touchWin:prefs.touchWin,shown:[...prefs.shown]},pin:Object.assign({},pin),
+      track:{kind:t.kind,cols:t.colsQ||t.cols,len16:t.len16,rows:t.rows.slice(),cfg:t.cfg,loopSet:Object.assign({},t.loopSet),seq:t.seq?plainClip(t.seq):null},
+      clips:clips.map(plainClip),sel:clips.indexOf(selClip),clipNum,clipLoop,
+      files:[...files.values()].map(f=>({id:f.id,name:f.name,L:b64(f.L),R:b64(f.R)}))};
+  }
+  async function openProject(p){
+    if(!p||p.app!=='slicefield'||!p.track)throw new Error('not a Slicefield project');
+    initAudio();await ready;
+    if(st.playing||intent){intent=null;tx({type:'stop'});}
+    songPlaying=false;songList=[];recOn=false;recBn=-1;
+    // imported audio first, so the loop and clips can find it
+    files.clear();soundSel.querySelectorAll('option[value^="f:"]').forEach(o=>o.remove());
+    for(const f of p.files||[])files.set(f.id,{id:f.id,name:f.name,L:unb64(f.L),R:unb64(f.R)});
+    for(const id of files.keys())fileOption('f:'+id);
+    bpm=clamp(p.bpm||124,60,200);swing=clamp(p.swing||0,0,0.5);stepped=p.stepped!==false;playMode=p.playMode==='combine'?'combine':'replace';fxOnly=!!p.fxOnly;
+    if(p.prefs){prefs.grace=p.prefs.grace!=null?p.prefs.grace:40;prefs.touchWin=p.prefs.touchWin!==false;if(p.prefs.shown)prefs.shown=new Set(p.prefs.shown);}
+    if(p.pin)Object.assign(pin,p.pin);liveV.order=liveV.mute=null;
+    const t=T(),q=p.track;
+    t.kind=q.kind&&(!q.kind.startsWith('f:')||files.has(q.kind.slice(2)))?q.kind:'break';
+    t.cols=q.cols===8?8:16;t.colsQ=0;t.len16=clamp(q.len16||16,1,16);
+    // effects added since the project was saved get their defaults, and a row
+    t.cfg=Object.assign(defCfg(),q.cfg||{});t.rows=(q.rows||[]).filter(r=>r==='center'||FX[r]);
+    for(const r of newTrack(0,'break').rows)if(!t.rows.includes(r))t.rows.push(r);
+    t.loopSet=Object.assign({orderV:1,muteV:1,silPat:'mute'},q.loopSet||{});
+    t.seq=q.seq?clipForm(Object.assign({},q.seq)):null;
+    clips=(p.clips||[]).map(k=>Object.assign({silPat:'mute',loop:t.kind},k));clipNum=p.clipNum||clips.length;
+    selClip=clips[p.sel]||clips[clips.length-1]||null;clipLoop=!!p.clipLoop;
+    undoS.length=0;redoS.length=0;
+    bpmEl.querySelector('b').textContent=String(bpm);swingEl.querySelector('b').textContent=String(Math.round(50+swing*50));
+    soundSel.value=t.kind;
+    genTrack(t);syncAll();
+    computeLayout();renderSession();paintIcons();paintUndo();
+  }
+  async function saveProject(status){
+    const d=new Date(),pad=x=>String(x).padStart(2,'0');
+    const nm='slicefield-'+d.getFullYear()+pad(d.getMonth()+1)+pad(d.getDate())+'-'+pad(d.getHours())+pad(d.getMinutes());
+    const data=new TextEncoder().encode(JSON.stringify(projectState()));
+    if(dlCap){
+      try{await dlCap.save({filename:nm+'.zip',data:zip([{name:nm+'.json',data}])});status('Saved '+nm+'.zip');}
+      catch(err){const c=err&&err.code;status(c==='declined'?'Not saved':'Saving is not available here ('+(c||'error')+')');}
+      return;
+    }
+    const url=URL.createObjectURL(new Blob([data],{type:'application/json'})),a=el('a',{href:url,download:nm+'.json'});
+    root.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);status('Downloaded '+nm+'.json');
+  }
+  // a project file, or a zip holding one (stored, as this page writes them)
+  function readProjectFile(buf){
+    const u=new Uint8Array(buf),v=new DataView(buf);
+    if(u.length>30&&v.getUint32(0,true)===0x04034b50){
+      if(v.getUint16(8,true)!==0)throw new Error('this zip is compressed: unzip it and open the .json inside');
+      const size=v.getUint32(18,true),nl=v.getUint16(26,true),xl=v.getUint16(28,true);
+      return JSON.parse(new TextDecoder().decode(u.subarray(30+nl+xl,30+nl+xl+size)));
+    }
+    return JSON.parse(new TextDecoder().decode(u));
+  }
+  let projStatus=null;
+  projIn.addEventListener('change',async()=>{
+    const f=projIn.files&&projIn.files[0];projIn.value='';if(!f)return;const say=projStatus||(()=>{});
+    try{await openProject(readProjectFile(await f.arrayBuffer()));say('Opened '+f.name);closeSheet();}
+    catch(err){say('Could not open '+f.name+': '+err.message);}
+  });
+  projBtn.addEventListener('click',()=>openSheet('Project',cardEl=>{
+    const msg=el('p',{className:'expmsg'}),status=x=>{msg.textContent=x;};projStatus=status;
+    const sv=el('button',{type:'button',textContent:'Save project'}),op=el('button',{type:'button',textContent:'Open project…'}),nw=el('button',{type:'button',className:'danger',textContent:'New project'});
+    sv.addEventListener('click',()=>{status('Saving…');saveProject(status);});
+    op.addEventListener('click',()=>{initAudio();projIn.click();});
+    let arm=0;nw.addEventListener('click',()=>{
+      if(!arm){arm=setTimeout(()=>{arm=0;nw.textContent='New project';},2500);nw.textContent='Tap again: start over';return;}
+      clearTimeout(arm);arm=0;hardReset();});
+    cardEl.appendChild(el('div',{className:'projrow'},[sv,op,nw]));
+    cardEl.appendChild(el('p',{},['Saves everything: tempo, swing, modes, the loop (your imported audio too), effect settings, the sequence and every clip. Open a saved project (.json, or the .zip this page saves inside Claude) to carry on. New project starts over; save first to keep this one.']));
+    cardEl.appendChild(msg);
+  }));
+
   // ---------- undo / redo ----------
   // Every edit gesture saves a snapshot of the sequence, the plain loop's strips and the Clips list first
   // (captures, deletes and moves included; clips never change, so the list keeps references). While
   // recording, each bar that writes steps is one undo step. Live touches are not undoable.
   const undoS=[],redoS=[];
-  function snapState(){const t=T();return {seq:t.seq?cloneClip(t.seq):null,loopSet:Object.assign({},t.loopSet),clips:clips.slice(),sel:selClip,clipNum};}
+  function snapState(){const t=T();return {seq:t.seq?cloneClip(t.seq):null,loopSet:Object.assign({},t.loopSet),clips:clips.slice(),sel:selClip,clipNum,kind:t.kind};}
   function checkpoint(){undoS.push(snapState());if(undoS.length>100)undoS.shift();redoS.length=0;paintUndo();}
   function restoreState(sn){
     const t=T(),f=info(t.i);
     clips=sn.clips;selClip=sn.sel&&clips.includes(sn.sel)?sn.sel:null;clipNum=sn.clipNum;
     t.loopSet=sn.loopSet;t.seq=sn.seq;liveV.order=liveV.mute=null;
+    if(sn.kind&&sn.kind!==t.kind)setLoop(t,sn.kind);tx(prefMsg());
     if(!songPlaying){
       // the same sequence is edited in place at once; a different one takes over at the next bar
       if(t.seq&&f.clipId===t.seq.id)tx({type:'clipEdit',tr:t.i,clip:clipForm(t.seq)});
@@ -1201,22 +1363,30 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   }
   // The steps SKIP will silence (as GAP the sequence shifts instead, so nothing is dimmed)
   function patDim(t,idx){
-    if(prefs.silPat!=='mute')return false;
+    if(silOf(t)!=='mute')return false;
     const b=EF.skipPattern(mV(t),barSteps(t));return !!b&&!b[idx%b.length];
   }
   function drawLane(fs){
     const d=lanePageInfo(),t=d.t,i=info(view),h=laneRows*LROW+4;
     g.fillStyle='#16181d';rr(0,0,LW,h,7);g.fill();
     g.textBaseline='middle';g.textAlign='center';g.font=`600 ${fs}px ${FONT}`;
-    // LIVE: the plain loop as it plays. C<n> when the sequence came from (or was captured as) clip n, with a
-    // * once it has changed since; SEQ otherwise. REC underneath while recording.
-    g.fillStyle=d.clip?`hsl(${TRACK_HUES[view]} 75% 62%)`:'#6c7380';
-    const lab=!d.clip?'LIVE':d.clip.num?'C'+d.clip.num+(d.clip.edited?'*':''):'SEQ';
-    if(lab.length>4)g.font=`600 ${fs-2}px ${FONT}`;
-    const sub=recOn?'REC':d.pages>1?(d.page+1)+'/'+d.pages:'';
-    g.fillText(lab,LLAB/2,h/2-(sub?6:0));
-    if(sub){g.font=`${recOn?600:400} ${fs-1}px ${FONT}`;g.fillStyle=recOn?'#ff6b6b':'#8a8f99';g.fillText(sub,LLAB/2,h/2+7);}
-    const w=(LW-LLAB)/d.pr,at=j=>[LLAB+(j%d.pr)*w,4+Math.floor(j/d.pr)*LROW];
+    // LIVE: the plain loop as it plays. The clip's number, in the corner ticks of the Capture icon, when the
+    // sequence came from (or was captured as) that clip, with a * once it has changed since; SEQ otherwise.
+    // REC underneath while recording.
+    const col=d.clip?`hsl(${TRACK_HUES[view]} 75% 62%)`:'#6c7380',sub=recOn?'REC':d.pages>1?(d.page+1)+'/'+d.pages:'';
+    const cy=h/2-(sub?8:0);g.fillStyle=col;
+    if(d.clip&&d.clip.num){
+      const lab=String(d.clip.num)+(d.clip.edited?'*':'');g.font=`600 ${lab.length>3?fs-2:fs}px ${FONT}`;g.fillText(lab,LLAB/2,cy+0.5);
+      const bw=26,bh=20,x0=LLAB/2-bw/2,y0=cy-bh/2,k=5;g.strokeStyle=col;g.lineWidth=1.4;g.lineCap='round';g.beginPath();
+      for(const [x,y,dx,dy] of [[x0,y0,1,1],[x0+bw,y0,-1,1],[x0,y0+bh,1,-1],[x0+bw,y0+bh,-1,-1]]){g.moveTo(x+dx*k,y);g.lineTo(x,y);g.lineTo(x,y+dy*k);}
+      g.stroke();
+    }else{const lab=d.clip?'SEQ':'LIVE';g.fillText(lab,LLAB/2,cy);}
+    if(sub){g.font=`${recOn?600:400} ${fs-1}px ${FONT}`;g.fillStyle=recOn?'#ff6b6b':'#8a8f99';g.fillText(sub,LLAB/2,h/2+12);}
+    // the rotate column: move the whole sequence one step left (upper half) or right (lower half)
+    {const x0=LW-LROT+3,hh=(h-6)/2;
+      for(const [y,dir] of [[3,-1],[3+hh+1,1]]){g.fillStyle='#1f2229';rr(x0,y,LROT-4,hh-1,5);g.fill();
+        const cx=x0+(LROT-4)/2,yc=y+hh/2-0.5;g.fillStyle='#a7adb8';g.beginPath();g.moveTo(cx+4*dir,yc);g.lineTo(cx-3*dir,yc-5);g.lineTo(cx-3*dir,yc+5);g.closePath();g.fill();}}
+    const w=(LW-LLAB-LROT)/d.pr,at=j=>[LLAB+(j%d.pr)*w,4+Math.floor(j/d.pr)*LROW];
     if(d.clip){
       for(let j=0;j<d.n;j++){
         const idx=d.page*d.per+j,s=d.slots[idx];if(idx>=d.slots.length)continue;
@@ -1232,17 +1402,6 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
         laneCell(t,s,x,y,w,LROW-5,now,s?!s.on:patDim(t,j),fs,s&&(s.off||0)>0);
       }
     }
-  }
-  // Folded: the loop picker, the lane and both strips fold away, leaving one slim bar; tap it to open.
-  const foldBtn=$('fold');
-  // (the loop bar stays, so undo and redo never move)
-  function setFold(on){folded=on;laneCv.hidden=on||sessOn;press(foldBtn,on);foldBtn.innerHTML=ICON.fold;
-    foldBtn.setAttribute('aria-label','Hide the sequencer and sliders');foldBtn.title=foldBtn.getAttribute('aria-label');computeLayout();}
-  foldBtn.addEventListener('click',()=>setFold(!folded));
-  function drawSlim(fs){
-    g.fillStyle='#1a1d23';rr(0,0,cssW,SLIM,7);g.fill();
-    g.strokeStyle='#8a8f99';g.lineWidth=1.7;g.lineCap='round';g.lineJoin='round';
-    const cx=cssW/2,cy=SLIM/2;g.beginPath();g.moveTo(cx-6,cy-3);g.lineTo(cx,cy+3);g.lineTo(cx+6,cy-3);g.stroke();
   }
   function drawStrips(fs){
     const t=T(),sw=SWD();let y0=yOrder(),h=STRIP;
@@ -1268,7 +1427,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
       box(y,pin[which]);
     };
     strip(y0,'order','ORDER',ACC,ACCA,'FORWARD');
-    strip(yMute(),'mute',prefs.silPat==='insert'?'GAP':'SKIP','#b8c4ff',a=>'rgba(150,170,255,'+a+')','NONE');
+    strip(yMute(),'mute',silOf(t)==='insert'?'GAP':'SKIP','#b8c4ff',a=>'rgba(150,170,255,'+a+')','NONE');
   }
   function draw(){
     requestAnimationFrame(draw);
@@ -1336,7 +1495,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     const xe=cellX(t,t.len16);if(!fxOnly&&xe<cssW-1){g.fillStyle='rgba(10,11,14,.42)';g.fillRect(xe,y0,cssW-xe,cssH-y0);}
     // the current step when it is silenced
     if(!fxOnly&&st.playing&&i.gate===false&&i.src){g.fillStyle='rgba(10,11,14,.5)';const x=i.rest?HW+((i.s+Math.max(0,i.barPos))%cols)*cw:HW+curSlice*cw;if(x>=HW)g.fillRect(x,y0,cw,cssH-y0);}
-    if(folded)drawSlim(fs);else drawStrips(fs);
+    drawStrips(fs);
     g=laneG;laneG.setTransform(laneDpr,0,0,laneDpr,0,0);laneG.fillStyle=BG;laneG.fillRect(0,0,LW,laneRows*LROW+6);
     if('letterSpacing' in laneG)laneG.letterSpacing='0.06em';drawLane(fs);g=gridG;
     for(const p of ptrs.values())if(p.tr===view){g.strokeStyle='rgba(255,255,255,.85)';g.lineWidth=2;g.beginPath();g.arc(p.x,p.y,17,0,Math.PI*2);g.stroke();}
@@ -1397,7 +1556,9 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   // ---------- start ----------
   // the layout is portrait only; where the browser allows it, keep the screen upright
   try{const o=screen.orientation;if(o&&o.lock){const p=o.lock('portrait');if(p&&p.catch)p.catch(()=>{});}}catch(_){}
-  paintIcons();setFold(false);dieEl.innerHTML=ICON.dice;
+  paintIcons();computeLayout();dieEl.innerHTML=ICON.dice;
+  // the count on the Clips button (and Capture) flash once, after a capture
+  [sessBtn,capBtn].forEach(b=>b.addEventListener('animationend',()=>b.classList.remove('flash'),true));
   (function pre(){let n=0;const nx=()=>{if(n>=tracks.length)return;const t=tracks[n++];if(!t.buf){t.buf=buildLoop(t,48000);t.pk=peaks(t.buf);}setTimeout(nx,10);};setTimeout(nx,0);})();
   requestAnimationFrame(draw);
 }

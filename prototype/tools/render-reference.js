@@ -24,7 +24,12 @@ function runScenario(file){
   // the prototype's loop length rule: one bar at this tempo, rounded to 64 samples
   kinds.forEach((k,i)=>{const lp=ML(k,sr,bpm);e.msg({type:'load',tr:i,L:lp.L,R:lp.R});});
   // ORDER and SKIP may be given as a slider position {"v":0.3}; the pattern is worked out as the app does
-  const pat=m=>m.v===undefined?m:m.type==='order'?{type:'order',tr:m.tr,perm:EF.orderPattern(m.v,e.tracks[m.tr].n)}:m.type==='mute'?{type:'mute',tr:m.tr,bits:EF.skipPattern(m.v,e.tracks[m.tr].n)}:m;
+  // shorthands: {"type":"loopBuf","key","kind"} renders a demo loop for the engine to hold; {"type":"cfgOpt",
+  // "tr","k","o"} sends an effect's default settings with these options (e.g. tails: "cut")
+  const short=m=>m.type==='loopBuf'&&m.kind?(lp=>({type:'loopBuf',key:m.key,L:lp.L,R:lp.R}))(ML(m.kind,sr,bpm)):
+    m.type==='cfgOpt'?(c=>(Object.assign(c.o,m.o),{type:'cfg',tr:m.tr,cfg:{[m.k]:c}}))(EF.defCfg(m.k)):m;
+  const pat0=m=>m.v===undefined?m:m.type==='order'?{type:'order',tr:m.tr,perm:EF.orderPattern(m.v,e.tracks[m.tr].n)}:m.type==='mute'?{type:'mute',tr:m.tr,bits:EF.skipPattern(m.v,e.tracks[m.tr].n)}:m;
+  const pat=m=>pat0(short(m));
   const msgs=(sc.msgs||[]).map(x=>Object.assign({},x,{msg:pat(x.msg)})).sort((a,b)=>a.at-b.at);
   // "at" may be a sample index, or {bar, step} in sixteenths of the 1-bar loop
   const atS=a=>typeof a==='number'?a:Math.round(((a.bar||0)*16+(a.step||0))*e.len/16);
