@@ -1,7 +1,7 @@
 // Renders scripted scenarios through the prototype engine and writes reference output for parity tests:
 //   tools/out/<name>.wav          stereo 32-bit float WAV of the master output
 //   tools/out/<name>.steps.json   every step decision per track: [t, track, src, slice(16ths), gate, fx keys]
-//   tools/out/<name>.events.json  engine events (bar captures, grid, songRow)
+//   tools/out/<name>.events.json  engine events (recorded steps, grid, songRow)
 // Randomness comes from a seeded mulberry32, so runs are repeatable. If the native engine uses the
 // same generator and draws numbers in the same order, its step log should match exactly; audio should
 // match within a small tolerance (see HANDOFF.md, "Parity testing").

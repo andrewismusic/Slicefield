@@ -9,10 +9,12 @@
             {"on":true,"a":5,"off":0,"sid":"a4","slen":1,"fx":[{"k":"pitch","raw":0.3}]},{"on":true,"a":5,"off":0,"sid":"a5","slen":1,"fx":[{"k":"pitch","raw":0.3}]},{"on":true,"a":5,"off":0,"sid":"a6","slen":1,"fx":[{"k":"pitch","raw":0.9}]},{"on":false,"a":7,"off":0,"sid":"a7","slen":1,"fx":[]},
             {"on":true,"a":5,"off":0,"sid":"a8","slen":1,"fx":[{"k":"pitch","raw":0.9}]},{"on":true,"a":9,"off":0,"sid":"a9","slen":1,"fx":[]},{"on":true,"a":10,"off":0,"sid":"a10","slen":1,"fx":[]},{"on":true,"a":11,"off":0,"sid":"a11","slen":1,"fx":[]},
             {"empty":true,"on":true,"a":0,"off":0,"sid":"e12","slen":1,"fx":[]},{"empty":true,"on":true,"a":0,"off":0,"sid":"e13","slen":1,"fx":[]},{"empty":true,"on":false,"a":0,"off":0,"sid":"e14","slen":1,"fx":[]},{"on":true,"a":15,"off":0,"sid":"a15","slen":1,"fx":[]}]}}},
+ {"at":{"bar":4,"step":8},"msg":{"type":"rec","tr":0,"on":true,"id":"take1"}},
  {"at":{"bar":5},"msg":{"type":"mode","mode":"combine"}},
  {"at":{"bar":5},"msg":{"type":"fxonly","on":true}},
  {"at":{"bar":5,"step":1},"msg":{"type":"touches","tr":0,"list":[{"id":"s","a":1,"n":1,"o":2,"fx":{"k":"stutter","raw":0.8}}]}},
  {"at":{"bar":6,"step":1},"msg":{"type":"touches","tr":0,"list":[]}},
  {"at":{"bar":7},"msg":{"type":"fxonly","on":false}},
  {"at":{"bar":7},"msg":{"type":"touches","tr":0,"list":[{"id":"a","a":3,"n":1,"o":3,"fx":{"k":"crush","raw":0.4}},{"id":"b","a":11,"n":1,"o":4,"fx":{"k":"reverse","raw":0.5}}]}},
- {"at":{"bar":8},"msg":{"type":"touches","tr":0,"list":[]}}]}
+ {"at":{"bar":8},"msg":{"type":"touches","tr":0,"list":[]}},
+ {"at":{"bar":8},"msg":{"type":"rec","tr":0,"on":false}}]}

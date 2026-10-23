@@ -18,32 +18,55 @@ let fails=0;const ok=(n,c,x)=>{if(!c)fails++;console.log((c?'PASS ':'FAIL ')+n+(
  const c=EF.defCfg('pitch');c.o.scale='oct';c.o.mask=EF.maskOf(EF.SCALES.oct);e.msg({type:'cfg',tr:0,cfg:{pitch:c}});run(e,2);
  ok('scale change re-maps locked steps (+7 chromatic -> +12 octaves)',s1===7&&EF.semiQ(T.cur.fx[0].v.semi,T.cur.fx[0].o)===12,[s1]);}
 
-// Smooth mode captures finger movement as 16 automation points per step; playback follows them in any mode.
-{const e=mk();e.msg({type:'stepped',on:false});e.msg({type:'play'});const T=e.tracks[0];
- run(e,steps(e,16)+2);
- const per=steps(e,1);let raw=0;
- for(let s=0;s<20;s++)for(let q=0;q<per;q++){raw=(raw+0.01)%1;e.msg({type:'touches',tr:0,list:[{id:'h1',a:3,n:1,o:1,fx:{k:'filter',raw:-raw}}]});run(e,1);}
- const bar=e.ev.find(m=>m.type==='bar'&&m.touched);const a=bar&&bar.slots[5].fx[0]&&bar.slots[5].fx[0].auto;
- ok('a captured bar is a whole one-bar sequence',bar&&bar.slots.length===16);
- ok('smooth gestures are captured as automation',!!a&&a.length===16&&Math.abs(a[15]-a[0])>0.05);
- e.msg({type:'touches',tr:0,list:[]});e.msg({type:'stepped',on:true});
- e.msg({type:'launch',tr:0,clip:{id:'cap',cols:16,n:16,slots:bar.slots,ord:{perm:null},mute:{bits:null}}});
- run(e,steps(e,20));const seen=new Set();for(let q=0;q<per;q++){run(e,1);seen.add(T.cur.fx[0]?T.cur.fx[0].v.cut.toFixed(3):'-');}
- ok('automation plays back with stepped on',seen.size>3);}
+// every step the track decides, as it is heard (the lane's history entries)
+function tap(T){const out=[],p=T.hist.push.bind(T.hist);T.hist.push=x=>{out.push(x);return p(x);};return out;}
+const blank=id=>({id,cols:16,n:16,ord:{perm:null},mute:{bits:null},slots:Array.from({length:16},(_,i)=>({empty:true,on:true,a:0,off:0,sid:'e'+i,slen:1,fx:[]}))});
 
-// What you play over a sequence is captured as heard; FX only decides whether touches change its slices.
+// Recording writes the steps you touch into the sequence in place; smooth gestures become automation.
+{const e=mk();e.msg({type:'stepped',on:false});e.msg({type:'play'});const T=e.tracks[0];
+ const clip=blank('r');e.msg({type:'launch',tr:0,clip});run(e,steps(e,16)+2);e.msg({type:'rec',tr:0,on:true,id:'r'});
+ const per=steps(e,1);let raw=0;
+ for(let s=0;s<6;s++)for(let q=0;q<per;q++){raw=(raw+0.01)%1;e.msg({type:'touches',tr:0,list:[{id:'h1',a:3,n:1,o:1,fx:{k:'filter',raw:-raw}}]});run(e,1);}
+ e.msg({type:'touches',tr:0,list:[]});run(e,steps(e,2));e.msg({type:'rec',tr:0,on:false});
+ const w=e.ev.filter(m=>m.type==='clipStep');
+ ok('recording sends each touched step once it has ended',w.length>=5&&w.every(m=>m.id==='r'&&clip.slots[m.idx]===m.slot),w.length);
+ ok('…and leaves untouched steps alone',clip.slots.filter(x=>x.empty).length===16-w.length);
+ const a=w[2].slot.fx[0]&&w[2].slot.fx[0].auto;
+ ok('smooth gestures are recorded as automation',!!a&&a.length===16&&Math.abs(a[15]-a[0])>0.05);
+ e.msg({type:'stepped',on:true});run(e,steps(e,16));
+ while(T.cIdx!==w[2].idx)run(e,1);const seen=new Set();for(let q=0;q<per-2;q++){run(e,1);seen.add(T.cur.fx[0]?T.cur.fx[0].v.cut.toFixed(3):'-');}
+ ok('automation plays back with stepped on',seen.size>3,[...seen]);
+ const n0=e.ev.filter(m=>m.type==='clipStep').length;e.msg({type:'touches',tr:0,list:[{id:'z',a:9,n:1,o:2,fx:null}]});run(e,steps(e,4));
+ ok('with recording off, touches change nothing',e.ev.filter(m=>m.type==='clipStep').length===n0&&clip.slots.every(x=>x.a!==9));}
+
+// What recording writes follows FX only: off, a step becomes what was heard; on, it keeps its slice.
 {const e=mk();e.msg({type:'play'});const T=e.tracks[0];
  const seq={id:'s',cols:16,n:16,ord:{perm:null},mute:{bits:null},slots:Array.from({length:16},(_,i)=>({on:true,a:(i*3)%16,off:0,sid:'s'+i,slen:1,fx:[]}))};
- const lastTouched=()=>e.ev.filter(m=>m.type==='bar'&&m.touched).pop();
- e.msg({type:'launch',tr:0,clip:seq});run(e,steps(e,18));
+ const orig=seq.slots.map(x=>x.a);
+ e.msg({type:'launch',tr:0,clip:seq});run(e,steps(e,18));e.msg({type:'rec',tr:0,on:true,id:'s'});
  e.msg({type:'mode',mode:'combine'});e.msg({type:'fxonly',on:true});
- e.msg({type:'touches',tr:0,list:[{id:'d',a:9,n:1,o:1,fx:null},{id:'p',a:2,n:1,o:2,fx:{k:'pitch',raw:0.8}}]});e.ev.length=0;run(e,steps(e,34));
- let b=lastTouched();
- ok('FX only + Combine: the captured bar keeps the slices, with the effect on every step',b&&b.slots.map(s=>s.a).join()===seq.slots.map(s=>s.a).join()&&b.slots.every(s=>s.fx.some(f=>f.k==='pitch')),b&&b.slots.map(s=>s.a));
- e.msg({type:'mode',mode:'replace'});e.msg({type:'fxonly',on:false});e.msg({type:'touches',tr:0,list:[{id:'d2',a:9,n:1,o:4,fx:null}]});e.ev.length=0;run(e,steps(e,34));
- b=lastTouched();ok('Replace: the captured bar plays the touched slice',b&&b.slots.every(s=>s.a===9&&!s.fx.length));
- e.msg({type:'touches',tr:0,list:[]});e.ev.length=0;run(e,steps(e,34));b=e.ev.filter(m=>m.type==='bar').pop();
- ok('an untouched bar is captured as the sequence plays it, marked untouched',b&&!b.touched&&b.cid==='s'&&b.slots.map(s=>s.a).join()===seq.slots.map(s=>s.a).join());}
+ e.msg({type:'touches',tr:0,list:[{id:'d',a:9,n:1,o:1,fx:null},{id:'p',a:2,n:1,o:2,fx:{k:'pitch',raw:0.8}}]});run(e,steps(e,18));
+ ok('FX only + Combine: recorded steps keep their slices and take the effect',seq.slots.map(x=>x.a).join()===orig.join()&&seq.slots.every(x=>x.fx.some(f=>f.k==='pitch')),seq.slots.map(x=>x.a));
+ e.msg({type:'mode',mode:'replace'});e.msg({type:'fxonly',on:false});e.msg({type:'touches',tr:0,list:[{id:'d2',a:9,n:1,o:4,fx:null}]});
+ const s0=T.cIdx;run(e,steps(e,4));e.msg({type:'touches',tr:0,list:[]});run(e,steps(e,1));
+ const hit=seq.slots.map((x,i)=>x.a===9?i:-1).filter(i=>i>=0);
+ ok('Replace: touched steps take the touched slice, the rest stay',hit.length>=3&&hit.length<=5&&seq.slots.filter(x=>x.a!==9).every(x=>x.fx.some(f=>f.k==='pitch')),hit);}
+
+// Launching a sequence never starts playback (Trash or a lane edit while stopped stays stopped).
+{const e=mk();e.msg({type:'launch',tr:0,clip:blank('b')});ok('launch while stopped does not start playback',!e.playing&&e.tracks[0].clip.id==='b');
+ e.msg({type:'launch',tr:0,clip:null});ok('…nor does clearing it',!e.playing&&!e.tracks[0].clip);}
+
+// A blank sequence launched with now:true takes over straight away, at the loop's place in the bar.
+{const e=mk();e.msg({type:'play'});const T=e.tracks[0];const h=tap(T);run(e,steps(e,5)+1);
+ e.msg({type:'launch',tr:0,clip:blank('n'),now:true});run(e,steps(e,6));
+ ok('a blank sequence picks up where the loop is',T.clip.id==='n'&&h.map(x=>x.a).join()===[0,1,2,3,4,5,6,7,8,9,10,11].join(),h.map(x=>x.a));}
+
+// The Clips list plays through once from a chosen clip and stops at its end.
+{const e=mk();const T=e.tracks[0];const c1=blank('c1'),c2=blank('c2'),c3=blank('c3');
+ e.msg({type:'song',rows:[c1,c2,c3].map(c=>({bars:1,clips:[c]})),from:1,once:true});run(e,1);
+ const first=T.clip&&T.clip.id;run(e,steps(e,16)+2);const second=T.clip&&T.clip.id;run(e,steps(e,16));
+ ok('play from a clip, then on to the end of the list',first==='c2'&&second==='c3',[first,second]);
+ ok('…and stop there',!e.playing&&e.ev.some(m=>m.type==='songEnd'));}
 
 // FX only + Combine while just playing: the loop keeps running, the effect lands on every slice, waveform taps do nothing.
 {const e=mk();e.msg({type:'play'});e.msg({type:'mode',mode:'combine'});e.msg({type:'fxonly',on:true});const T=e.tracks[0];run(e,steps(e,3));
@@ -95,21 +118,20 @@ let fails=0;const ok=(n,c,x)=>{if(!c)fails++;console.log((c?'PASS ':'FAIL ')+n+(
  e.msg({type:'clipEdit',clip:Object.assign({},clip,{slots:slots.map(s=>s.empty?Object.assign({},s,{on:false}):s)})});const g=[];for(let s=0;s<16;s++){run(e,steps(e,1));g.push(T.gate?1:0);}
  ok('an empty step switched off is silent',g.slice(1).every((x,j)=>(j+1)%4===0?x===1:x===0),g);}
 
-// ORDER and SKIP are fixed patterns: every bar plays the same, and capture writes them into the steps.
-{const e=mk();const perm=EF.orderPattern(0.3,16),bits=EF.skipPattern(0.5,16);
- e.msg({type:'order',tr:0,perm});e.msg({type:'mute',tr:0,bits});e.msg({type:'play'});run(e,steps(e,16*4+1));
- const bars=e.ev.filter(m=>m.type==='bar'),key=b=>b.slots.map(s=>s.a+(s.on?'':'x')).join(' ');
- ok('a bar is captured at every bar line',bars.length===4,bars.length);
- ok('ORDER and SKIP repeat exactly, bar after bar',bars.every(b=>key(b)===key(bars[0])),bars.map(key));
- ok('captured steps follow the patterns',bars[0].slots.every((s,i)=>s.a===perm[i]&&s.on===!!bits[i]),key(bars[0]));
+// ORDER and SKIP are fixed patterns: every bar plays the same.
+{const e=mk();const perm=EF.orderPattern(0.3,16),bits=EF.skipPattern(0.5,16),T=e.tracks[0];
+ e.msg({type:'order',tr:0,perm});e.msg({type:'mute',tr:0,bits});e.msg({type:'play'});const h=tap(T);run(e,steps(e,16*4)+1);
+ const bars=[0,1,2,3].map(b=>h.filter(x=>x.bn===b)),key=b=>b.map(x=>x.a+(x.on?'':'x')).join(' ');
+ ok('ORDER and SKIP repeat exactly, bar after bar',bars.every(b=>b.length===16&&key(b)===key(bars[0])),bars.map(key));
+ ok('steps follow the patterns',bars[0].length===16&&bars[0].every((x,i)=>x.a===perm[i]&&x.on===!!bits[i]),key(bars[0]));
  ok('the far right of each slider is the default',EF.orderPattern(1,16)===null&&EF.skipPattern(EF.DEAD,16)===null&&EF.orderPattern(EF.DEAD-0.001,16)!==null);
  const pats=new Set(),sk=new Set();for(let i=0;i<EF.PATN;i++){const v=(i+0.5)/EF.PATN*EF.DEAD;pats.add(EF.orderPattern(v,16).join());sk.add(EF.skipPattern(v,16).join());}
  ok('more than a thousand different patterns on each slider',pats.size>1000&&sk.size>1000,[pats.size,sk.size]);}
 
 // GAP (SKIP set to insert rests): a skipped step waits, and the sequence carries on after it.
 {const e=mk({silPat:'insert'});const bits=new Array(16).fill(1);bits[2]=bits[3]=0;
- e.msg({type:'mute',tr:0,bits});e.msg({type:'play'});run(e,steps(e,16)+1);
- const b=e.ev.find(m=>m.type==='bar'),heard=b.slots.filter(s=>s.on).map(s=>s.a);
+ e.msg({type:'mute',tr:0,bits});e.msg({type:'play'});const h=tap(e.tracks[0]);run(e,steps(e,16)+1);
+ const heard=h.filter(x=>x.bn===0&&x.on).map(x=>x.a);
  ok('GAP: slices after a gap are not lost',heard.join()===[0,1,2,3,4,5,6,7,8,9,10,11,12,13].join(),heard);}
 
 // Touches play through SKIP by default; a preference applies SKIP to them too.

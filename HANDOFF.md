@@ -1,6 +1,6 @@
 # Slicefield — handoff for the iOS app
 
-This guide and the `prototype/` folder are everything needed to build Slicefield as a native iPhone app. The prototype is a single-page web app (version 18) designed through about fifteen rounds of hands-on testing on a phone. Treat its behaviour as the specification: when this document and the code disagree, the code in `prototype/src/` is what was actually played and approved. Say so in the pull request if you change any behaviour on purpose.
+This guide and the `prototype/` folder are everything needed to build Slicefield as a native iPhone app. The prototype is a single-page web app (version 19) designed through about fifteen rounds of hands-on testing on a phone. Treat its behaviour as the specification: when this document and the code disagree, the code in `prototype/src/` is what was actually played and approved. Say so in the pull request if you change any behaviour on purpose.
 
 **For Claude Code:** read this whole file first, then `prototype/src/engine.js` (about 580 lines, the heart of it). Section 13 gives the build order. Section 14 lists decisions the owner (Andrew) hasn't made yet. Ask him about those instead of guessing. Section 18 covers using Slicefield as the sound engine inside a larger app, and sections 19–21 list what changed in versions 16, 17 and 18. **Version 18 replaced recording, clips and the song with capture and a Takes list, and the play-order and silence strips with fixed ORDER and SKIP patterns.** Where §5.4, §5.5, §8, §9, §10.4 or §20 disagree with §21, §21 wins.
 
@@ -29,6 +29,7 @@ This guide and the `prototype/` folder are everything needed to build Slicefield
 19. Changes in version 16
 20. Changes in version 17
 21. Changes in version 18 (and the planned next steps)
+22. Changes in version 19
 
 ---
 
@@ -348,6 +349,8 @@ The engine stores the track's `cfg` and re-resolves whenever raw or cfg changes 
 
 ## 8. Recording and sequences
 
+> **Back in v19, simpler (§22.1):** Record overdubs the touched steps into the sequence in place; there are no new-recording rules. §8.2 (what gets written) and §8.3 (automation) apply as written. The v18 note follows for history.
+>
 > **Replaced in v18:** there is no record button. Every bar is captured and kept on the Takes list (§21). Lane editing (§8.5), smooth/stepped automation (§8.3) and grid changes (§8.6) still apply to the main page's sequence.
 
 ### 8.1 Rules (as approved)
@@ -407,7 +410,7 @@ Removed in v16 (Andrew's call). The engine keeps its 96-step history ring only f
 
 ## 9. Clips, song and export
 
-> **Replaced in v18** by the Takes list and its export (§21).
+> **Replaced in v18** by the Takes list and its export (§21), and in v19 by Capture and the Clips page (§22).
 
 - Toggle with the clips/effects icon (two-columns-of-lines icon ↔ 4×4 dots). The clips view replaces the lane, loop row and grid.
 - Two columns side by side, each one column wide and scrolling on its own:
@@ -583,7 +586,7 @@ When you are unsure how something should feel, open the prototype on a phone and
 5. **Imported audio:** resample to a bar (current behaviour, changes pitch) or trim and time-stretch?
 6. **Background audio, Ableton Link and MIDI clock**: wanted?
 7. **iPad layout**: the prototype is portrait iPhone only.
-8. **Takes housekeeping.** There is no cap on the Takes list yet, and takes live only in memory. How many to keep, and do they persist between launches?
+8. **Clips housekeeping.** Clips live only in memory. Do they persist between launches, and per project?
 9. **The shooting game** (§21): scoring, round length, and whether it ships in the instrument or in the larger platform.
 10. **Desktop input** for web and VST versions, which have no multi-touch (§18).
 11. **Filter resonance level-matching.** Freeze is now level-matched (§20); the filter's resonant peak (+3.5 dB at the default resonance) is not compensated yet.
@@ -649,11 +652,12 @@ Add scenarios as you go. Every bug fixed in either implementation should get one
 | `swing` / `stepped` | `s` / `on` | |
 | `pref` | `{silPat: mute|insert, grace, lat, touchWin}` | SKIP or GAP; late-touch window = `grace + lat` ms (`lat`: reported output latency); touches play through SKIP when `touchWin` |
 | `view` | `tr` | which track's history to report |
-| `launch` | `tr, clip|null` | queue a sequence (null = raw loop) at the next bar; starts transport if stopped; ends song |
+| `launch` | `tr, clip|null, now` | set the sequence (null = raw loop): stopped, at once (it **never** starts playback); playing, at the next bar, or at once with `now` (the clip position picks up from the loop's, `cpos = lp`); ends song |
+| `rec` | `tr, on, id` | Record: while on, touched steps are written into the playing sequence whose id matches (§22.1) |
 | `clipEdit` | `clip` | replace a sequence everywhere it's referenced (steps edited, blank replacement) |
-| `song` / `songRows` / `songStop` | `rows:[{bars, clips[nTracks]}], from` | play the song from a row (next global bar) / update rows live / stop the song |
+| `song` / `songRows` / `songStop` | `rows:[{bars, clips[nTracks]}], from, once` / `rows, idx` | play the list from a row (next global bar; starts transport if stopped); with `once` it stops after the last row (`songEnd`) / update rows live, `idx` = the row now playing in the new list / stop the song |
 
-Engine → UI events: `bar {tr, bn, cid, touched, cols, n, slots}` (capture: every whole bar as heard, §21), `grabbed {L, R, sr}`, `grid {tr, n}`, `songRow {idx}`, plus `status`. The v17 `rec`, `rand`, `clip`, `clipStep` and `overDone` are gone.
+Engine → UI events: `clipStep {tr, id, idx, bn, slot}` (a step written by recording, sent once the step has ended), `grabbed {L, R, sr}`, `grid {tr, n}`, `songRow {idx}`, `songEnd`, plus `status`. The v18 `bar` capture event and the v17 `clip` and `overDone` are gone.
 
 ### B. Constants
 - AUTO = 16 automation points per step
@@ -839,6 +843,8 @@ Repeating most effects adds little, so it's parked as an open question (§14).
 ---
 
 ## 21. Changes in version 18 (and the planned next steps)
+
+> **Partly replaced in v19 (§22):** automatic capture and the Takes list (§21.1) are gone; Record and a deliberate Capture button are back, and saved sequences live on the Clips page. ORDER/SKIP patterns (§21.2) stay, flipped on screen.
 
 Agreed with Andrew after v17. Two big shifts: **capture replaces recording**, and **ORDER and SKIP are fixed patterns** with no randomness. Together they remove seeds, variation length, the Clip sheet and Print: what you hear is what is kept and what exports.
 
@@ -1029,3 +1035,66 @@ An optional layer over the grid. Hitting an enemy touches the cell under it, and
 - **Rounds** of 32 bars rather than lives, so each round gives a predictable batch of takes. The next round is +8 BPM.
 
 The game should drive the engine through the same touch messages as fingers (`touches`), so it is just another host of the engine (§18).
+
+---
+
+## 22. Changes in version 19
+
+Agreed with Andrew after v18. Capturing every bar made the list huge and confusing, and starting each bar fresh ruled out Combine. v19 goes back to one sequence that stays loaded, with **Record** to write into it and a deliberate **Capture** to save it.
+
+### 22.1 Record (overdub in place)
+
+- **Record off:** touches are only heard; the sequence never changes. This is jamming.
+- **Record on:** each step you touch is written into the sequence in place, as soon as that step ends (`clipStep`). Untouched steps are left alone.
+  - What is written follows §8.2: FX only off, the step becomes what was heard (slice, on/off, effects; Replace or Combine decide what was heard). FX only on, the step keeps its slice and on/off and takes the effects heard (an empty step becomes its loop slice).
+  - Smooth mode records automation (§8.3).
+  - A late touch or release (the grace window) re-decides the step: the engine puts back the step it overwrote first, then writes again if the step is still touched.
+- **Starting on the plain loop:** a sequence of empty steps is made and switched in at once (`launch … now`), so recording starts on the next step and the loop carries on in place.
+- **Trash while recording** leaves an empty sequence, so recording carries on.
+- Record can be armed while stopped; it records once playback starts. It stays on across Stop.
+- **Undo:** each bar that writes steps is one undo step (the app checkpoints on the first `clipStep` of each bar).
+- The lane label reads **REC** (red) under the sequence's name while recording, and the playing step is outlined red.
+- Engine: `rec {tr, on, id}` sets `Track.rec`; `decide()` writes into `clip.slots[cIdx]` and keeps `recW` (the slot it replaced) until `finalize()` emits `clipStep`. In the native engine the write must go to an engine-owned copy of the sequence (the UI applies `clipStep` to its own model). The web backup engine is given its own copies of sequences for the same reason.
+
+### 22.2 Capture and the Clips page
+
+- **Capture** (the frame-with-plus button, far right of the tools row) saves the sequencer's sequence as it is at that moment to the end of the Clips list, with its stored ORDER and SKIP. On the plain loop it saves the loop as set. The new clip becomes the selection, the Clips button's count flashes, and the lane now names the sequence **C<n>** (with a `*` once it changes again). Capture is undoable and is disabled on the Clips page.
+- Clips never change once saved. A clip is `{id, num, cols, n, slots, orderV, muteV}`; it is turned into engine form (`ord`, `mute`) when played or exported.
+- **The Clips page** (the list button in the header; "Takes" is renamed "Clips"):
+  - Each row: a drag handle (reorder) and the clip's thumbnail, labelled C<n>. No repeats, checkboxes, ×, Play all or Clear.
+  - **Tap a clip:** select it and play the list from it (at the next bar line if something is playing; it starts playback if stopped). The selection follows playback.
+  - **Play** (header) plays from the selected clip. Without **LOOP**, the list plays to its end and stops (`song … once`). With **LOOP** on (yellow), the selected clip repeats; tapping another clip loops that one.
+  - **DELETE DUPLICATES** keeps the first of any identical clips (same steps, effects, ORDER and SKIP) and deletes the rest. The button says how many went.
+  - **LOAD TO SEQUENCER** copies the selected clip into the sequencer and opens the field page. This is the only way a clip gets onto the field: going back with the list button leaves the field as it was, and the field's own sequence plays again (from the next bar line if the list was playing). If the list was playing when you load, the loaded clip carries on playing.
+  - **Trash** works as elsewhere: hold it and tap clips, or hold clips and tap it, to delete them. A tap on its own asks before deleting every clip.
+  - Editing the list while it plays (delete, reorder, dedupe, undo) keeps the clip that is playing, and the list carries on from there (`songRows … idx`).
+- There is always a selection while clips exist: the last capture, or the last clip selected; deleting it moves the selection to the next clip (or the one before).
+- **Export:** "All clips in order, one file", "All individual clips" (one seamless bar each, zipped), "Selected clip only", plus the sequencer's sequence, "what you just heard" and the format.
+
+### 22.3 Layout
+
+- **Row 1:** gear · BPM · swing · export · Clips (count) · Record · Play (two columns). BPM and swing are one column each, value over a small label.
+- **Row 2 (the loop bar):** loop picker · undo · redo · fold. It shows on both pages and never folds, so undo and redo never move.
+- **Row 3 (tools):** trash (under the gear) · then, on the field page, stepped · die (three columns) · REPLACE/COMBINE · FX ONLY; on the Clips page, LOOP (two columns) · DELETE DUPLICATES (two) · LOAD TO SEQUENCER (two) · then Capture at the far right.
+- **Sequencer lane** below the tools: one bar in **two rows of 8** steps (other lengths split evenly across two rows; 8 steps or fewer use one row), 26 pt per row. Steps and the label column work as before.
+- **Fold** hides the lane and the ORDER/SKIP strips only.
+- **Launching never starts playback**, so the trash, lane edits and the die no longer start the transport when stopped.
+
+### 22.4 ORDER and SKIP, flipped
+
+- The default zone and the pin are now at the **left**; the pattern number grows to the **right**. The engine is unchanged: a strip position `p` (0 at the left edge of the strip, just right of the pin) is the value `v = 1 − p` passed to `orderPattern` / `skipPattern`.
+- **Unpinning either strip resets its stored pattern to the default** (it used to only reset SKIP; unpinning ORDER kept the last pinned position, so an unpinned ORDER sprang back there instead of to FORWARD).
+
+### 22.5 FX ONLY field
+
+With FX ONLY on, the effect rows have **no column divisions**: each row is one strip, and a touch anywhere in it plays that row's effect on whatever the sequence (or loop) plays. The loop row hides its step numbers and per-slice backgrounds (the waveform and playhead stay). Holding a step and tapping a row in FX ONLY keeps the step's slice and gives it the effect.
+
+### 22.6 Tests and scenarios
+
+- `engine.test.js` has 38 cases. The capture tests became recording tests (touched steps written once, untouched left alone, automation, nothing written with Record off, FX only vs not). New cases: launching never starts playback, a `now` launch picks up the loop's place, and the list plays to its end once and stops. ORDER/SKIP/GAP tests read the lane history instead of capture events.
+- Scenario `04-record-fxonly` replaces `04-capture-fxonly`: it adds a recording pass from bar 4½ to bar 8 (32 `clipStep` events).
+
+### 22.7 Not decided yet
+
+- Combine while recording without FX only writes what was heard, which (as approved for §5.3) drops the step's own effects when a touched slice plays. If "combine with the sequence" should keep the step's effects too, that is a change to §5.3 and needs Andrew's sign-off.
+- Clips are not persisted between launches (§14).

@@ -122,7 +122,7 @@ function engineFactory(){
       this.vol=1;this.muted=false;this.tg=1;this.cfg=allCfg();this.cfgV=0;
       // ORDER and SKIP: the plain loop's own patterns, a clip's stored ones, and a live (unpinned) override
       this.ord={perm:null};this.mute={bits:null};this.muteQ=null;this.ordLive=null;this.muteLive=null;
-      this.lp=-1;this.barCid=null;
+      this.lp=-1;this.rec=null;this.recW=null;
       this.gate=true;this.gG=1;this.rest=false;
       this.touches=[];this.rotLast=null;this.rotLastO=-1;this.anch=null;
       this.clip=null;this.clipQ=undefined;this.cpos=-1;this.songSilent=false;this.launchNow=null;
@@ -157,7 +157,7 @@ function engineFactory(){
     reset(){
       this.cur=null;this.first=true;this.tlS=this.s;this.rotLast=null;this.anch=null;this.gr.length=0;this.dcL=this.dcR=0;
       this.xf=0;this.rp=-1;this.rdir=1;this.hist=[];this.barPos=-1;this.barN=-1;this.cpos=-1;this.bsnap=null;
-      this.lp=-1;this.barCid=null;this.dL.fill(0);this.dR.fill(0);this.dSend=0;this.dlp1=this.dlp2=0;
+      this.lp=-1;this.recW=null;this.dL.fill(0);this.dR.fill(0);this.dSend=0;this.dlp1=this.dlp2=0;
     }
     mkE(f){return {k:f.k,raw:f.raw,auto:f.auto||null,tid:f.tid||null,live:null,v:{},o:null,rv:NaN,cv:-1,ref:null};}
     // the raw cell position an effect plays at this moment: recorded automation, a moving finger, or a held value
@@ -211,16 +211,8 @@ function engineFactory(){
         }
         c.recRefs=false;
       }
-    }
-    // Capture: every whole bar that played is handed to the app as a sequence, exactly as it was heard
-    // (ORDER, SKIP and random slices written into its steps). The app decides which bars to keep.
-    capture(bn){
-      const n=this.n,at=[];let touched=false;
-      for(const x of this.hist)if(x.bn===bn&&x.bp<n)at[x.bp]=x;
-      for(let i=0;i<n;i++)if(!at[i])return;   // a partial bar (play began mid-bar, or the grid changed) is not kept
-      const slots=at.map(x=>{if(x.tch)touched=true;
-        return {on:x.on,a:x.pa,off:x.off,sid:x.sid,slen:x.slen,fx:x.fx.filter(f=>f.k!=='random').map(f=>f.auto?{k:f.k,raw:f.raw,auto:f.auto.slice()}:{k:f.k,raw:f.raw})};});
-      this.E.emit({type:'bar',tr:this.i,bn,cid:this.barCid,touched,cols:this.cols,n,slots});
+      // a step written by recording is handed to the app once it has ended (its automation is complete)
+      if(this.recW){const w=this.recW;this.recW=null;this.E.emit({type:'clipStep',tr:this.i,id:w.id,idx:w.idx,bn:w.bn,slot:w.slot});}
     }
     boundary(t,k){
       const E=this.E;
@@ -232,13 +224,11 @@ function engineFactory(){
       if(this.launchNow){const L=this.launchNow;this.launchNow=null;this.clip=L.clip;this.songSilent=L.silent;this.clipQ=undefined;this.cpos=-1;this.barPos=0;}
       if(this.muteQ){this.mute=this.muteQ;this.muteQ=null;}
       const bar=this.barPos===0;
-      if(bar&&E.playing&&this.barN>0)this.capture(this.barN-1);
       if(bar&&this.gridQ){const g=this.gridQ;this.gridQ=0;this.applyGrid(g);}
       if(bar&&this.rangeQ){const q=this.rangeQ;this.rangeQ=null;this.s16=q.s16;this.e16=q.e16;this.clampTl();this.first=true;this.cpos=-1;this.hist=[];}
       if(bar&&this.clipQ!==undefined){
         this.clip=this.clipQ;this.clipQ=undefined;this.cpos=-1;this.songSilent=false;
       }
-      if(bar)this.barCid=this.clip?this.clip.id:null;
       this.bsnap=this.snapshot();this.bsnap.t=t;this.bsnap.k=k;
       this.decide(t,k);
     }
@@ -323,6 +313,18 @@ function engineFactory(){
       this.hist.push({bp:this.barPos,bn:this.barN,ci:this.cIdx,on:this.gate,a:cc.a/u,off:k-cc.k0,sid:cc.sid,slen:cc.slen/sl,fx,
         pa:(cc.rPick>=0?cc.rPick:cc.a)/u,tch:!insert&&!!cc.touched});
       if(this.hist.length>96)this.hist.splice(0,32);
+      // Recording writes the steps you touch into the sequence, in place; untouched steps are left alone.
+      //   FX only off: the step becomes what was heard (slice, on/off, effects).
+      //   FX only on:  the step keeps its slice and on/off and takes the effects heard (an empty step
+      //                becomes its loop slice).
+      const r=this.rec;
+      if(r&&clip&&clip.id===r.id&&this.cIdx>=0&&!insert&&cc.touched){
+        const old=clip.slots[this.cIdx],u2=cc.a/u;
+        const s=fxOnly?Object.assign({},old.empty?{on:true,a:u2,off:0,sid:'X'+(++this.sidC),slen:1}:old,{fx}):
+          {on:cc.on!==false,a:u2,off:k-cc.k0,sid:cc.sid,slen:cc.slen/sl,fx};
+        delete s.empty;
+        this.recW={id:r.id,idx:this.cIdx,bn:this.barN,slot:s,old};clip.slots[this.cIdx]=s;
+      }
     }
     // A touch (or a release) that lands just after a step started counts for that step: the step is decided
     // again as if it had been on time. Its slice keeps its place in time, so nothing restarts. The window is
@@ -332,6 +334,7 @@ function engineFactory(){
       if(!b||!E.playing||E.pref.grace<=0)return;
       if(E.t-b.t>(E.pref.grace+(E.pref.lat||0))*E.sr/1000||E.t<b.t)return;
       if(b.cur&&b.left>1)return;
+      if(this.recW){const w=this.recW;this.recW=null;if(this.clip&&this.clip.id===w.id)this.clip.slots[w.idx]=w.old;}
       this.restore(b);this.decide(b.t,b.k);
     }
     startStep(c){
@@ -501,6 +504,7 @@ function engineFactory(){
     }
     emit(m){if(this.post)this.post(m);}
     start(){this.t=0;this.playing=true;for(const tr of this.tracks)tr.reset();}
+    stop(){this.playing=false;this.song=null;for(const tr of this.tracks){tr.gridQ=0;tr.finalize();tr.songSilent=false;tr.launchNow=null;}}
     msg(d){
       const T=d.tr!==undefined?this.tracks[d.tr]:null;
       switch(d.type){
@@ -516,7 +520,7 @@ function engineFactory(){
           if(!this.ringL||this.ringL.length!==8*this.len){this.ringL=new Float32Array(8*this.len);this.ringR=new Float32Array(8*this.len);}
           break;}
         case 'play':if(!this.playing)this.start();break;
-        case 'stop':this.playing=false;this.song=null;for(const tr of this.tracks){tr.gridQ=0;tr.finalize();tr.songSilent=false;tr.launchNow=null;}break;
+        case 'stop':this.stop();break;
         case 'touches':{T.touches=d.list||[];T.relink();const sig=T.touches.map(x=>x.id+':'+x.a+':'+(x.fx?x.fx.k:'-')).join();if(sig!==T.tsig){T.tsig=sig;T.regrace();}break;}
         case 'cfg':T.cfg=Object.assign({},T.cfg,d.cfg);T.cfgV++;break;
         case 'grid':if(this.playing&&d.q){T.gridQ=d.n;}else{T.gridQ=0;T.applyGrid(d.n);}T.bsnap=null;break;
@@ -538,26 +542,35 @@ function engineFactory(){
         case 'stepped':this.stepped=!!d.on;break;
         case 'pref':Object.assign(this.pref,d.pref);break;
         case 'view':this.view=d.tr;break;
+        // Launching a sequence never starts playback. While playing it takes over at the next bar line, or
+        // at once with now:true (a blank sequence made from the plain loop picks up where the loop is).
         case 'launch':{
-          if(!this.playing){this.start();T.clip=d.clip||null;T.clipQ=undefined;T.songSilent=false;}
+          if(!this.playing||d.now){T.clip=d.clip||null;T.clipQ=undefined;T.songSilent=false;if(d.now&&this.playing)T.cpos=T.lp;}
           else T.clipQ=d.clip||null;
           this.song=null;
           break;}
+        // record: touched steps are written into the sequence with this id while it plays
+        case 'rec':T.rec=d.on&&d.id?{id:d.id}:null;break;
         case 'clipEdit':{for(const tr of this.tracks){if(tr.clip&&tr.clip.id===d.clip.id)tr.clip=d.clip;if(tr.clipQ&&tr.clipQ.id===d.clip.id)tr.clipQ=d.clip;}
           if(this.song)for(const row of this.song.rows)row.clips=row.clips.map(c=>c&&c.id===d.clip.id?d.clip:c);break;}
         case 'song':{
           const rows=d.rows||[];
           if(!rows.length){this.song=null;break;}
-          const first=Math.max(0,Math.min(rows.length-1,d.from||0));
-          if(!this.playing){this.start();this.song={rows,idx:first-1,nextT:0};}
-          else this.song={rows,idx:first-1,nextT:Math.ceil(this.t/this.len)*this.len};
+          // once: play to the end of the list, then stop (from past the end: stop at the next bar line)
+          const first=Math.max(0,Math.min(rows.length,d.from||0)),once=!!d.once;
+          if(!this.playing){this.start();this.song={rows,idx:Math.min(first,rows.length-1)-1,nextT:0,once};}
+          else this.song={rows,idx:first-1,nextT:Math.ceil(this.t/this.len)*this.len,once};
           break;}
-        case 'songRows':{if(this.song){this.song.rows=d.rows;if(this.song.idx>=d.rows.length)this.song.idx=d.rows.length-1;}break;}
+        // new rows for the list while it plays; idx: the row now playing in the new list (−1: none, so the
+        // first row is next)
+        case 'songRows':{if(this.song){this.song.rows=d.rows;if(d.idx!=null)this.song.idx=d.idx;if(this.song.idx>=d.rows.length)this.song.idx=d.rows.length-1;}break;}
         case 'songStop':{if(this.song){this.song=null;for(const tr of this.tracks){tr.clipQ=null;}}break;}
       }
     }
     songStep(){
-      const S=this.song;S.idx=(S.idx+1)%S.rows.length;const row=S.rows[S.idx];
+      const S=this.song;
+      if(S.once&&S.idx+1>=S.rows.length){this.stop();this.emit({type:'songEnd'});return;}
+      S.idx=(S.idx+1)%S.rows.length;const row=S.rows[S.idx];
       this.tracks.forEach((tr,i)=>{const c=(row.clips&&row.clips[i])||null;tr.launchNow={clip:c,silent:!c};});
       S.nextT+=Math.max(1,row.bars)*this.len;
       this.emit({type:'songRow',idx:S.idx});

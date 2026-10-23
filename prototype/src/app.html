@@ -1,7 +1,7 @@
 <style>
 /* Everything lives in the Slicefield element's shadow root, so none of these rules or ids reach the
-   host page. Layout: one-screen instrument. Header, sequencer lane, loop bar, then a canvas holding
-   the ORDER and SKIP strips and the effect grid (or the Takes list). Single dark stage look. */
+   host page. Layout: one-screen instrument. Header, loop bar (with undo/redo), tools, sequencer lane,
+   then a canvas holding the ORDER and SKIP strips and the effect grid (or the Clips list). Single dark stage look. */
 :host{
   color-scheme: dark;display:block;height:100%;box-sizing:border-box;font-family:var(--mono);font-size:12px;color:var(--fg);
   --bg:#111317;--panel:#1a1d23;--raise:#242831;--line:#2f3440;--fg:#ece7dc;--dim:#8a8f99;--accent:#ffc65c;--rec:#e5484d;
@@ -285,25 +285,34 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
 .take.drop{outline:2px dashed var(--accent);outline-offset:1px}
 .takes-empty{color:var(--dim);line-height:1.6;padding:14px 8px}
 .foldbtn:disabled{opacity:.35;cursor:default}
+/* v19: header row 1 is transport and pages, row 2 the loop bar, row 3 the tools (they change with the page) */
+.c35{grid-column:3/6}.c67{grid-column:6/8}
+.tgrid .drag{flex-direction:column;align-items:center;justify-content:center;gap:1px;line-height:1;padding:0}
+.tgrid .drag b{font-size:12px}.tgrid .drag small{font-size:7px;letter-spacing:.06em}
+.recbtn[aria-pressed="true"]{background:#3a1d1f;border-color:var(--rec)}
+.recbtn[aria-pressed="true"] svg circle{fill:#ff6b6b}
+.capbtn.flash{animation:capflash .45s ease-out}
+@keyframes capflash{from{background:var(--accent);color:#1b1408}}
+#cliploop[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#1b1408}
+#dedupe,#loadclip{font-size:8px}
+.take{grid-template-columns:26px minmax(0,1fr)}
+.take.sel .th{border-color:#fff;box-shadow:0 0 0 1.5px #fff}
+.take.held .th{border-color:var(--rec);box-shadow:0 0 0 1.5px var(--rec)}
+.takeshead h2 small{font-size:10px;color:var(--dim);letter-spacing:.04em;text-transform:none;font-weight:400;margin-left:8px}
+.delall{display:flex;gap:8px}
 </style>
 
 <div class="app" id="app">
   <div class="side" id="side">
     <header class="tgrid" id="tgrid">
       <button id="prefs" class="ic c1" aria-label="Preferences" title="Preferences"></button>
-      <div class="drag c23" id="bpm" tabindex="0" role="slider" aria-label="Tempo" aria-valuemin="60" aria-valuemax="200"><b>124</b><small>BPM</small></div>
-      <div class="drag c45" id="swing" tabindex="0" role="slider" aria-label="Swing" aria-valuemin="0" aria-valuemax="50"><b>0%</b><small>Swing</small></div>
-      <button id="export" class="ic c6" aria-label="Export" title="Export takes, the sequence, or what you just heard"></button>
-      <button id="sessbtn" class="ic takesbtn c7" aria-label="Takes" title="Takes: every bar you play is kept here"></button>
-      <button id="play" class="ic play c8" aria-pressed="false" aria-label="Play"></button>
-      <button id="stepped" class="ic c1" aria-label="Stepped values" title="Stepped or smooth effect values"></button>
-      <div id="dice" class="dice c25" tabindex="0" role="slider" aria-label="Randomize the sequence" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
-        title="Drag the die (or tap the slider) to randomize · hold it and tap steps to randomize just those"><span id="diceval"></span><i id="die"></i></div>
-      <button id="recmode" class="toggle tiny c6" aria-pressed="false">REPLACE</button>
-      <button id="fxonly" class="toggle tiny c7" aria-pressed="false">FX<br>ONLY</button>
-      <button id="clear" class="ic trash c8" disabled aria-label="Clear" title="Tap: clear the sequence · hold and tap steps: empty just those"></button>
+      <div class="drag c2" id="bpm" tabindex="0" role="slider" aria-label="Tempo" aria-valuemin="60" aria-valuemax="200"><b>124</b><small>BPM</small></div>
+      <div class="drag c3" id="swing" tabindex="0" role="slider" aria-label="Swing" aria-valuemin="0" aria-valuemax="50"><b>0%</b><small>Swing</small></div>
+      <button id="export" class="ic c4" aria-label="Export" title="Export clips, the sequence, or what you just heard"></button>
+      <button id="sessbtn" class="ic takesbtn c5" aria-label="Clips" title="Clips"></button>
+      <button id="rec" class="ic recbtn c6" aria-pressed="false" aria-label="Record" title="Record: touches are written into the sequence"></button>
+      <button id="play" class="ic play c78" aria-pressed="false" aria-label="Play"></button>
     </header>
-    <canvas id="lane" class="lane" aria-label="Sequencer steps"></canvas>
     <div class="row" id="trackbar">
       <span class="k">Loop</span>
       <select id="sound" aria-label="Loop">
@@ -316,13 +325,25 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
       <span class="grow"></span>
       <button id="undo" class="ic foldbtn" aria-label="Undo" title="Undo" disabled></button>
       <button id="redo" class="ic foldbtn" aria-label="Redo" title="Redo" disabled></button>
-      <button id="lasttake" class="foldbtn clipset" title="Loop the last take · tap again for the one before">◀ Take</button>
-      <button id="fold" class="ic foldbtn" aria-pressed="false" aria-label="Hide sequencer, loop and sliders"></button>
+      <button id="fold" class="ic foldbtn" aria-pressed="false" aria-label="Hide the sequencer and sliders"></button>
     </div>
+    <div class="tgrid" id="tools">
+      <button id="clear" class="ic trash c1" disabled aria-label="Clear" title="Tap: clear the sequence · hold and tap steps: empty just those"></button>
+      <button id="stepped" class="ic c2 fieldonly" aria-label="Stepped values" title="Stepped or smooth effect values"></button>
+      <div id="dice" class="dice c35 fieldonly" tabindex="0" role="slider" aria-label="Randomize the sequence" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
+        title="Drag the die (or tap the slider) to randomize · hold it and tap steps to randomize just those"><span id="diceval"></span><i id="die"></i></div>
+      <button id="recmode" class="toggle tiny c6 fieldonly" aria-pressed="false">REPLACE</button>
+      <button id="fxonly" class="toggle tiny c7 fieldonly" aria-pressed="false">FX<br>ONLY</button>
+      <button id="cliploop" class="tiny c23 clipsonly" aria-pressed="false" hidden title="Loop the selected clip">LOOP</button>
+      <button id="dedupe" class="tiny c45 clipsonly" hidden title="Keep the first of any identical clips and delete the rest">DELETE<br>DUPLICATES</button>
+      <button id="loadclip" class="tiny c67 clipsonly" hidden title="Load the selected clip into the sequencer to edit it">LOAD TO<br>SEQUENCER</button>
+      <button id="capture" class="ic capbtn c8" aria-label="Capture" title="Capture: save the sequence as it is now to Clips"></button>
+    </div>
+    <canvas id="lane" class="lane" aria-label="Sequencer steps"></canvas>
   </div>
   <div class="main" id="mainpane">
     <div class="gridwrap" id="gridwrap"><canvas id="grid" aria-label="Performance strips and effect grid"></canvas></div>
-    <section class="session" id="session" hidden aria-label="Takes">
+    <section class="session" id="session" hidden aria-label="Clips">
       <div class="takeshead" id="takeshead"></div>
       <div class="sess-scroll" id="sessScroll"><div class="takelist" id="takelist"></div></div>
     </section>

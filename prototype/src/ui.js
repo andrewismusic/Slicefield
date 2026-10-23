@@ -8,14 +8,14 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   const HUES=[8,24,44,90,138,166,190,214,262,318,340];
   const TRACK_HUES=[40];
   const LOOP_NAMES={break:'Breakbeat',boombap:'Boom bap',acid:'Acid bass',reese:'Reese bass',dub:'Dub stabs',lead:'Synth lead',keys:'Electric piano',kalimba:'Kalimba',vox:'Vocal chops',file:'Your file'};
-  const BAND_LO=0.42,BAND_HI=0.58,STRIP=28,HW=30,LROW=24,LLAB=34;
+  const BAND_LO=0.42,BAND_HI=0.58,STRIP=28,HW=30,LROW=26,LLAB=34;
   const $=id=>root.getElementById(id);
   const clamp=(v,a,b)=>v<a?a:v>b?b:v;
   const canvas=$('grid'),wrap=$('gridwrap'),laneCv=$('lane'),laneG=laneCv.getContext('2d'),gridG=canvas.getContext('2d');
   let g=gridG,LW=300,laneDpr=1;
   const ACC='#ffc65c',ACCRGB='255,198,92';const ACCA=a=>'rgba('+ACCRGB+','+a+')';
   const BG='#111317';
-  const playBtn=$('play'),bpmEl=$('bpm'),swingEl=$('swing'),expBtn=$('export'),modeBtn=$('recmode'),fxoBtn=$('fxonly'),clearBtn=$('clear'),steppedBtn=$('stepped'),diceEl=$('dice'),dieEl=$('die'),diceVal=$('diceval'),prefsBtn=$('prefs'),sessBtn=$('sessbtn');
+  const playBtn=$('play'),bpmEl=$('bpm'),swingEl=$('swing'),expBtn=$('export'),modeBtn=$('recmode'),fxoBtn=$('fxonly'),clearBtn=$('clear'),steppedBtn=$('stepped'),diceEl=$('dice'),dieEl=$('die'),diceVal=$('diceval'),prefsBtn=$('prefs'),sessBtn=$('sessbtn'),recBtn=$('rec'),capBtn=$('capture'),loopBtn=$('cliploop'),dedupBtn=$('dedupe'),loadBtn=$('loadclip');
   const soundSel=$('sound'),fileIn=$('file'),sheet=$('sheet'),card=$('card');
   const sessEl=$('session'),takeList=$('takelist'),takesHead=$('takeshead'),sessScroll=$('sessScroll'),ghost=$('ghost');
 
@@ -41,8 +41,10 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   const oS=t=>ctxSet(t).orderV, mS=t=>ctxSet(t).muteV;   // stored
   const oV=t=>liveV.order!=null?liveV.order:oS(t), mV=t=>liveV.mute!=null?liveV.mute:mS(t);   // heard
   let bpm=124,swing=0,stepped=true,sessOn=false,playMode='replace',fxOnly=false;
-  // Takes: every bar played is captured; the ones that add something are kept here, oldest first.
-  let takes=[],takeNum=0,capBn=-9,songPlaying=false;
+  // Clips: sequences saved with Capture, in list order. While any exist, one is selected.
+  // songPlaying: the Clips list is playing (songList: the clips it was sent, in its order).
+  // recOn: Record is on, so touches are written into the sequence (recBn: the bar of the last write).
+  let clips=[],clipNum=0,selClip=null,clipLoop=false,songPlaying=false,songList=[],recOn=false,recBn=-1;
   let st={playing:false,t:0,len:1,tracks:[],hist:[],song:null,recv:0};
   const ptrs=new Map();let orderCtr=0,tsCtr=0,idCtr=0;
   const SLIM=24;let folded=false;
@@ -90,7 +92,9 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   const withTimeout=(p,ms)=>Promise.race([p,new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),ms))]);
   function onEngine(m){
     if(m.type==='status')onStatus(m);
-    else if(m.type==='bar')onBar(m);
+    else if(m.type==='clipStep')onClipStep(m);
+    else if(m.type==='songRow')onSongRow(m);
+    else if(m.type==='songEnd')songEnded();
     else if(m.type==='grabbed')onGrabbed(m);
     else if(m.type==='grid'){
       const t=tracks[m.tr],old=t.cols;t.cols=m.n;t.colsQ=0;
@@ -106,7 +110,8 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     const myGen=gen,e=new EF.Engine(sr);e.post=m=>{if(myGen===gen)onEngine(m);};
     const sp=actx.createScriptProcessor(2048,0,2);
     sp.onaudioprocess=ev=>{const b=ev.outputBuffer;e.render(b.getChannelData(0),b.getChannelData(1),b.length);};
-    connectOut(sp);spKeep=sp;send=m=>e.msg(m);
+    const own=m=>m.clip||m.rows?JSON.parse(JSON.stringify(m)):m;   // its own copies, as the worklet gets
+    connectOut(sp);spKeep=sp;send=m=>e.msg(own(m));
     syncAll();
     if(st.playing||intent)send({type:'play'});
   }
@@ -190,7 +195,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   // the engine works out every effect value from these settings, so edits reach recorded sequences too
   function sendCfg(t){const c={};for(const k in t.cfg){const x=t.cfg[k];c[k]={cells:x.cells.slice(),lo:Object.assign({},x.lo),hi:Object.assign({},x.hi),x:Object.assign({},x.x),o:Object.assign({},x.o,x.o.mask?{mask:x.o.mask.slice()}:{})};}tx({type:'cfg',tr:t.i,cfg:c});}
   function syncAll(){
-    tx({type:'swing',s:swing});tx({type:'stepped',on:stepped});tx({type:'live',tr:0,ord:null,mute:null});if(tracks[0].seq)tx({type:'launch',tr:0,clip:clipForm(tracks[0].seq)});tx({type:'mode',mode:playMode});tx({type:'fxonly',on:fxOnly});tx(prefMsg());tx({type:'view',tr:view});
+    tx({type:'swing',s:swing});tx({type:'stepped',on:stepped});tx({type:'live',tr:0,ord:null,mute:null});if(tracks[0].seq)tx({type:'launch',tr:0,clip:clipForm(tracks[0].seq)});sendRec();tx({type:'mode',mode:playMode});tx({type:'fxonly',on:fxOnly});tx(prefMsg());tx({type:'view',tr:view});
     tracks.forEach(t=>{fitTrack(t);syncTrack(t);});
     // regenerate at the device rate in the background for best quality
     if(curRate()!==48000)regenAll();
@@ -199,7 +204,9 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
 
   // ---------- strips ----------
   // ORDER and SKIP: each slider position is one fixed pattern (see the engine's orderPattern and
-  // skipPattern); the far right is the default. Values are stored with the sequence, or the plain loop.
+  // skipPattern). On screen the default is at the left, next to the pin, and the pattern number grows to
+  // the right: a strip position p (0…1) is the engine value v = 1 − p. Values are stored with the
+  // sequence, or the plain loop.
   const ordOf=(t,v)=>({perm:EF.orderPattern(v,barSteps(t))}), muteOf=(t,v)=>({bits:EF.skipPattern(v,barSteps(t))});
   const tr0=()=>tracks[0];
   // a sequence carries its patterns in engine form too, so it plays (and exports) the same anywhere
@@ -215,6 +222,8 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     tx({type:'live',tr:t.i,[which==='order'?'ord':'mute']:which==='order'?ordOf(t,v):muteOf(t,v)});
   }
   function endLive(t,which){if(liveV[which]==null)return;liveV[which]=null;tx({type:'live',tr:t.i,[which==='order'?'ord':'mute']:null});}
+  const SX=30,SWD=()=>cssW-SX;   // strips run from just right of the pin to the edge
+  const stripX=v=>SX+(1-v)*SWD();
   // pattern number shown on a strip (1…PATN), or 0 in the default zone
   const patNo=v=>v>=EF.DEAD?0:Math.min(EF.PATN,Math.floor((EF.DEAD-v)/EF.DEAD*EF.PATN)+1);
 
@@ -234,10 +243,11 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
 
   // ---------- geometry ----------
   const visRows=t=>t.rows.filter(id=>id==='center'||prefs.shown.has(id));
+  // the lane shows one bar, in two rows when it has more than 8 steps (pr: steps per row)
   function laneInfo(){
     const t=T(),i=info(view),clip=t.seq;
-    const n=clip?clip.n:(i.n||t.cols),slots=clip?clip.slots:null;
-    return {t,clip,n,slots,rows:1};
+    const n=clip?clip.n:(i.n||barSteps(t)),slots=clip?clip.slots:null,rows=n>8?2:1;
+    return {t,clip,n,slots,rows,pr:Math.ceil(n/rows)};
   }
   function hasCell(t,k){return t.cfg[k].cells.length>0;}
   function computeLayout(){
@@ -276,15 +286,14 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   }
   new ResizeObserver(resize).observe(wrap);resize();
   const W=()=>cssW-HW;
-  const SW=()=>cssW-30;
   const hueOf=(t,id)=>id==='center'?t.cfg.filter.hue:t.cfg[id].hue;
   const cellBip=(t,k)=>EF.rowBip(t.cfg[k],k);
   const yOrder=()=>0,yMute=()=>yOrder()+STRIP+4;
   function hit(x,y){
     const t=T();
     if(folded&&y<TOP-3)return {unfold:true};
-    if(y<yMute()-2)return {strip:'order',snapBox:x>cssW-28};
-    if(y<TOP-3)return {strip:'mute',snapBox:x>cssW-28};
+    if(y<yMute()-2)return {strip:'order',snapBox:x<SX-2};
+    if(y<TOP-3)return {strip:'mute',snapBox:x<SX-2};
     let ri=lay.findIndex(r=>y<r.y+r.h);if(ri<0)ri=lay.length-1;
     const r=lay[ri];
     if(x<HW)return {handle:true,ri,id:r.id};
@@ -326,14 +335,14 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     if(h.strip){
       if(h.snapBox){
         pin[h.strip]=!pin[h.strip];
-        // unpinning SKIP puts its stored pattern back to the default
-        if(h.strip==='mute'&&!pin.mute&&mS(t)<EF.DEAD){checkpoint();setStrip(t,'mute',STRIP_DEF.mute,true);}
+        // unpinning puts the stored pattern back to the default, so an unpinned strip always springs home there
+        if(!pin[h.strip]&&ctxSet(t)[h.strip+'V']<EF.DEAD){checkpoint();setStrip(t,h.strip,STRIP_DEF[h.strip],true);}
         return;
       }
       // double-tap a strip to put its stored value back to the default
       const now=performance.now(),dbl=lastStrip.which===h.strip&&now-lastStrip.t<320;lastStrip={which:h.strip,t:dbl?0:now};
       const keep=dbl||pin[h.strip];if(keep)checkpoint();
-      const v=dbl?STRIP_DEF[h.strip]:clamp(x/SW(),0,1);
+      const v=dbl?STRIP_DEF[h.strip]:clamp(1-(x-SX)/SWD(),0,1);
       special.set(e.pointerId,{kind:'strip',which:h.strip,held:dbl,keep,x,v});await ready;
       setStrip(t,h.strip,v,keep);return;
     }
@@ -351,7 +360,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
       // (down to a tenth), so every one of the patterns can be reached.
       if(sp.kind==='strip'){if(!sp.held){
         const cy=(sp.which==='order'?yOrder():yMute())+STRIP/2,off=Math.max(0,Math.abs(y-cy)-STRIP*0.75),rate=1/(1+Math.min(9,off/22));
-        sp.v=clamp(sp.v+(x-sp.x)/SW()*rate,0,1);sp.x=x;sp.fine=rate<0.99?rate:0;setStrip(T(),sp.which,sp.v,sp.keep);}}
+        sp.v=clamp(sp.v-(x-sp.x)/SWD()*rate,0,1);sp.x=x;sp.fine=rate<0.99?rate:0;setStrip(T(),sp.which,sp.v,sp.keep);}}
       else if(sp.kind==='handle'){if(Math.abs(y-sp.y0)>8)sp.moved=true;sp.y=y;}
       else if(sp.kind==='assign'){const h=hit(x,y);if(h.cell&&laneHold)assignStep(h);}
       return;
@@ -381,7 +390,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
 
   // ---------- sequencer lane ----------
   function lanePageInfo(){
-    const L=laneInfo(),i=info(view),per=L.n*L.rows;
+    const L=laneInfo(),i=info(view),per=L.n;
     const total=L.slots?L.slots.length:L.n;
     const pages=Math.max(1,Math.ceil(total/per));
     const playIdx=L.clip&&i.clipId===L.clip.id?i.cIdx:-1;
@@ -392,14 +401,14 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   function laneDown(id,x,y){
     let d=lanePageInfo();
     if(x<LLAB){if(d.pages>1){laneFollow=false;lanePage=(d.page+1)%d.pages;}return;}
-    const row=Math.min(d.rows-1,Math.floor((y-4)/LROW)),col=Math.floor((x-LLAB)/(LW-LLAB)*d.n);
-    const idx=d.page*d.per+row*d.n+col;
-    if(col<0||col>=d.n)return;
+    const row=clamp(Math.floor((y-4)/LROW),0,d.rows-1),col=Math.floor((x-LLAB)/(LW-LLAB)*d.pr);
+    const idx=d.page*d.per+row*d.pr+col;
+    if(col<0||col>=d.pr||row*d.pr+col>=d.n)return;
     // a held Trash empties tapped steps; a held die randomizes them
     if(trashHeld){trashHeld.used=true;clearSteps(d.t,[idx]);return;}
     if(diceHeld){diceStep(idx);return;}
     // on the plain loop, touching a step starts a sequence of empty steps (the loop plays through them)
-    if(!d.clip){checkpoint();loadSeq(d.t,blankClip(d.t));d=lanePageInfo();}
+    if(!d.clip){checkpoint();loadSeq(d.t,blankClip(d.t),true);d=lanePageInfo();}
     if(idx>=d.slots.length)return;
     const h={id,idx,clip:d.clip,t:d.t,used:false};laneHolds.set(id,h);laneHold=h;
     // a cell already held on the grid is pasted straight into the step
@@ -408,15 +417,37 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   }
   function assignStep(h){
     const L=laneHold;if(!L)return;const t=L.t;if(!L.used)checkpoint();L.used=true;
-    L.clip.slots[L.idx]={on:true,a:h.col*16/t.cols,off:0,sid:L.sid||(L.sid='P'+(++idCtr)),slen:1,fx:h.fx==='dry'?[]:[{k:h.fx,raw:h.raw}]};
+    const fx=h.fx==='dry'?[]:[{k:h.fx,raw:h.raw}];
+    if(fxOnly){   // FX only: the step keeps its slice (an empty step takes its loop slice) and gets the effect
+      const old=L.base||(L.base=L.clip.slots[L.idx]),c=L.clip;
+      const s=Object.assign({},old.empty?{on:true,a:(L.idx%c.n)*16/c.cols,off:0,sid:'P'+(++idCtr),slen:1}:old,{fx});delete s.empty;
+      L.clip.slots[L.idx]=s;
+    }
+    else L.clip.slots[L.idx]={on:true,a:h.col*16/t.cols,off:0,sid:L.sid||(L.sid='P'+(++idCtr)),slen:1,fx};
     seqEdited(t);
   }
 
   // ---------- transport ----------
   async function togglePlay(){
     initAudio();checkBlocked();await ready;
-    if(st.playing||intent){intent=null;tx({type:'stop'});songPlaying=false;capBn=-9;paintIcons();updateSession();}
+    if(st.playing||intent){intent=null;tx({type:'stop'});if(songPlaying)songEnded();paintIcons();updateSession();}
+    // on the Clips page, Play plays the list from the selected clip (with nothing captured it does nothing)
+    else if(sessOn){if(selClip)playClips(selClip);}
     else{intent={type:'play'};tx(intent);paintIcons();}
+  }
+  // Record: while it is on, the steps you touch are written into the sequence (Replace or Combine, and
+  // FX only, decide what is written). Off, touches are only heard. Recording on the plain loop first makes a
+  // sequence of empty steps to record into. Each bar that records something is one undo step.
+  recBtn.addEventListener('click',()=>{
+    initAudio();const t=T();recOn=!recOn;recBn=-1;
+    if(recOn&&!t.seq){checkpoint();loadSeq(t,blankClip(t),true);}else sendRec();
+    paintIcons();
+  });
+  function sendRec(){const t=T();if(ready)ready.then(()=>tx({type:'rec',tr:t.i,on:recOn&&!!t.seq,id:t.seq?t.seq.id:null}));}
+  function onClipStep(m){
+    const t=tracks[m.tr];if(!t||!t.seq||t.seq.id!==m.id||m.idx>=t.seq.slots.length)return;
+    if(m.bn!==recBn){recBn=m.bn;checkpoint();}
+    t.seq.slots[m.idx]=copySlot(m.slot);t.seq.edited=true;
   }
   playBtn.addEventListener('click',togglePlay);
   window.addEventListener('keydown',e=>{
@@ -443,18 +474,23 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   fxoBtn.addEventListener('click',()=>{fxOnly=!fxOnly;tx({type:'fxonly',on:fxOnly});paintIcons();});
   // Trash: a tap (on release) clears the sequence, so the plain loop plays. Hold it and tap steps, or hold
   // steps and tap it, to empty just those steps; then releasing it clears nothing more.
+  // On the Clips page it works the same way on clips: hold it and tap clips (or hold clips and tap it) to
+  // delete them; a tap on its own asks before deleting them all.
   let trashHeld=null;
   clearBtn.addEventListener('pointerdown',e=>{
     if(clearBtn.disabled)return;trashHeld={id:e.pointerId,used:false};clearBtn.classList.add('held');
     try{clearBtn.setPointerCapture(e.pointerId);}catch(_){}
-    if(laneHolds.size){trashHeld.used=true;clearSteps(T(),[...laneHolds.values()].map(h=>{h.used=true;return h.idx;}));}
+    if(!sessOn&&laneHolds.size){trashHeld.used=true;clearSteps(T(),[...laneHolds.values()].map(h=>{h.used=true;return h.idx;}));}
+    if(sessOn&&clipHolds.size){trashHeld.used=true;deleteClips([...clipHolds.values()].map(h=>{h.used=true;return h.k;}));}
   });
+  const trashTap=()=>{if(sessOn)askDeleteAll();else clearSequence(T());};
   const trashUp=e=>{const h=trashHeld;if(!h||h.id!==e.pointerId)return;trashHeld=null;clearBtn.classList.remove('held');
-    if(e.type==='pointerup'&&!h.used)clearSequence(T());};
+    if(e.type==='pointerup'&&!h.used)trashTap();};
   ['pointerup','pointercancel','lostpointercapture'].forEach(ev=>clearBtn.addEventListener(ev,trashUp));
-  clearBtn.addEventListener('click',e=>{if(e.detail===0)clearSequence(T());}); // keyboard
+  clearBtn.addEventListener('click',e=>{if(e.detail===0)trashTap();}); // keyboard
+  // while recording, clearing leaves an empty sequence to keep recording into
   function clearSequence(t){
-    if(!t.seq)return;checkpoint();loadSeq(t,null);
+    if(!t.seq)return;checkpoint();loadSeq(t,recOn?blankClip(t):null,recOn);
   }
   // an emptied step plays the loop's own slice for its position
   function clearSteps(t,idxs){
@@ -462,21 +498,23 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     for(const i of idxs){if(i>=c.slots.length)continue;c.slots[i]=EF.emptyStep(++idCtr);}
     seqEdited(t);
   }
-  // The main page's sequence: load one (a take, a blank, or null for the plain loop), or note an edit.
-  function loadSeq(t,c){
+  // The main page's sequence: load one (a clip, a blank, or null for the plain loop), or note an edit.
+  // Playing, it takes over at the next bar line; now: at once (a blank made from the plain loop).
+  // Loading never starts playback.
+  function loadSeq(t,c,now){
     t.seq=c;liveV.order=liveV.mute=null;laneFollow=true;
-    if(songPlaying){songPlaying=false;tx({type:'songStop'});}
+    if(songPlaying){songPlaying=false;songList=[];tx({type:'songStop'});}
     if(c)clipForm(c);
-    initAudio();ready.then(()=>{tx({type:'live',tr:t.i,ord:null,mute:null});tx({type:'launch',tr:t.i,clip:c});});
-    computeLayout();updateSession();
+    initAudio();ready.then(()=>{tx({type:'live',tr:t.i,ord:null,mute:null});tx({type:'launch',tr:t.i,clip:c,now:!!now});});
+    sendRec();computeLayout();updateSession();
   }
   function seqEdited(t){if(t.seq){t.seq.edited=true;tx({type:'clipEdit',tr:t.i,clip:clipForm(t.seq)});}}
   steppedBtn.addEventListener('click',()=>{stepped=!stepped;paintIcons();tx({type:'stepped',on:stepped});});
-  // Changing the grid or bar length clears the sequence and the takes (they were made on the other grid),
+  // Changing the grid or bar length clears the sequence and the clips (they were made on the other grid),
   // so it asks first. The change lands on the next bar.
   function setShape(t,nc,nl){
-    checkpoint();songPlaying=false;tx({type:'songStop'});
-    takes=[];t.seq=null;liveV.order=liveV.mute=null;tx({type:'launch',tr:t.i,clip:null});
+    checkpoint();songPlaying=false;songList=[];tx({type:'songStop'});
+    clips=[];selClip=null;t.seq=null;recOn=false;liveV.order=liveV.mute=null;tx({type:'launch',tr:t.i,clip:null});sendRec();
     t.len16=nl;
     if(nc!==(t.colsQ||t.cols)){if(st.playing){t.colsQ=nc;tx({type:'grid',tr:t.i,n:nc,q:true});}else{t.cols=nc;tx({type:'grid',tr:t.i,n:nc});}}
     tx({type:'range',tr:t.i,s16:0,e16:nl,q:st.playing});
@@ -531,18 +569,26 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     undo:svg('<path d="M7.5 5L4 8.5L7.5 12M4 8.5H12.5A4 4 0 0 1 12.5 16.5H9"/>'),
     redo:svg('<path d="M12.5 5L16 8.5L12.5 12M16 8.5H7.5A4 4 0 0 0 7.5 16.5H11"/>'),
     trash:svg('<path d="M3.5 5.5H16.5M8 5.5V3.5H12V5.5M5.5 5.5L6.3 16.5H13.7L14.5 5.5M8.5 8.5V13.5M11.5 8.5V13.5"/>'),
-    share:svg('<path d="M10 12.5V3M6.5 6.5L10 3L13.5 6.5M5 10H4V17H16V10H15"/>')
+    share:svg('<path d="M10 12.5V3M6.5 6.5L10 3L13.5 6.5M5 10H4V17H16V10H15"/>'),
+    // capture: a frame with a plus (save what is in the sequencer now)
+    capture:svg('<path d="M3 7V3H7M13 3H17V7M17 13V17H13M7 17H3V13M10 7V13M7 10H13"/>')
   };
   function paintIcons(){
     playBtn.innerHTML=st.playing||intent?ICON.stop:ICON.play;playBtn.setAttribute('aria-label',st.playing||intent?'Stop':'Play');
-    expBtn.innerHTML=ICON.share;clearBtn.innerHTML=ICON.trash;
+    expBtn.innerHTML=ICON.share;clearBtn.innerHTML=ICON.trash;capBtn.innerHTML=ICON.capture;recBtn.innerHTML=ICON.rec;
+    press(recBtn,recOn);recBtn.setAttribute('aria-label',recOn?'Record (on)':'Record');
+    capBtn.disabled=sessOn;press(loopBtn,clipLoop);
+    root.querySelectorAll('.fieldonly').forEach(n=>{n.hidden=sessOn;});root.querySelectorAll('.clipsonly').forEach(n=>{n.hidden=!sessOn;});
+    loopBtn.disabled=dedupBtn.disabled=loadBtn.disabled=!clips.length;foldBtn.disabled=sessOn;
+    clearBtn.disabled=sessOn?!clips.length:!T().seq;
+    clearBtn.title=sessOn?'Hold and tap clips to delete them · tap: delete all clips':'Tap: clear the sequence · hold and tap steps: empty just those';
     const cmb=playMode==='combine';modeBtn.textContent=cmb?'COMBINE':'REPLACE';press(modeBtn,cmb);
     modeBtn.title=cmb?'Combine: every held effect plays on each step':'Replace: each step plays one touch and its effect';
     press(fxoBtn,fxOnly);fxoBtn.title=fxOnly?'FX only: slices come from the sequence or loop; touches only bring effects':'FX only is off: touched slices play';
     steppedBtn.innerHTML=stepped?ICON.stepOn:ICON.stepOff;steppedBtn.setAttribute('aria-label',stepped?'Stepped values (on)':'Stepped values (off)');
     prefsBtn.innerHTML=ICON.gear;$('undo').innerHTML=ICON.undo;$('redo').innerHTML=ICON.redo;
-    sessBtn.innerHTML=(sessOn?ICON.grid:ICON.list)+'<b>'+(takes.length||'')+'</b>';sessBtn.setAttribute('aria-label',sessOn?'Effects view':'Takes ('+takes.length+')');
-    sessBtn.title=sessOn?'Back to the effects':'Takes: every bar you play that adds something is kept here';
+    sessBtn.innerHTML=(sessOn?ICON.grid:ICON.list)+'<b>'+(clips.length||'')+'</b>';sessBtn.setAttribute('aria-label',sessOn?'Back to the field':'Clips ('+clips.length+')');
+    sessBtn.title=sessOn?'Back to the field':'Clips: what you saved with Capture';
   }
 
   // ---------- randomizer ----------
@@ -635,55 +681,93 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   diceEl.addEventListener('keydown',e=>{if(e.key!=='Enter'&&e.key!==' ')return;e.preventDefault();initAudio();
     const t=T();ready.then(()=>diceAll({a:0.5,t,seed:(Math.random()*4294967296)>>>0}));});
 
-  // ---------- takes ----------
-  // Capture: the engine hands over every whole bar it played, as heard (ORDER, SKIP and random slices
-  // already written into its steps). A bar is kept as a take when it adds something: not the plain loop,
-  // and not an untouched replay of a take already kept. Playing the same thing again straight after
-  // counts as a repeat of that take (×2, ×3…); only bars you touched add repeats, so a sequence left
-  // looping doesn't run the count up. Repeats can also be set by hand, and takes dragged into any order.
+  // ---------- clips ----------
+  // Capture saves the sequence as it is now (or the plain loop, with its ORDER and SKIP) to the end of the
+  // Clips list and selects it. Clips never change once saved: Load copies one into the sequencer to edit.
+  // On the Clips page, tapping a clip selects it and plays the list from there (at the next bar line if
+  // something is playing); the selection follows playback. LOOP repeats just the selected clip; otherwise
+  // the list plays to its end and stops.
   const fxKey=f=>f.k+(f.auto?f.auto.map(x=>x.toFixed(3)).join('/'):(+f.raw).toFixed(3));
-  const barKey=slots=>slots.map(s=>(s.on===false?0:1)+':'+(+s.a).toFixed(3)+':'+(s.off||0)+':'+(+(s.slen||1)).toFixed(3)+':'+(s.fx||[]).map(fxKey).join(',')).join('|');
-  const plainKey=t=>{const n=barSteps(t),out=[];for(let i=0;i<n;i++)out.push({on:true,a:i*16/t.cols,off:0,slen:1,fx:[]});return barKey(out);};
-  let backPos=-1;   // where "◀ Take" has stepped back to (-1: start from the newest take)
-  function onBar(m){
-    const t=tracks[m.tr];if(!t||m.n!==barSteps(t))return;
-    const k=barKey(m.slots);
-    if(k===plainKey(t))return;
-    const last=takes[takes.length-1];
-    if(last&&last.key===k&&capBn===m.bn-1){capBn=m.bn;if(m.touched){last.reps=Math.min(64,last.reps+1);takesChanged(false);}return;}
-    if(!m.touched&&takes.some(x=>x.key===k))return;
-    takes.push({id:'k'+(++idCtr),num:++takeNum,n:m.n,cols:m.cols,slots:m.slots,reps:1,key:k,sel:false});
-    capBn=m.bn;backPos=-1;takesChanged(true);
-  }
-  function takesChanged(added){
-    paintIcons();if(added){sessBtn.classList.remove('flash');void sessBtn.offsetWidth;sessBtn.classList.add('flash');}
-    if(!sessOn)return;
-    const atEnd=sessScroll.scrollTop+sessScroll.clientHeight>=sessScroll.scrollHeight-60;
-    renderSession();if(added&&atEnd)sessScroll.scrollTop=sessScroll.scrollHeight;
-    pushSongRows();
-  }
-  const takeClip=k=>({id:k.id,cols:k.cols,n:k.n,slots:k.slots,ord:{perm:null},mute:{bits:null}});
-  // looping a take puts a copy of it on the main page: edit it, play over it, and new takes follow
-  function loopTake(k,keepBack){
-    checkpoint();if(!keepBack)backPos=takes.indexOf(k);
-    loadSeq(T(),withSettings({id:'q'+(++idCtr),cols:k.cols,n:k.n,slots:k.slots.map(copySlot),src:k.id,num:k.num},null));
-  }
-  $('lasttake').addEventListener('click',()=>{
-    if(!takes.length)return;const t=T();
-    const cur=t.seq&&t.seq.src?takes.findIndex(k=>k.id===t.seq.src):-1;
-    // the first tap loops the newest take; each further tap the one before (an edited copy reloads first)
-    if(backPos<0||backPos>=takes.length)backPos=takes.length-1;
-    else if(cur===backPos&&!t.seq.edited)backPos=Math.max(0,backPos-1);
-    loopTake(takes[backPos],true);
+  const stepKey=s=>s.empty?(s.on===false?'e0':'e1'):(s.on===false?0:1)+':'+(+s.a).toFixed(3)+':'+(s.off||0)+':'+(+(s.slen||1)).toFixed(3)+':'+(s.fx||[]).map(fxKey).join(',');
+  const clipKey=k=>k.cols+'/'+k.n+'/'+patNo(k.orderV)+'/'+patNo(k.muteV)+'|'+k.slots.map(stepKey).join('|');
+  const clipEngine=k=>({id:k.id,cols:k.cols,n:k.n,slots:k.slots,ord:ordOf(tr0(),k.orderV),mute:muteOf(tr0(),k.muteV)});
+  capBtn.addEventListener('click',()=>{
+    if(sessOn)return;const t=T(),src=t.seq||blankClip(t);checkpoint();
+    const k={id:'k'+(++idCtr),num:++clipNum,cols:src.cols,n:src.n,slots:src.slots.map(copySlot),orderV:src.orderV,muteV:src.muteV};
+    clips.push(k);selClip=k;
+    if(t.seq){t.seq.src=k.id;t.seq.num=k.num;t.seq.edited=false;}   // the lane now names it C<num>
+    capBtn.classList.remove('flash');void capBtn.offsetWidth;capBtn.classList.add('flash');
+    sessBtn.classList.remove('flash');void sessBtn.offsetWidth;sessBtn.classList.add('flash');
+    paintIcons();
   });
-  const songRows=()=>takes.map(k=>({bars:k.reps,clips:[takeClip(k)]}));
-  function pushSongRows(){if(songPlaying)tx({type:'songRows',rows:songRows()});}
-  function playAll(from){
-    if(!takes.length)return;checkpoint();const t=T();t.seq=null;liveV.order=liveV.mute=null;songPlaying=true;
-    initAudio();ready.then(()=>{tx({type:'live',tr:t.i,ord:null,mute:null});tx({type:'song',rows:songRows(),from});});
-    computeLayout();renderSession();
+  // Load: the selected clip goes into the sequencer (a copy; the clip itself stays as it is) and the field
+  // page opens. If the list was playing, the loaded clip carries on playing there.
+  loadBtn.addEventListener('click',()=>{
+    const k=selClip;if(!k)return;checkpoint();
+    loadSeq(T(),withSettings({id:'q'+(++idCtr),cols:k.cols,n:k.n,slots:k.slots.map(copySlot),src:k.id,num:k.num},k));
+    showClips(false);
+  });
+  function songRowsOf(list){return list.map(k=>({bars:1,clips:[clipEngine(k)]}));}
+  function playClips(k){
+    if(!clips.includes(k))return;selClip=k;songPlaying=true;
+    songList=clipLoop?[k]:clips.slice();
+    const from=songList.indexOf(k);
+    initAudio();ready.then(()=>{tx({type:'live',tr:0,ord:null,mute:null});tx({type:'song',rows:songRowsOf(songList),from,once:!clipLoop});});
+    liveV.order=liveV.mute=null;paintIcons();updateSession();
   }
-  function stopAll(){songPlaying=false;tx({type:'songStop'});renderSession();}
+  function onSongRow(m){if(!songPlaying)return;const k=songList[m.idx];if(k&&clips.includes(k))selClip=k;updateSession();}
+  // the list stopped (its end, or Stop): the engine goes back to the sequencer's sequence
+  function songEnded(){
+    if(!songPlaying)return;songPlaying=false;songList=[];const t=T();
+    tx({type:'launch',tr:t.i,clip:t.seq?clipForm(t.seq):null});sendRec();paintIcons();updateSession();
+  }
+  // after the list changes while it plays: the clip now playing keeps playing, then the list carries on
+  function resyncSong(){
+    if(!songPlaying)return;
+    const cur=st.song&&st.song.idx>=0?songList[st.song.idx]:null;
+    if(clipLoop){
+      const k=cur&&clips.includes(cur)?cur:selClip;
+      if(!k){stopAll();return;}
+      songList=[k];tx({type:'songRows',rows:songRowsOf(songList),idx:0});return;
+    }
+    if(!clips.length){stopAll();return;}
+    let idx=cur?clips.indexOf(cur):-1;
+    // the playing clip was deleted: carry on from the next one that is left
+    if(idx<0&&cur){const old=songList.indexOf(cur);idx=songList.slice(0,old).filter(k=>clips.includes(k)).length-1;}
+    songList=clips.slice();tx({type:'songRows',rows:songRowsOf(songList),idx});
+  }
+  function stopAll(){intent=null;tx({type:'stop'});songEnded();}
+  loopBtn.addEventListener('click',()=>{
+    clipLoop=!clipLoop;paintIcons();
+    if(!songPlaying||!selClip)return;
+    // from the next bar line: LOOP repeats the selected clip; off, the list carries on after it
+    if(clipLoop){songList=[selClip];tx({type:'song',rows:songRowsOf(songList),from:0,once:false});}
+    else{songList=clips.slice();tx({type:'song',rows:songRowsOf(songList),from:clips.indexOf(selClip)+1,once:true});}
+  });
+  // Delete duplicates: the first of any identical clips stays, the rest go
+  dedupBtn.addEventListener('click',()=>{
+    const seen=new Set(),drop=clips.filter(k=>{const key=clipKey(k);if(seen.has(key))return true;seen.add(key);return false;});
+    const lab=dedupBtn.innerHTML;dedupBtn.textContent=drop.length?drop.length+' DELETED':'NONE FOUND';
+    setTimeout(()=>{dedupBtn.innerHTML=lab;},1300);
+    if(drop.length)deleteClips(drop);
+  });
+  function deleteClips(list){
+    const gone=new Set(list.filter(k=>clips.includes(k)));if(!gone.size)return;checkpoint();
+    if(selClip&&gone.has(selClip)){
+      // the selection moves to the next clip that is left, or the one before
+      const i=clips.indexOf(selClip);selClip=clips.slice(i+1).find(k=>!gone.has(k))||clips.slice(0,i).reverse().find(k=>!gone.has(k))||null;
+    }
+    clips=clips.filter(k=>!gone.has(k));
+    resyncSong();renderSession();paintIcons();
+  }
+  function askDeleteAll(){
+    if(!clips.length)return;
+    openSheet('Delete all clips',cardEl=>{
+      const go=el('button',{type:'button',className:'danger',textContent:'Delete '+clips.length+(clips.length>1?' clips':' clip')}),no=el('button',{type:'button',textContent:'Cancel'});
+      go.addEventListener('click',()=>{closeSheet();deleteClips(clips.slice());});no.addEventListener('click',()=>closeSheet());
+      cardEl.appendChild(el('p',{},['Undo brings them back.']));cardEl.appendChild(el('div',{className:'delall'},[go,no]));
+    });
+  }
   function drawThumb(cv,clip,hue){
     const w=cv.clientWidth||70,h=cv.clientHeight||44,d=Math.min(2,window.devicePixelRatio||1);
     cv.width=Math.round(w*d);cv.height=Math.round(h*d);const x=cv.getContext('2d');x.scale(d,d);
@@ -699,58 +783,48 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     });
     x.globalAlpha=1;
   }
-  let sessBusy=0,sessDirty=false,clearArm=0;
+  let sessBusy=0,sessDirty=false;
   const busy=on=>{sessBusy+=on?1:-1;if(sessBusy<0)sessBusy=0;if(!sessBusy&&sessDirty){sessDirty=false;renderSession();}};
   function paintTakesHead(){
-    takesHead.textContent='';const nSel=takes.filter(k=>k.sel).length;
-    takesHead.appendChild(el('h2',{textContent:'Takes'+(takes.length?' · '+takes.length:'')}));
-    const pa=el('button',{type:'button',title:'Play every take in order, with its repeats'});pa.disabled=!takes.length;
-    pa.innerHTML=(songPlaying?ICON.stop:ICON.play)+'<span>'+(songPlaying?'Stop':'Play all')+'</span>';press(pa,songPlaying);
-    pa.addEventListener('click',()=>{if(songPlaying)stopAll();else playAll(0);});
-    takesHead.appendChild(pa);
-    if(nSel){const cs=el('button',{type:'button',textContent:nSel+' selected ×',title:'Clear the selection'});cs.addEventListener('click',()=>{takes.forEach(k=>{k.sel=false;});renderSession();});takesHead.appendChild(cs);}
-    const clr=el('button',{type:'button',className:'danger',textContent:clearArm?'Tap to clear all':'Clear',title:'Delete every take'});clr.disabled=!takes.length;
-    clr.addEventListener('click',()=>{
-      if(!clearArm){clearArm=setTimeout(()=>{clearArm=0;paintTakesHead();},2500);paintTakesHead();return;}
-      clearTimeout(clearArm);clearArm=0;checkpoint();if(songPlaying)stopAll();takes=[];backPos=-1;renderSession();paintIcons();
-    });
-    takesHead.appendChild(clr);
+    takesHead.textContent='';
+    takesHead.appendChild(el('h2',{},['Clips'+(clips.length?' · '+clips.length:''),el('small',{textContent:clips.length?'Tap to play · Load to edit':''})]));
   }
+  // A clip held down can be deleted by tapping the trash; with the trash held, tapping a clip deletes it.
+  // A tap (released without either) selects the clip and plays from it.
+  const clipHolds=new Map();
   function takeRow(k,i){
     const row=el('div',{className:'take'});row.dataset.i=i;
-    const hdl=el('div',{className:'hdl',title:'Drag to move this take'});hdl.innerHTML=ICON.handle;rowMover(hdl,k);
-    const th=el('button',{type:'button',className:'th',title:'Loop take '+k.num+' on the main page'});const cv=el('canvas');
-    th.appendChild(cv);th.appendChild(el('span',{textContent:String(k.num)}));th.addEventListener('click',()=>loopTake(k));
-    const reps=el('div',{className:'reps'}),lab=el('span',{textContent:'×'+k.reps});
-    const minus=el('button',{type:'button',textContent:'−',title:'Fewer repeats'}),plus=el('button',{type:'button',textContent:'+',title:'More repeats'});
-    minus.addEventListener('click',()=>{if(k.reps<=1)return;checkpoint();k.reps--;lab.textContent='×'+k.reps;pushSongRows();});
-    plus.addEventListener('click',()=>{if(k.reps>=64)return;checkpoint();k.reps++;lab.textContent='×'+k.reps;pushSongRows();});
-    reps.append(minus,lab,plus);
-    const sel=el('button',{type:'button',className:'sel',title:'Select for export'});sel.innerHTML=ICON.check;press(sel,k.sel);
-    sel.addEventListener('click',()=>{k.sel=!k.sel;press(sel,k.sel);paintTakesHead();});
-    const del=el('button',{type:'button',className:'del',textContent:'×',title:'Delete take '+k.num});
-    del.addEventListener('click',()=>{checkpoint();takes=takes.filter(x=>x!==k);if(songPlaying&&!takes.length)stopAll();pushSongRows();renderSession();paintIcons();});
-    row.append(hdl,th,reps,sel,del);
-    requestAnimationFrame(()=>drawThumb(cv,takeClip(k),TRACK_HUES[0]));
+    const hdl=el('div',{className:'hdl',title:'Drag to move this clip'});hdl.innerHTML=ICON.handle;rowMover(hdl,k);
+    const th=el('button',{type:'button',className:'th',title:'Play from clip '+k.num});const cv=el('canvas');
+    th.appendChild(cv);th.appendChild(el('span',{textContent:'C'+k.num}));
+    th.addEventListener('pointerdown',e=>{
+      if(trashHeld){trashHeld.used=true;deleteClips([k]);return;}
+      clipHolds.set(e.pointerId,{k,used:false,row});row.classList.add('held');
+    });
+    const up=e=>{const h=clipHolds.get(e.pointerId);if(!h)return;clipHolds.delete(e.pointerId);row.classList.remove('held');
+      if(e.type==='pointerup'&&!h.used){initAudio();checkBlocked();playClips(k);}};
+    ['pointerup','pointercancel','pointerleave'].forEach(ev=>th.addEventListener(ev,up));
+    th.addEventListener('click',e=>{if(e.detail===0){initAudio();playClips(k);}});   // keyboard
+    row.append(hdl,th);
+    requestAnimationFrame(()=>drawThumb(cv,k,TRACK_HUES[0]));
     return row;
   }
   // Lightweight refresh: only classes change, so a drag in progress is never rebuilt away.
   function updateSession(){
     if(!sessOn)return;
-    const t=T(),f=info(0),pi=songPlaying&&st.song?st.song.idx:-1;
-    takeList.querySelectorAll('.take').forEach(r=>{const i=+r.dataset.i,k=takes[i];if(!k)return;
-      const cur=!songPlaying&&!!t.seq&&t.seq.src===k.id;
-      r.classList.toggle('now',st.playing&&(pi===i||cur&&f.clipId===t.seq.id));r.classList.toggle('cur',cur);});
+    const pi=songPlaying&&st.song?st.song.idx:-1,now=pi>=0?songList[pi]:null;
+    takeList.querySelectorAll('.take').forEach(r=>{const k=clips[+r.dataset.i];if(!k)return;
+      r.classList.toggle('now',st.playing&&k===now);r.classList.toggle('sel',k===selClip);});
   }
   function renderSession(){
     if(!sessOn)return;
     if(sessBusy){sessDirty=true;return;}
-    paintTakesHead();takeList.textContent='';
-    if(!takes.length){takeList.appendChild(el('p',{className:'takes-empty',textContent:'Nothing yet. Press play and touch the grid: every bar that adds something is kept here as a take, oldest at the top. Tap a take to loop it on the main page; play over it and the result becomes a new take.'}));return;}
-    takes.forEach((k,i)=>takeList.appendChild(takeRow(k,i)));
+    paintTakesHead();takeList.textContent='';clipHolds.clear();
+    if(!clips.length){takeList.appendChild(el('p',{className:'takes-empty',textContent:'Nothing captured yet. On the field page, press Capture (top right of the tools) to save the sequence as it is now. Clips are added here in order.'}));return;}
+    clips.forEach((k,i)=>takeList.appendChild(takeRow(k,i)));
     updateSession();
   }
-  // drag a take's handle up or down to move it
+  // drag a clip's handle up or down to move it
   function rowMover(node,k){
     let s0=null;
     const over=(x,y)=>{const n=root.elementFromPoint(x,y),r=n&&n.closest?n.closest('.take'):null;return r&&takeList.contains(r)?r:null;};
@@ -759,30 +833,43 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     node.addEventListener('pointermove',e=>{
       if(!s0||e.pointerId!==s0.id)return;
       if(e.pointerType==='mouse'&&e.buttons===0){end(e);return;}
-      if(!s0.drag&&Math.abs(e.clientY-s0.y)>6){s0.drag=true;ghost.textContent='Take '+k.num;ghost.hidden=false;}
+      if(!s0.drag&&Math.abs(e.clientY-s0.y)>6){s0.drag=true;ghost.textContent='C'+k.num;ghost.hidden=false;}
       if(s0.drag){ghost.style.left=e.clientX+'px';ghost.style.top=e.clientY+'px';clearOver();const r=over(e.clientX,e.clientY);if(r)r.classList.add('drop');
         const b=sessScroll.getBoundingClientRect();if(e.clientY<b.top+30)sessScroll.scrollTop-=8;else if(e.clientY>b.bottom-30)sessScroll.scrollTop+=8;}
     });
     const end=e=>{
       if(!s0||e.pointerId!==s0.id)return;const s=s0;s0=null;ghost.hidden=true;clearOver();busy(false);
       if(!s.drag)return;
-      const r=over(e.clientX,e.clientY);if(!r)return;const to=+r.dataset.i,from=takes.indexOf(k);if(to===from||from<0)return;
-      checkpoint();takes.splice(from,1);takes.splice(to,0,k);backPos=-1;pushSongRows();renderSession();
+      const r=over(e.clientX,e.clientY);if(!r)return;const to=+r.dataset.i,from=clips.indexOf(k);if(to===from||from<0)return;
+      checkpoint();clips.splice(from,1);clips.splice(to,0,k);resyncSong();renderSession();
     };
     node.addEventListener('pointerup',end);node.addEventListener('pointercancel',end);
     node.addEventListener('lostpointercapture',e=>{if(s0&&e.pointerId===s0.id&&!s0.drag){s0=null;busy(false);}});
   }
-  sessBtn.addEventListener('click',()=>{
-    sessOn=!sessOn;sessEl.hidden=!sessOn;wrap.hidden=sessOn;laneCv.hidden=sessOn||folded;$('trackbar').hidden=sessOn||folded;paintIcons();
-    if(sessOn){renderSession();sessScroll.scrollTop=sessScroll.scrollHeight;}else requestAnimationFrame(resize);
-  });
+  // Switching pages. Back on the field page without Load, the sequencer's own sequence plays again (from
+  // the next bar line if the list was playing).
+  function showClips(on){
+    if(on===sessOn)return;
+    sessOn=on;sessEl.hidden=!on;wrap.hidden=on;laneCv.hidden=on||folded;
+    for(const id of [...special.keys(),...ptrs.keys()])end({pointerId:id});laneHolds.clear();laneHold=null;
+    if(on){if(!selClip&&clips.length)selClip=clips[clips.length-1];renderSession();
+      const r=takeList.querySelector('.take.sel');if(r)r.scrollIntoView({block:'nearest'});else sessScroll.scrollTop=sessScroll.scrollHeight;}
+    else{
+      if(songPlaying){songPlaying=false;songList=[];tx({type:'songStop'});}
+      const t=T(),f=info(t.i),id=t.seq?t.seq.id:null;
+      if(f.clipId!==id||f.clipQ!==undefined)tx({type:'launch',tr:t.i,clip:t.seq?clipForm(t.seq):null});
+      sendRec();requestAnimationFrame(resize);
+    }
+    paintIcons();
+  }
+  sessBtn.addEventListener('click',()=>showClips(!sessOn));
 
   let sessKey='';
   function onStatus(m){
     gotStatus=true;m.recv=performance.now();const was=st.playing;st=m;
-    if(was!==m.playing){if(!m.playing){intent=null;if(songPlaying){songPlaying=false;renderSession();}capBn=-9;}paintIcons();}
-    clearBtn.disabled=!T().seq;paintUndo();$('lasttake').disabled=!takes.length;
-    if(sessOn){const f=info(0),k=f.clipId+'|'+(m.song?m.song.idx:-1)+'|'+m.playing;if(k!==sessKey){sessKey=k;updateSession();}}
+    if(was!==m.playing){if(!m.playing){intent=null;songEnded();}paintIcons();}
+    clearBtn.disabled=sessOn?!clips.length:!T().seq;paintUndo();
+    if(sessOn){const k=(m.song?m.song.idx:-1)+'|'+m.playing+'|'+(selClip?selClip.id:'');if(k!==sessKey){sessKey=k;updateSession();}}
     const lr=laneInfo().rows;if(lr!==laneRows)computeLayout();
   }
 
@@ -794,10 +881,10 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     const old=actx;actx=null;ready=null;send=null;workletNode=null;usingFallback=false;gotStatus=false;intent=null;
     try{if(old)await old.close();}catch(_){}
     if(mediaEl){try{mediaEl.pause();}catch(_){}}
-    ptrs.clear();special.clear();laneHolds.clear();laneHold=null;trashHeld=null;diceHeld=null;
+    ptrs.clear();special.clear();laneHolds.clear();laneHold=null;trashHeld=null;diceHeld=null;clipHolds.clear();
     const keep=tracks[0].kind==='break'&&tracks[0].buf&&tracks[0].buf.L.length===loopLen(48000)?tracks[0]:null;
     tracks[0]=newTrack(0,'break');if(keep){tracks[0].buf=keep.buf;tracks[0].pk=keep.pk;}
-    view=0;takes=[];takeNum=0;capBn=-9;backPos=-1;songPlaying=false;
+    view=0;clips=[];clipNum=0;selClip=null;clipLoop=false;songPlaying=false;songList=[];recOn=false;recBn=-1;
     bpm=124;swing=0;stepped=true;playMode='replace';fxOnly=false;
     Object.assign(prefs,PREF0,{shown:new Set(ALL_FX)});
     Object.assign(pin,PIN0);liveV.order=liveV.mute=null;undoS.length=0;redoS.length=0;
@@ -805,7 +892,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     press(playBtn,false);clearBtn.disabled=true;
     bpmEl.querySelector('b').textContent='124';swingEl.querySelector('b').textContent='0%';
     soundSel.value='break';
-    if(sessOn){sessOn=false;sessEl.hidden=true;wrap.hidden=false;}
+    if(sessOn){sessOn=false;sessEl.hidden=true;wrap.hidden=false;clipHolds.clear();}
     setFold(false);
     sheet.hidden=true;paintIcons();requestAnimationFrame(resize);
     (function pre(){let n=0;const nx=()=>{if(n>=tracks.length)return;const t=tracks[n++];if(!t.buf){t.buf=buildLoop(t,48000);t.pk=peaks(t.buf);}setTimeout(nx,10);};setTimeout(nx,0);})();
@@ -930,9 +1017,9 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
       const out=el('span',{className:'blen'});
       function tryShape(nc,nl){
         if(nc===cols&&nl===len){w.hidden=true;return;}
-        const count=takes.length,go=()=>{cols=nc;len=nl;setShape(t,nc,nl);paint();};
+        const count=clips.length,go=()=>{cols=nc;len=nl;setShape(t,nc,nl);paint();};
         if(!count&&!t.seq){w.hidden=true;go();return;}
-        w.ask('This clears the sequence'+(count?' and your '+count+(count>1?' takes':' take'):'')+'.','Change',go);
+        w.ask('This clears the sequence'+(count?' and your '+count+(count>1?' clips':' clip'):'')+'.','Change',go);
       }
       const btns=[16,8].map(n=>{const b=el('button',{type:'button',textContent:'1/'+n});b.dataset.n=n;
         b.addEventListener('click',()=>{const st=16/n;tryShape(n,Math.max(st,Math.round(len/st)*st));});return b;});
@@ -966,10 +1053,10 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
       if(!arm){arm=setTimeout(()=>{arm=0;rb.textContent='Reset everything';},2500);rb.textContent='Tap again to reset';return;}
       clearTimeout(arm);arm=0;hardReset();
     });
-    cardEl.appendChild(el('div',{},[el('h3',{},['Testing']),rb,el('p',{},['Stops playback, shuts down the audio engine and returns every setting, the sequence and the takes to the start.'])]));
+    cardEl.appendChild(el('div',{},[el('h3',{},['Testing']),rb,el('p',{},['Stops playback, shuts down the audio engine and returns every setting, the sequence and the clips to the start.'])]));
   }));
   // ---------- export ----------
-  // Takes and the sequence are rendered offline (faster than real time) by a fresh engine with the same
+  // Clips and the sequence are rendered offline (faster than real time) by a fresh engine with the same
   // loop, effect settings, tempo and swing. A single bar renders after a pre-roll of itself, so it loops
   // seamlessly (delay echoes wrap into its start). Files are 24-bit WAV, or 32-bit float. Inside claude.ai
   // the page hands them over through the downloads capability, which takes a zip (not .wav); elsewhere a
@@ -1012,9 +1099,9 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     e.msg({type:'swing',s:swing});e.msg(prefMsg());e.msg({type:'pref',pref:{lat:0}});return e;
   }
   // one bar that loops seamlessly: a sequence (null: the plain loop with its ORDER and SKIP)
-  function bounceBar(c){const e=exportEngine(),n=e.len;e.msg({type:'launch',tr:0,clip:c});if(!c)e.msg({type:'play'});
+  function bounceBar(c){const e=exportEngine(),n=e.len;e.msg({type:'launch',tr:0,clip:c});e.msg({type:'play'});
     const b=EF.bounce(e,2*n);return {buf:{L:b.L.slice(n),R:b.R.slice(n)},sr:e.sr};}
-  function bounceTakes(list){const rows=list.map(k=>({bars:k.reps,clips:[takeClip(k)]}));if(expOpt.tail)rows.push({bars:2,clips:[null]});
+  function bounceClips(list){const rows=songRowsOf(list);if(expOpt.tail)rows.push({bars:2,clips:[null]});
     const e=exportEngine();e.msg({type:'song',rows,from:0});
     return {buf:EF.bounce(e,rows.reduce((s,r)=>s+r.bars,0)*e.len),sr:e.sr};}
   async function offer(files,zipName,status){
@@ -1034,21 +1121,24 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     if(!m.L.length){w.status('Nothing has played yet');return;}
     const nm='slicefield-heard-'+Math.round(m.L.length/(barSec()*m.sr))+'bars-'+bpm+'bpm';offer([{name:nm+'.wav',data:wav(m.L,m.R,m.sr)}],nm+'.zip',w.status);}
   expBtn.addEventListener('click',()=>openSheet('Export',cardEl=>{
-    const t=T(),sel=takes.filter(k=>k.sel),list=sel.length?sel:takes,bars=list.reduce((s,k)=>s+k.reps,0);
+    const t=T(),n=clips.length,k=selClip;
     const msg=el('p',{className:'expmsg'}),status=x=>{msg.textContent=x;};
-    const tag='-'+bpm+'bpm',what=sel.length?'selected takes':'takes';
+    const tag='-'+bpm+'bpm';
     const run=(label,fn)=>()=>{if(!t.buf)return;status('Rendering '+label+'…');setTimeout(()=>{try{fn();}catch(err){status('Export failed: '+err.message);}},30);};
-    const inOrder=el('button',{type:'button',textContent:sel.length?'Selected, in order':'All, in order',disabled:!list.length});
-    inOrder.addEventListener('click',run('the '+what,()=>{const r=bounceTakes(list);offer([{name:'slicefield-takes'+tag+'.wav',data:wav(r.buf.L,r.buf.R,r.sr)}],'slicefield-takes'+tag+'.zip',status);}));
-    const each=el('button',{type:'button',textContent:(sel.length?'Each selected':'Each take')+' ('+list.length+(list.length===1?' file)':' files)'),disabled:!list.length});
-    each.addEventListener('click',run('the '+what,()=>offer(list.map(k=>{const r=bounceBar(takeClip(k));return {name:'slicefield-take-'+k.num+tag+'.wav',data:wav(r.buf.L,r.buf.R,r.sr)};}),'slicefield-'+(sel.length?'selected':'takes')+tag+'.zip',status)));
+    const one=(c,nm)=>{const r=bounceBar(clipEngine(c));return {name:nm,data:wav(r.buf.L,r.buf.R,r.sr)};};
+    const inOrder=el('button',{type:'button',textContent:'All clips in order, one file',disabled:!n});
+    inOrder.addEventListener('click',run('the clips',()=>{const r=bounceClips(clips);offer([{name:'slicefield-clips'+tag+'.wav',data:wav(r.buf.L,r.buf.R,r.sr)}],'slicefield-clips'+tag+'.zip',status);}));
+    const each=el('button',{type:'button',textContent:'All individual clips ('+n+(n===1?' file)':' files)'),disabled:!n});
+    each.addEventListener('click',run('the clips',()=>offer(clips.map(c=>one(c,'slicefield-C'+c.num+tag+'.wav')),'slicefield-clips-each'+tag+'.zip',status)));
+    const selB=el('button',{type:'button',textContent:k?'Selected clip only (C'+k.num+')':'Selected clip only',disabled:!k});
+    selB.addEventListener('click',run('the clip',()=>offer([one(k,'slicefield-C'+k.num+tag+'.wav')],'slicefield-C'+k.num+tag+'.zip',status)));
     const tailCb=el('input',{type:'checkbox',checked:expOpt.tail});tailCb.addEventListener('change',()=>{expOpt.tail=tailCb.checked;});
-    cardEl.appendChild(el('div',{},[el('h3',{},['Takes'+(sel.length?' · '+sel.length+' selected':'')]),el('div',{className:'expclips'},[inOrder,each]),
-      el('p',{},[list.length?'In order: one file, '+bars+(bars>1?' bars':' bar')+' with repeats ('+(bars*barSec()).toFixed(1)+' s). Each: one seamless one-bar loop per take.'+(sel.length?'':' Select takes in the Takes list to export just those.'):'No takes yet. Every bar you play that adds something is kept as a take.']),
+    cardEl.appendChild(el('div',{},[el('h3',{},['Clips']),el('div',{className:'expclips'},[inOrder,each,selB]),
+      el('p',{},[n?'In order: one file, '+n+(n>1?' bars':' bar')+' ('+(n*barSec()).toFixed(1)+' s). Individual and selected: one seamless one-bar loop per clip.':'No clips yet. Press Capture on the field page to save the sequence as a clip.']),
       el('label',{},[tailCb,'In order: add 2 bars at the end for delay echoes to ring out'])]));
     const seqB=el('button',{type:'button',textContent:t.seq?'This sequence':'The loop as set'});
     seqB.addEventListener('click',run('the sequence',()=>{const r=bounceBar(t.seq?clipForm(t.seq):null),nm='slicefield-'+(t.seq?'sequence':'loop')+tag;offer([{name:nm+'.wav',data:wav(r.buf.L,r.buf.R,r.sr)}],nm+'.zip',status);}));
-    cardEl.appendChild(el('div',{},[el('h3',{},['Main page']),seqB,el('p',{},['One seamless bar, with its stored ORDER and SKIP.'])]));
+    cardEl.appendChild(el('div',{},[el('h3',{},['Sequencer']),seqB,el('p',{},['One seamless bar, with its stored ORDER and SKIP.'])]));
     const heard=el('div',{className:'expclips'},[2,4,8].map(n=>{const b=el('button',{type:'button',textContent:'Last '+n+' bars'});
       b.addEventListener('click',()=>{if(!send){status('Nothing has played yet');return;}grabWait={status};status('Collecting…');tx({type:'grab',bars:n});});return b;}));
     cardEl.appendChild(el('div',{},[el('h3',{},['What you just heard']),heard,el('p',{},['The last whole bars that played, exactly as they sounded, live touches included.'])]));
@@ -1058,21 +1148,22 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   }));
 
   // ---------- undo / redo ----------
-  // Every edit gesture saves a snapshot of the sequence, the plain loop's strips and the takes list first.
-  // Live touches don't, and capture doesn't: undo never removes takes captured since the snapshot.
+  // Every edit gesture saves a snapshot of the sequence, the plain loop's strips and the Clips list first
+  // (captures, deletes and moves included; clips never change, so the list keeps references). While
+  // recording, each bar that writes steps is one undo step. Live touches are not undoable.
   const undoS=[],redoS=[];
-  function snapState(){const t=T();return {seq:t.seq?cloneClip(t.seq):null,loopSet:Object.assign({},t.loopSet),takes:takes.map(k=>({k,reps:k.reps})),takeNum};}
+  function snapState(){const t=T();return {seq:t.seq?cloneClip(t.seq):null,loopSet:Object.assign({},t.loopSet),clips:clips.slice(),sel:selClip,clipNum};}
   function checkpoint(){undoS.push(snapState());if(undoS.length>100)undoS.shift();redoS.length=0;paintUndo();}
   function restoreState(sn){
-    const t=T(),f=info(t.i),newer=takes.filter(k=>k.num>sn.takeNum);
-    takes=sn.takes.map(x=>{x.k.reps=x.reps;return x.k;}).concat(newer);
+    const t=T(),f=info(t.i);
+    clips=sn.clips;selClip=sn.sel&&clips.includes(sn.sel)?sn.sel:null;clipNum=sn.clipNum;
     t.loopSet=sn.loopSet;t.seq=sn.seq;liveV.order=liveV.mute=null;
     if(!songPlaying){
       // the same sequence is edited in place at once; a different one takes over at the next bar
       if(t.seq&&f.clipId===t.seq.id)tx({type:'clipEdit',tr:t.i,clip:clipForm(t.seq)});
       else tx({type:'launch',tr:t.i,clip:t.seq&&clipForm(t.seq)});
     }
-    sendLoopSet(t);pushSongRows();computeLayout();renderSession();paintUndo();paintIcons();
+    sendLoopSet(t);sendRec();resyncSong();computeLayout();renderSession();paintUndo();paintIcons();
   }
   function undo(){if(!undoS.length)return;redoS.push(snapState());restoreState(undoS.pop());}
   function redo(){if(!redoS.length)return;undoS.push(snapState());restoreState(redoS.pop());}
@@ -1117,33 +1208,36 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     const d=lanePageInfo(),t=d.t,i=info(view),h=laneRows*LROW+4;
     g.fillStyle='#16181d';rr(0,0,LW,h,7);g.fill();
     g.textBaseline='middle';g.textAlign='center';g.font=`600 ${fs}px ${FONT}`;
-    // LIVE: the plain loop as it plays. A take's number when one is looping (* once it's edited), SEQ otherwise.
+    // LIVE: the plain loop as it plays. C<n> when the sequence came from (or was captured as) clip n, with a
+    // * once it has changed since; SEQ otherwise. REC underneath while recording.
     g.fillStyle=d.clip?`hsl(${TRACK_HUES[view]} 75% 62%)`:'#6c7380';
-    const lab=!d.clip?'LIVE':d.clip.num?'T'+d.clip.num+(d.clip.edited?'*':''):'SEQ';
+    const lab=!d.clip?'LIVE':d.clip.num?'C'+d.clip.num+(d.clip.edited?'*':''):'SEQ';
     if(lab.length>4)g.font=`600 ${fs-2}px ${FONT}`;
-    g.fillText(lab,LLAB/2,h/2-(d.pages>1?6:0));
-    if(d.pages>1){g.font=`400 ${fs-1}px ${FONT}`;g.fillStyle='#8a8f99';g.fillText((d.page+1)+'/'+d.pages,LLAB/2,h/2+7);}
-    const w=(LW-LLAB)/d.n;
+    const sub=recOn?'REC':d.pages>1?(d.page+1)+'/'+d.pages:'';
+    g.fillText(lab,LLAB/2,h/2-(sub?6:0));
+    if(sub){g.font=`${recOn?600:400} ${fs-1}px ${FONT}`;g.fillStyle=recOn?'#ff6b6b':'#8a8f99';g.fillText(sub,LLAB/2,h/2+7);}
+    const w=(LW-LLAB)/d.pr,at=j=>[LLAB+(j%d.pr)*w,4+Math.floor(j/d.pr)*LROW];
     if(d.clip){
-      for(let r=0;r<d.rows;r++)for(let j=0;j<d.n;j++){
-        const idx=d.page*d.per+r*d.n+j,s=d.slots[idx];if(idx>=d.slots.length)continue;
-        const lit=laneHold&&laneHold.idx===idx&&laneHold.clip===d.clip?'hold':st.playing&&idx===d.playIdx,dim=s.on===false||patDim(t,idx);
-        laneCell(t,s,LLAB+j*w,4+r*LROW,w,LROW-5,lit,dim,fs,(s.off||0)>0,j*16/t.cols);
+      for(let j=0;j<d.n;j++){
+        const idx=d.page*d.per+j,s=d.slots[idx];if(idx>=d.slots.length)continue;
+        const lit=laneHold&&laneHold.idx===idx&&laneHold.clip===d.clip?'hold':st.playing&&idx===d.playIdx?(recOn?'rec':true):false,dim=s.on===false||patDim(t,idx);
+        const [x,y]=at(j);laneCell(t,s,x,y,w,LROW-5,lit,dim,fs,(s.off||0)>0,j*16/t.cols);
       }
     }else{
       // live: the current bar as it plays
-      const H=(st.hist||[]),cur=H.length?H[H.length-1]:null,bp=cur?cur.bp:-1,bn=cur?cur.bn:-1,w0=bn;
-      const at=new Map();if(st.playing)for(const e of H)if(e.bn>=w0)at.set((e.bn-w0)+':'+e.bp,e);
-      for(let r=0;r<d.rows;r++)for(let j=0;j<d.n;j++){
-        const s=at.get(r+':'+j)||null,now=st.playing&&bn-w0===r&&j===bp;
-        laneCell(t,s,LLAB+j*w,4+r*LROW,w,LROW-5,now,s?!s.on:patDim(t,j),fs,s&&(s.off||0)>0);
+      const H=(st.hist||[]),cur=H.length?H[H.length-1]:null,bp=cur?cur.bp:-1,bn=cur?cur.bn:-1;
+      const heard=new Map();if(st.playing)for(const e of H)if(e.bn===bn)heard.set(e.bp,e);
+      for(let j=0;j<d.n;j++){
+        const s=heard.get(j)||null,now=st.playing&&j===bp,[x,y]=at(j);
+        laneCell(t,s,x,y,w,LROW-5,now,s?!s.on:patDim(t,j),fs,s&&(s.off||0)>0);
       }
     }
   }
   // Folded: the loop picker, the lane and both strips fold away, leaving one slim bar; tap it to open.
   const foldBtn=$('fold');
-  function setFold(on){folded=on;laneCv.hidden=on||sessOn;$('trackbar').hidden=on||sessOn;press(foldBtn,on);foldBtn.innerHTML=ICON.fold;
-    foldBtn.setAttribute('aria-label','Hide sequencer, loop and sliders');foldBtn.title=foldBtn.getAttribute('aria-label');computeLayout();}
+  // (the loop bar stays, so undo and redo never move)
+  function setFold(on){folded=on;laneCv.hidden=on||sessOn;press(foldBtn,on);foldBtn.innerHTML=ICON.fold;
+    foldBtn.setAttribute('aria-label','Hide the sequencer and sliders');foldBtn.title=foldBtn.getAttribute('aria-label');computeLayout();}
   foldBtn.addEventListener('click',()=>setFold(!folded));
   function drawSlim(fs){
     g.fillStyle='#1a1d23';rr(0,0,cssW,SLIM,7);g.fill();
@@ -1151,26 +1245,26 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     const cx=cssW/2,cy=SLIM/2;g.beginPath();g.moveTo(cx-6,cy-3);g.lineTo(cx,cy+3);g.lineTo(cx+6,cy-3);g.stroke();
   }
   function drawStrips(fs){
-    const t=T(),sw=SW();let y0=yOrder(),h=STRIP;
-    // pin box: when on, strip moves are kept on the clip; when off they are live and snap back
-    const box=(y,on)=>{g.fillStyle=on?'#3a3120':'#1a1d23';rr(cssW-26,y,26,h,6);g.fill();const c=on?ACC:'#6c7380',cx=cssW-13,cy=y+h/2;
+    const t=T(),sw=SWD();let y0=yOrder(),h=STRIP;
+    // pin box (left): when on, strip moves are kept on the sequence; when off they are live and snap back
+    const box=(y,on)=>{g.fillStyle=on?'#3a3120':'#1a1d23';rr(0,y,26,h,6);g.fill();const c=on?ACC:'#6c7380',cx=13,cy=y+h/2;
       g.fillStyle=c;g.strokeStyle=c;g.lineWidth=1.6;g.beginPath();g.arc(cx,cy-3.5,3.6,0,Math.PI*2);on?g.fill():g.stroke();
       g.beginPath();g.moveTo(cx,cy);g.lineTo(cx,cy+7);g.stroke();};
-    const ghost=(v,y,col)=>{if(v==null)return;g.strokeStyle=col;g.lineWidth=1.5;g.setLineDash([2,2]);rr(v*sw-3,y+2,6,h-4,3);g.stroke();g.setLineDash([]);};
-    // ORDER and SKIP (GAP): the further left, the more the pattern changes; the small zone at the far right is
-    // the default. Each position is one fixed pattern, numbered. The solid marker is the stored value, the
-    // dashed one a live (unpinned) move.
+    const ghost=(v,y,col)=>{if(v==null)return;g.strokeStyle=col;g.lineWidth=1.5;g.setLineDash([2,2]);rr(stripX(v)-3,y+2,6,h-4,3);g.stroke();g.setLineDash([]);};
+    // ORDER and SKIP (GAP): the small zone at the left, next to the pin, is the default; the further right,
+    // the more the pattern changes. Each position is one fixed pattern, numbered. The solid marker is the
+    // stored value, the dashed one a live (unpinned) move.
     const fine=[...special.values()].find(sp=>sp.kind==='strip'&&sp.fine);
     const strip=(y,which,name,col,colA,defLab)=>{
-      const v=which==='order'?oV(t):mV(t),n=patNo(v),dz=EF.DEAD*sw;
-      g.fillStyle='#1a1d23';rr(0,y,sw,h,7);g.fill();
-      const grd=g.createLinearGradient(0,0,dz,0);grd.addColorStop(0,colA(.30));grd.addColorStop(1,colA(.03));
-      g.fillStyle=grd;rr(0,y,dz,h,7);g.fill();
-      g.fillStyle=n?'#262a32':colA(.22);g.fillRect(dz,y+3,sw-dz-2,h-6);
-      g.textBaseline='middle';g.font=`600 ${fs}px ${FONT}`;g.textAlign='left';g.fillStyle=n?col:'#8a8f99';g.fillText(name,8,y+h/2);
+      const v=which==='order'?oV(t):mV(t),n=patNo(v),dz=SX+(1-EF.DEAD)*sw;
+      g.fillStyle='#1a1d23';rr(SX,y,sw,h,7);g.fill();
+      const grd=g.createLinearGradient(dz,0,cssW,0);grd.addColorStop(0,colA(.03));grd.addColorStop(1,colA(.30));
+      g.fillStyle=grd;rr(dz,y,cssW-dz,h,7);g.fill();
+      g.fillStyle=n?'#262a32':colA(.22);g.fillRect(SX+2,y+3,dz-SX-2,h-6);
+      g.textBaseline='middle';g.font=`600 ${fs}px ${FONT}`;g.textAlign='left';g.fillStyle=n?col:'#8a8f99';g.fillText(name,dz+8,y+h/2);
       g.textAlign='right';g.font=`${n?600:400} ${fs}px ${FONT}`;g.fillStyle=n?col:'#6c7380';
-      g.fillText(fine&&fine.which===which?'FINE · #'+n:n?'#'+n:defLab,sw-12,y+h/2);
-      g.fillStyle=col;rr(Math.min(sw-4,ctxSet(t)[which+'V']*sw-2),y+3,4,h-6,2);g.fill();ghost(liveV[which],y,'#fff');
+      g.fillText(fine&&fine.which===which?'FINE · #'+n:n?'#'+n:defLab,cssW-10,y+h/2);
+      g.fillStyle=col;rr(Math.max(SX+1,stripX(ctxSet(t)[which+'V'])-2),y+3,4,h-6,2);g.fill();ghost(liveV[which],y,'#fff');
       box(y,pin[which]);
     };
     strip(y0,'order','ORDER',ACC,ACCA,'FORWARD');
@@ -1187,22 +1281,25 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     const E=entriesOf(t);
     const marks=E.map(e=>({fx:e.fx,a:e.a,n:e.n,raw:e.raw,ts:e.ts,hid:e.hid,finger:e.finger}));
     const nowHid=i.src==='touch'&&i.sid?i.sid.slice(1,i.sid.indexOf('#')):null;
-    const touch=new Set();for(const p of ptrs.values())if(p.live&&p.tr===view&&p.ri>=0)touch.add(p.ri+':'+p.col);
+    const touch=new Set();for(const p of ptrs.values())if(p.live&&p.tr===view&&p.ri>=0)touch.add(p.ri+':'+(fxOnly?0:p.col));
+    // FX ONLY: slices come from the sequence, so each row is one undivided strip: a touch anywhere in it
+    // plays that row's effect. dc/dw: the columns drawn and their width; span: where a held cell is drawn.
+    const dc=fxOnly?1:cols,dw=W()/dc,span=m=>fxOnly?[HW+gap/2,W()-gap]:[cellX(t,m.a)+gap/2,m.n/16*W()-gap];
     lay.forEach((r,ri)=>{
       const hue=hueOf(t,r.id);
       g.fillStyle='#1a1d23';rr(0,r.y,HW-4,r.h,5);g.fill();
       g.fillStyle=`hsl(${hue} 60% 55%)`;g.fillRect(4,r.y+4,3,r.h-8);
       g.fillStyle='#6c7380';for(let q=0;q<3;q++)g.fillRect(12,r.y+r.h/2-5+q*4,9,1.5);
-      if(r.id==='center'){drawCenter(t,i,r,ri,curSlice,marks,touch,cw,gap,fs,nowHid);return;}
+      if(r.id==='center'){drawCenter(t,i,r,ri,curSlice,marks,touch,cw,gap,fs,nowHid,dc,dw,span);return;}
       const k=r.id,c=t.cfg[k],d=FX[k],cn=c.cells.filter(n=>d.params[n]),P=cn.length?d.params[cn[0]]:null,pn=cn[0];
       const rm=marks.filter(m=>m.fx===k);
-      for(let col=0;col<cols;col++){
-        let l=13,s=16;if(col===curSlice&&!i.fx.length)l+=3;
-        g.fillStyle=`hsl(${hue} ${s}% ${l}%)`;rr(HW+col*cw+gap/2,r.y,cw-gap,r.h,5);g.fill();
+      for(let col=0;col<dc;col++){
+        let l=13,s=16;if(!fxOnly&&col===curSlice&&!i.fx.length)l+=3;
+        g.fillStyle=`hsl(${hue} ${s}% ${l}%)`;rr(HW+col*dw+gap/2,r.y,dw-gap,r.h,5);g.fill();
       }
-      for(const m of rm){const now=nowHid===m.hid;g.fillStyle=`hsl(${hue} ${now?62:42}% ${now?32:21}%)`;rr(cellX(t,m.a)+gap/2,r.y,m.n/16*W()-gap,r.h,5);g.fill();}
-      if(st.playing&&i.fx&&i.fx.includes(k)&&curSlice>=0){g.strokeStyle=`hsl(${hue} 80% 68%)`;g.lineWidth=1.5;rr(HW+curSlice*cw+gap/2+0.75,r.y+0.75,cw-gap-1.5,r.h-1.5,5);g.stroke();}
-      for(let col=0;col<cols;col++)if(touch.has(ri+':'+col)){g.fillStyle=`hsl(${hue} 70% 46%)`;rr(HW+col*cw+gap/2,r.y,cw-gap,r.h,5);g.fill();}
+      for(const m of rm){const now=nowHid===m.hid,[x0,ww]=span(m);g.fillStyle=`hsl(${hue} ${now?62:42}% ${now?32:21}%)`;rr(x0,r.y,ww,r.h,5);g.fill();}
+      if(st.playing&&i.fx&&i.fx.includes(k)&&curSlice>=0){const c0=fxOnly?0:curSlice;g.strokeStyle=`hsl(${hue} 80% 68%)`;g.lineWidth=1.5;rr(HW+c0*dw+gap/2+0.75,r.y+0.75,dw-gap-1.5,r.h-1.5,5);g.stroke();}
+      for(let col=0;col<dc;col++)if(touch.has(ri+':'+col)){g.fillStyle=`hsl(${hue} 70% 46%)`;rr(HW+col*dw+gap/2,r.y,dw-gap,r.h,5);g.fill();}
       if(cellBip(t,k)){
         const yb1=r.y+r.h*(1-BAND_HI),yb2=r.y+r.h*(1-BAND_LO);
         g.fillStyle='rgba(0,0,0,.28)';g.fillRect(HW,yb1,W(),yb2-yb1);
@@ -1220,7 +1317,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
         const n=P.steps(c.o),lo=c.lo[pn],hi=c.hi[pn];
         if(n&&hi!==lo){g.fillStyle=`hsl(${hue} 30% ${rm.length?55:34}%)`;for(let q=1;q<n;q++){const rel=(q/n-lo)/(hi-lo);if(rel>0&&rel<1){const yy=r.y+r.h*(1-rel);g.fillRect(cssW-6,yy-0.5,4,1);}}}
       }
-      const lines=rm.map(m=>({x0:cellX(t,m.a)+gap/2+3,x1:cellX(t,m.a+m.n)-gap/2-3,raw:m.raw}));
+      const lines=rm.map(m=>{const [x0,ww]=span(m);return {x0:x0+3,x1:x0+ww-3,raw:m.raw};});
       // a held finger hides its own cell, so its value is also shown as a faint guide across the row
       if(P)for(const m of rm)if(m.finger){const yy=r.y+r.h*(1-rawToRel(t,k,m.raw));g.setLineDash([3,3]);g.strokeStyle=`hsla(${hue} 85% 72% / .55)`;g.lineWidth=1;g.beginPath();g.moveTo(HW,yy);g.lineTo(cssW,yy);g.stroke();g.setLineDash([]);}
       if(P)for(const L of lines){const yy=r.y+r.h*(1-rawToRel(t,k,L.raw));g.strokeStyle=`hsl(${hue} 85% 72%)`;g.lineWidth=1.5;g.beginPath();g.moveTo(L.x0,yy);g.lineTo(L.x1,yy);g.stroke();}
@@ -1236,9 +1333,9 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     });
     const y0=lay.length?lay[0].y:TOP;
     // columns past this track's bar length still play their slices, but sit outside the bar
-    const xe=cellX(t,t.len16);if(xe<cssW-1){g.fillStyle='rgba(10,11,14,.42)';g.fillRect(xe,y0,cssW-xe,cssH-y0);}
+    const xe=cellX(t,t.len16);if(!fxOnly&&xe<cssW-1){g.fillStyle='rgba(10,11,14,.42)';g.fillRect(xe,y0,cssW-xe,cssH-y0);}
     // the current step when it is silenced
-    if(st.playing&&i.gate===false&&i.src){g.fillStyle='rgba(10,11,14,.5)';const x=i.rest?HW+((i.s+Math.max(0,i.barPos))%cols)*cw:HW+curSlice*cw;if(x>=HW)g.fillRect(x,y0,cw,cssH-y0);}
+    if(!fxOnly&&st.playing&&i.gate===false&&i.src){g.fillStyle='rgba(10,11,14,.5)';const x=i.rest?HW+((i.s+Math.max(0,i.barPos))%cols)*cw:HW+curSlice*cw;if(x>=HW)g.fillRect(x,y0,cw,cssH-y0);}
     if(folded)drawSlim(fs);else drawStrips(fs);
     g=laneG;laneG.setTransform(laneDpr,0,0,laneDpr,0,0);laneG.fillStyle=BG;laneG.fillRect(0,0,LW,laneRows*LROW+6);
     if('letterSpacing' in laneG)laneG.letterSpacing='0.06em';drawLane(fs);g=gridG;
@@ -1257,14 +1354,14 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     }
     // a track that is muted, or silenced by another track's solo, is dimmed
   }
-  function drawCenter(t,i,r,ri,curSlice,marks,touch,cw,gap,fs,nowHid){
+  function drawCenter(t,i,r,ri,curSlice,marks,touch,cw,gap,fs,nowHid,dc,dw,span){
     const cols=t.cols,bot=r.y+r.h,fm=marks.filter(m=>m.fx==='filter'),dm=marks.filter(m=>m.fx==='dry'),fh=t.cfg.filter.hue;
-    for(let col=0;col<cols;col++){g.fillStyle=col===curSlice?'#252931':'#1a1d23';rr(HW+col*cw+gap/2,r.y,cw-gap,r.h,6);g.fill();}
-    for(const m of dm){const now=nowHid===m.hid;g.fillStyle=now?'#3a3527':'#2a2822';rr(cellX(t,m.a)+gap/2,r.y,m.n/16*W()-gap,r.h,6);g.fill();}
-    for(let col=0;col<cols;col++)if(touch.has(ri+':'+col)){g.fillStyle='#343a46';rr(HW+col*cw+gap/2,r.y,cw-gap,r.h,6);g.fill();}
+    for(let col=0;col<dc;col++){g.fillStyle=!fxOnly&&col===curSlice?'#252931':'#1a1d23';rr(HW+col*dw+gap/2,r.y,dw-gap,r.h,6);g.fill();}
+    for(const m of dm){const now=nowHid===m.hid,[x0,ww]=span(m);g.fillStyle=now?'#3a3527':'#2a2822';rr(x0,r.y,ww,r.h,6);g.fill();}
+    for(let col=0;col<dc;col++)if(touch.has(ri+':'+col)){g.fillStyle='#343a46';rr(HW+col*dw+gap/2,r.y,dw-gap,r.h,6);g.fill();}
     const fz=(x0,x1,raw,now)=>{const hp=raw>0;g.fillStyle=hp?`hsla(${fh} 85% 60% / ${now?0.36:0.2})`:`hsla(${(fh+160)%360} 85% 60% / ${now?0.36:0.2})`;
       if(hp)g.fillRect(x0,r.y,x1-x0,r.z1-r.y);else g.fillRect(x0,r.z2,x1-x0,bot-r.z2);};
-    for(const s of fm)fz(cellX(t,s.a)+gap/2,cellX(t,s.a+s.n)-gap/2,s.raw,nowHid===s.hid);
+    for(const s of fm){const [x0,ww]=span(s);fz(x0,x0+ww,s.raw,nowHid===s.hid);}
     const pk=t.pk;
     if(pk){
       const mid=r.y+r.h/2,amp=r.h*0.46,B=pk.length/2,c0=HW+curSlice*cw,c1=c0+cw;
@@ -1277,7 +1374,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     }
     // a line at each held or latched filter value, like the other rows
     if(hasCell(t,'filter')){
-      const fl=fm.map(m=>({x0:cellX(t,m.a)+gap/2+3,x1:cellX(t,m.a+m.n)-gap/2-3,raw:m.raw}));
+      const fl=fm.map(m=>{const [x0,ww]=span(m);return {x0:x0+3,x1:x0+ww-3,raw:m.raw};});
       for(const m of fm)if(m.finger){const hp=m.raw>0,yy=hp?r.z1-(r.z1-r.y)*m.raw:r.z2+(bot-r.z2)*(-m.raw);g.setLineDash([3,3]);g.strokeStyle=hp?`hsla(${fh} 90% 72% / .55)`:`hsla(${(fh+160)%360} 90% 72% / .55)`;g.lineWidth=1;g.beginPath();g.moveTo(HW,yy);g.lineTo(cssW,yy);g.stroke();g.setLineDash([]);}
       for(const L of fl){const hp=L.raw>0,yy=hp?r.z1-(r.z1-r.y)*L.raw:r.z2+(bot-r.z2)*(-L.raw);
         g.strokeStyle=hp?`hsl(${fh} 90% 72%)`:`hsl(${(fh+160)%360} 90% 72%)`;g.lineWidth=1.5;g.beginPath();g.moveTo(L.x0,yy);g.lineTo(L.x1,yy);g.stroke();}
@@ -1293,7 +1390,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     g.fillStyle='#fff';if(latest&&latest.raw>0)g.fillText(lv,cssW-12,yHp);if(latest&&latest.raw<0)g.fillText(lv,cssW-12,yLp);
     g.textAlign='left';g.fillStyle='#8a8f99';g.font=`500 ${fs}px ${FONT}`;g.textBaseline='top';
     const every=cols>8&&cw<30?2:1;
-    for(let col=0;col<cols;col+=every)g.fillText(String(col+1),HW+col*cw+gap/2+4,r.z1+4);
+    if(!fxOnly)for(let col=0;col<cols;col+=every)g.fillText(String(col+1),HW+col*cw+gap/2+4,r.z1+4);
     if(st.playing&&i.src&&!i.rest){const x=HW+(i.pos/16)*W();g.fillStyle=ACC;g.fillRect(x-0.75,r.z1,1.5,r.z2-r.z1);}
   }
 
