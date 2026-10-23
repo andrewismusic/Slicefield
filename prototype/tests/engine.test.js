@@ -196,6 +196,14 @@ const blank=id=>({id,cols:16,n:16,ord:{perm:null},mute:{bits:null},slots:Array.f
  ok('delay tail rings over silent steps',dr>0.02,dr);ok('…and is cut when tails are set to cut',dc<0.002,dc);
  ok('reverb tail rings over silent steps',rr>0.01,rr);ok('…and is cut when tails are set to cut',rc<0.002,rc);}
 
+// Reverb has a dry and a wet level (both full by default); its tail is cut by default, delay's rings.
+{ok('reverb tails cut by default, delay rings',EF.defCfg('reverb').o.tails==='cut'&&EF.defCfg('delay').o.tails==='ring'&&EF.defCfg('reverb').x.dry===1);
+ function pk(dry,raw){const e=mk();const c=EF.defCfg('reverb');c.x.dry=dry;e.msg({type:'cfg',tr:0,cfg:{reverb:c}});e.msg({type:'play'});
+   e.msg({type:'mode',mode:'combine'});e.msg({type:'fxonly',on:true});e.msg({type:'touches',tr:0,list:[{id:'r',a:0,n:1,o:1,fx:{k:'reverb',raw}}]});
+   run(e,steps(e,4));let p=0;for(let i=0;i<steps(e,8);i++){e.render(B,C,128);for(const v of B)p=Math.max(p,Math.abs(v));}return p;}
+ const full=pk(1,1),dryOnly=pk(1,0),silent=pk(0,0),wetOnly=pk(0,1);
+ ok('reverb: dry 0 and wet 0 is silent; either alone is heard',silent<0.001&&dryOnly>0.1&&wetOnly>0.01&&full>dryOnly*0.9,[full,dryOnly,wetOnly,silent].map(x=>+x.toFixed(3)));}
+
 // A sequence can carry its own SKIP/GAP mode and name a loop the engine holds.
 {const e=mk();const T=e.tracks[0];const bits=new Array(16).fill(1);bits[2]=bits[3]=0;
  const g={id:'g',cols:16,n:16,silPat:'insert',ord:{perm:null},mute:{bits},slots:Array.from({length:16},(_,i)=>({empty:true,on:true,a:0,off:0,sid:'e'+i,slen:1,fx:[]}))};

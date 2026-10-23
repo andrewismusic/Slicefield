@@ -1,6 +1,6 @@
 # Slicefield — handoff for the iOS app
 
-This guide and the `prototype/` folder are everything needed to build Slicefield as a native iPhone app. The prototype is a single-page web app (version 20) designed through about fifteen rounds of hands-on testing on a phone. Treat its behaviour as the specification: when this document and the code disagree, the code in `prototype/src/` is what was actually played and approved. Say so in the pull request if you change any behaviour on purpose.
+This guide and the `prototype/` folder are everything needed to build Slicefield as a native iPhone app. The prototype is a single-page web app (version 21) designed through about fifteen rounds of hands-on testing on a phone. Treat its behaviour as the specification: when this document and the code disagree, the code in `prototype/src/` is what was actually played and approved. Say so in the pull request if you change any behaviour on purpose.
 
 **For Claude Code:** read this whole file first, then `prototype/src/engine.js` (about 580 lines, the heart of it). Section 13 gives the build order. Section 14 lists decisions the owner (Andrew) hasn't made yet. Ask him about those instead of guessing. Section 18 covers using Slicefield as the sound engine inside a larger app, and sections 19–21 list what changed in versions 16, 17 and 18. **Version 18 replaced recording, clips and the song with capture and a Takes list, and the play-order and silence strips with fixed ORDER and SKIP patterns.** Where §5.4, §5.5, §8, §9, §10.4 or §20 disagree with §21, §21 wins.
 
@@ -31,6 +31,7 @@ This guide and the `prototype/` folder are everything needed to build Slicefield
 21. Changes in version 18 (and the planned next steps)
 22. Changes in version 19
 23. Changes in version 20
+24. Changes in version 21
 
 ---
 
@@ -584,12 +585,12 @@ When you are unsure how something should feel, open the prototype on a phone and
 
 1. **Resampling** (discussed, not built): a one-button "resample this take into a new loop", mainly to extend pitch range and, once it exists, time-stretching. See §20.
 2. **Fields, signal order and overlapping cells** (agreed direction, not built; design notes in §21). Still open: how fields are picked mid-performance, what a random field may contain, and whether overlap needs its own edit mode.
-3. **Reverb** (agreed in principle, not built yet). Probably a cell in a field now, rather than a per-clip setting.
-4. **Persistence and projects.** One autosaved project, or named projects? Share sequences?
+3. **Reverb** is built (v20, v21). With fields, it becomes a cell like the others.
+4. **Persistence and projects.** Named projects in a folder library (v21, §24.6). Still open: sharing projects or clips with other people.
 5. **Imported audio:** resample to a bar (current behaviour, changes pitch) or trim and time-stretch?
 6. **Background audio, Ableton Link and MIDI clock**: wanted?
 7. **iPad layout**: the prototype is portrait iPhone only.
-8. **Clips housekeeping.** v20 saves and opens whole projects as files (§23.7). Still open: autosave between launches, and a project list inside the app.
+8. **Clips housekeeping.** Done through projects (§24.6).
 9. **The shooting game** (§21): scoring, round length, and whether it ships in the instrument or in the larger platform.
 10. **Desktop input** for web and VST versions, which have no multi-touch (§18).
 11. **Filter resonance level-matching.** Freeze is now level-matched (§20); the filter's resonant peak (+3.5 dB at the default resonance) is not compensated yet.
@@ -1017,7 +1018,7 @@ Andrew's direction: cell layouts become **fields**, presets you can switch on th
 
 ### 21.8 Planned: the shooting game (not built)
 
-An optional layer over the grid. Hitting an enemy touches the cell under it, and capture keeps every bar, so a round leaves a pile of takes. Agreed so far:
+An optional layer over the grid. Hitting an enemy touches the cell under it. (Since v19 there is no capture of every bar: a round should run with Record on, or capture at the end of each round, so it leaves clips; to be decided.) Agreed so far:
 - **Drones: tap.** Quick hits.
 - **Armoured: hold for 1–4 beats.** They regenerate if you let go early.
 - **Serpents: hold and follow.**
@@ -1164,3 +1165,63 @@ The **project** button (folder) opens a sheet: **Save project**, **Open project�
   - Crush loudness within 1.5 dB (A-weighted)
   - GAP repeating after exactly its cycle and not sooner
 - Scenario `06-reverb-tails-combine` covers a clip on another loop with reverb and crush steps, recording in Combine (each written step keeps its effect and gains the held one), and both tails switched to cut. The renderer gained two shorthands: `{"type":"loopBuf","key","kind"}` and `{"type":"cfgOpt","tr","k","o"}`.
+
+---
+
+## 24. Changes in version 21
+
+Agreed with Andrew after v20.
+
+### 24.1 Transport and the die
+- **Stop turns Record off.**
+- **Rolling the die starts playback** when stopped: dragging it, or holding it and tapping steps. Tapping a lane step already did; the trash and rotate still don't.
+
+### 24.2 Reverb levels and tails
+- Reverb's **send** is replaced by two levels, **Wet** (the cell parameter: how much of the step goes into the reverb) and **Dry** (the step's own level while it has reverb). Both default to 100%.
+- Dry scales only the step itself, before Delay's echoes are added, and doesn't change what Delay is fed.
+- Default **Tails**: Reverb **cut** at the next step without reverb, Delay **rings out**.
+- Projects saved with the old reverb settings (`send`) get the new defaults for that effect when opened.
+
+### 24.3 FX ONLY: trash an effect
+With FX ONLY on, holding the trash and tapping an effect row takes that effect off **every step** of the sequence (one undo step). A tap on the loop row's middle band (dry) does nothing.
+
+### 24.4 Clips look like the sequencer
+- The thumbnails are gone. Each clip row is drawn by the lane's own code: two rows of 8 steps, effect colours, stacked-effect dots, SKIP dimming, and the clip number in corner ticks.
+- A clip on a different loop shows that loop's short name under its number.
+- The step playing is outlined while the list plays.
+
+### 24.5 Clips page trash
+- **Delete Duplicates is gone.**
+- A tap on the trash alone deletes **every clip at once**, with no question asked; Undo brings them back.
+- Hold-and-tap deletes single clips, as before.
+
+### 24.6 Projects page and library
+The folder button now opens a **Projects page**, the third page after the field and Clips. Undo, redo and the loop bar stay where they are.
+
+- **Top of the page:** the project's name (edit it in place) and its state: not saved yet / changed / saved.
+- **Path bar:** Projects › folder › subfolder; tap any part to go there.
+- **The list:** subfolders first (tap to open), then the projects in this folder, newest first. Each shows its date, clip count, loop and tempo, and the open one is outlined.
+- **Opening:** tap a project.
+- **Moving:** drag a project's handle onto a folder, or onto a folder in the path bar.
+- **Tools row:**
+  - trash
+  - **NEW FOLDER** (named in place, inside the folder being viewed)
+  - **SAVE** (a project saved for the first time goes in the folder being viewed)
+  - **NEW PROJECT**
+- **Deleting:** hold the trash and tap a project or folder (or hold it and tap the trash). It goes at once, with an **Undo** in the message bar for 7 seconds. Deleting a folder deletes everything in it.
+- **Saving:**
+  - When you press SAVE.
+  - Automatically, if the project changed, before another project is opened or a new one is started. A new, untouched project isn't kept.
+  - When the page is hidden, for a project that has been saved before.
+- **Files:** **Save to file** and **Open file…** remain, for copies outside the app. A project opened from a file isn't in the library until it's saved.
+- **Storage:**
+  - Inside claude.ai the library is in the artifact's database (`db` + `user` capabilities), in each viewer's private space `data/users/<id>/`, which is private even from the artifact's owner.
+  - Records:
+    - `p_<id>` is the project's meta: `kind:'project'`, name, folder, updated, clips, loop, bpm, chunks.
+    - `p_<id>_<n>` holds the state as JSON in chunks under 200 kB (documents are capped at 256 KiB, and imported audio makes projects megabytes).
+    - `folders` is the folder list, so empty folders survive.
+  - Elsewhere the same records go into IndexedDB.
+  - Native: a folder of project files in the app's Documents directory (visible in the Files app) is the natural equivalent; keep the same meta fields for the list.
+
+### 24.7 Tests
+`engine.test.js` has 50 cases; new ones cover reverb's default tails and dry/wet levels. Scenario 06 now drives reverb's wet level from the cell (its default tails are cut).

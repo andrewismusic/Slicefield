@@ -1,3 +1,4 @@
+<meta charset="utf-8">
 <title>Slicefield</title>
 <meta name="description" content="A one-channel slice-grid touch instrument: flip a loop with effects and keep every bar you play.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -66,10 +67,12 @@ static engineFactory=function engineFactory(){
       params:{send:{name:'Send',def:1,lab:pct},
               time:{name:'Time',def:(2+0.5)/6,lab:v=>DLAB[step(v,6)]},
               fb:{name:'Feedback',def:0.55,lab:pct}}},
-    // a send into a small feedback-delay-network reverb (four lines, Hadamard mixing, damped)
-    reverb:{name:'Reverb',hue:214,cells:['send'],
-      opts:{tails:{name:'Tails',def:'ring',choices:[['ring','Always ring out'],['cut','Cut at the next step without reverb']]}},
-      params:{send:{name:'Send',def:1,lab:pct},
+    // a small feedback-delay-network reverb (four lines, Hadamard mixing, damped): the step's dry level and
+    // how much of it goes into the reverb (wet); its tail is cut at the next step without reverb by default
+    reverb:{name:'Reverb',hue:214,cells:['wet'],
+      opts:{tails:{name:'Tails',def:'cut',choices:[['cut','Cut at the next step without reverb'],['ring','Always ring out']]}},
+      params:{wet:{name:'Wet',def:1,lab:pct},
+              dry:{name:'Dry',def:1,lab:pct},
               size:{name:'Size',def:0.5,lab:v=>rvSec(v).toFixed(1)+' s'},
               tone:{name:'Tone',def:0.6,lab:pct}}},
     filter:{name:'Filter',hue:40,cells:['cut'],
@@ -179,7 +182,7 @@ static engineFactory=function engineFactory(){
       const rk=E.sr/48000;this.rvLen=RVL.map(x=>Math.round(x*rk));this.rvN=1<<Math.ceil(Math.log2(Math.max(...this.rvLen)+2));this.rvM=this.rvN-1;
       this.rvB=this.rvLen.map(()=>new Float32Array(this.rvN));this.rvLp=new Float64Array(4);this.rvG=new Float64Array(4);this.rvW=0;
       this.apLen=[Math.round(142*rk),Math.round(379*rk)];this.apB=this.apLen.map(n=>new Float32Array(n));this.apI=[0,0];
-      this.rSend=0;this.rWet=1;this.rDamp=0.5;this.rKey=-1;
+      this.rSend=0;this.rWet=1;this.rDry=1;this.rDamp=0.5;this.rKey=-1;
       // the loop this track plays: base (from 'load') unless the playing sequence names one of the engine's loops
       this.base=null;
       this.dSend=0;this.dTime=0;this.dFb=0.55;this.dTv=0;this.dlp1=0;this.dlp2=0;
@@ -533,6 +536,8 @@ static engineFactory=function engineFactory(){
         // With tails set to cut, a step without the effect fades its echoes out in a few ms and stops
         // feeding them back, so the buffer empties and nothing old comes back with the next delayed step.
         const dry=ol+or;
+        let rv=null;for(let j=0;j<F.length;j++)if(F[j].k==='reverb'){rv=F[j].v;break;}
+        this.rDry+=((rv?rv.dry:1)-this.rDry)*0.004;ol*=this.rDry;or*=this.rDry;   // reverb's dry level: the step itself, before any echoes
         {let dv=null;for(let j=0;j<F.length;j++)if(F[j].k==='delay'){dv=F[j].v;break;}
           if(dv){this.dTv=len*DT[step(dv.time,6)]/16;this.dFb=Math.min(0.95,dv.fb);}
           this.dSend+=((dv&&this.gate?dv.send:0)-this.dSend)*0.004;
@@ -545,10 +550,9 @@ static engineFactory=function engineFactory(){
             ol+=wl*this.dWet;or+=wr*this.dWet;
           }}
         // reverb send: a four-line feedback delay network after two diffusing allpasses
-        {let rv=null;for(let j=0;j<F.length;j++)if(F[j].k==='reverb'){rv=F[j].v;break;}
-          if(rv){const key=rv.size*1000+rv.tone;if(key!==this.rKey){this.rKey=key;const T60=rvSec(rv.size)*sr;
+        {if(rv){const key=rv.size*1000+rv.tone;if(key!==this.rKey){this.rKey=key;const T60=rvSec(rv.size)*sr;
             for(let q=0;q<4;q++)this.rvG[q]=Math.pow(10,-3*this.rvLen[q]/T60);this.rDamp=0.12+0.85*rv.tone;}}
-          this.rSend+=((rv&&this.gate?rv.send:0)-this.rSend)*0.004;
+          this.rSend+=((rv&&this.gate?rv.wet:0)-this.rSend)*0.004;
           const cut=!rv&&this.cfg.reverb.o.tails==='cut';this.rWet+=((cut?0:1)-this.rWet)*0.005;
           let x=dry*0.5*this.rSend;
           for(let q=0;q<2;q++){const b=this.apB[q],i=this.apI[q],d=b[i],y=d-0.6*x;b[i]=x+0.6*y;this.apI[q]=i+1>=b.length?0:i+1;x=y;}
@@ -945,7 +949,7 @@ static synthFactory=function synthFactory(){
   return {makeLoop,resample};
 };
 /*SYNTH END*/
-static markup="<style>\n/* Everything lives in the Slicefield element's shadow root, so none of these rules or ids reach the\n   host page. Layout: one-screen instrument. Header, loop bar (with undo/redo), tools, sequencer lane,\n   then a canvas holding the ORDER and SKIP strips and the effect grid (or the Clips list). Single dark stage look. */\n:host{\n  color-scheme: dark;display:block;height:100%;box-sizing:border-box;font-family:var(--mono);font-size:12px;color:var(--fg);\n  --bg:#111317;--panel:#1a1d23;--raise:#242831;--line:#2f3440;--fg:#ece7dc;--dim:#8a8f99;--accent:#ffc65c;--rec:#e5484d;\n  --mono:\"Martian Mono\", ui-monospace, \"SF Mono\", Menlo, Consolas, monospace;\n}\n[hidden]{display:none!important}\n*,*::before,*::after{box-sizing:inherit}\n.app{background:var(--bg);color:var(--fg);font-family:var(--mono);font-size:12px;overflow:hidden;\n  padding-inline:16px;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent}\n.app{height:100%;display:flex;flex-direction:column;gap:7px;padding-block:10px}\n.row{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px}\n.brand{font-weight:700;font-stretch:75%;letter-spacing:.12em;text-transform:uppercase;font-size:12px;color:var(--accent)}\nbutton,select{font:inherit;color:var(--fg);background:var(--raise);border:1px solid var(--line);border-radius:6px;height:32px;padding:0 9px;cursor:pointer}\nbutton:focus-visible,select:focus-visible,.drag:focus-visible{outline:2px solid var(--accent);outline-offset:1px}\n.play{background:var(--accent);color:#1b1408;border-color:transparent;font-weight:700;min-width:70px}\n.play[aria-pressed=\"true\"]{background:var(--fg);color:var(--bg)}\n.toggle[aria-pressed=\"true\"]{background:#3a3120;border-color:var(--accent);color:var(--accent)}\n.recbtn[aria-pressed=\"true\"]{background:#3a1d1f;border-color:var(--rec);color:#ffb4b4}\n\n.drag{height:32px;display:inline-flex;align-items:baseline;gap:5px;padding:0 10px;border:1px dashed var(--line);border-radius:6px;background:var(--panel);\n  cursor:ns-resize;touch-action:none;font-variant-numeric:tabular-nums;line-height:30px}\n.drag b{font-weight:600;font-size:13px}.drag small{color:var(--dim);font-size:10px;letter-spacing:.08em;text-transform:uppercase}\n.k{color:var(--dim);font-size:10px;letter-spacing:.1em;text-transform:uppercase}\n.tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px}\n.tab{display:flex;align-items:center;gap:6px;height:34px;padding:0 6px 0 8px;border-radius:7px;background:var(--panel);border:1px solid var(--line);min-width:0;cursor:pointer}\n.tab[aria-selected=\"true\"]{border-color:var(--accent);background:#2a2619}\n.tab .n{font-weight:700;color:var(--accent)}\n.tab .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--dim)}\n.tab[aria-selected=\"true\"] .nm{color:var(--fg)}\n.tab .mt{height:22px;width:24px;padding:0;font-size:10px;border-radius:5px;flex:none}\n.tab .mt[aria-pressed=\"true\"]{background:#3a2020;color:#ff9b9b;border-color:#6a3030}\n.tab i{width:6px;height:6px;border-radius:50%;background:#3a3f4a;flex:none}\n.tab i.on{background:var(--accent)}\n.clips{display:flex;align-items:center;gap:6px;overflow-x:auto;scrollbar-width:none;min-height:26px}\n.clips::-webkit-scrollbar{display:none}\n.chip{height:24px;border-radius:12px;padding:0 10px;font-size:11px;display:inline-flex;align-items:center;gap:6px;background:var(--panel);flex:none}\n.chip.sel{background:var(--raise)}\n.chip.now{box-shadow:inset 0 0 0 1.5px var(--accent);color:var(--accent)}\n.chip.queued{box-shadow:inset 0 0 0 1.5px #6c6450}\n.hint{color:var(--dim);font-size:11px}\n.gridwrap{flex:1;min-height:0;position:relative}\ncanvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block}\n.sheet{position:fixed;inset:0;background:rgba(5,6,8,.72);display:flex;align-items:flex-end;justify-content:center;z-index:5;padding:16px}\n.sheet .card{width:100%;max-width:520px;max-height:88%;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:14px}\n.card h2{margin:0;font-size:14px;letter-spacing:.06em;text-transform:uppercase;display:flex;align-items:center;gap:8px}\n.card h3{margin:0 0 6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);font-weight:500}\n.card label{display:flex;align-items:center;gap:8px;min-height:28px;cursor:pointer}\n.card .opt{display:flex;flex-direction:column;gap:2px}\n.card input[type=range]{width:100%;accent-color:var(--accent)}\n.card .val{color:var(--dim);font-variant-numeric:tabular-nums;min-width:90px;text-align:right}\n.card .line{display:flex;align-items:center;gap:10px}\n.card .line span:first-child{min-width:110px}\n.swatches{display:flex;flex-wrap:wrap;gap:6px}\n.swatches button{width:28px;height:28px;padding:0;border-radius:50%}\n.swatches button[aria-pressed=\"true\"]{outline:2px solid var(--fg);outline-offset:2px}\n.card .close{align-self:flex-end}\n.card p{margin:0;color:var(--dim);line-height:1.5}\n\n.session{flex:1;min-height:0;display:flex;flex-direction:column;gap:6px}\n.sess-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}\n.sess-scroll{flex:1;min-height:0;overflow:auto;border-radius:8px;background:#15171c}\n.song{flex:1;min-height:0;display:flex;flex-direction:column;gap:6px}\n.sgrid{display:grid;grid-template-columns:44px repeat(4,minmax(0,1fr)) 28px;gap:4px;padding:6px}\n.sgrid .hd{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);display:flex;align-items:center;gap:5px;min-width:0;overflow:hidden;white-space:nowrap;height:22px}\n.sgrid .hd i{width:8px;height:8px;border-radius:2px;flex:none}\n.slot{position:relative;height:46px;border-radius:7px;background:#1c1f25;border:1px solid #262a32;min-width:0;cursor:pointer;touch-action:none;overflow:hidden}\n.slot canvas{position:absolute;inset:0;width:100%;height:100%}\n.slot .lb{position:absolute;left:5px;top:3px;font-size:9px;color:rgba(236,231,220,.8);pointer-events:none;letter-spacing:.04em}\n.slot.sel{border-color:#fff;box-shadow:0 0 0 1.5px #fff}\n.slot.play::after{content:\"\";position:absolute;right:5px;top:5px;border-left:7px solid var(--accent);border-top:4.5px solid transparent;border-bottom:4.5px solid transparent}\n\n.slot.over{outline:2px dashed var(--accent);outline-offset:-2px}\n.slot.scene{background:#1f1c15}\n@keyframes pulse{to{border-color:var(--accent)}}\n@media (prefers-reduced-motion:reduce){.slot.queued{animation:none;border-color:var(--accent)}}\n.launch{height:46px;padding:0;font-size:13px;touch-action:none}\n.launch.on{background:#3a3120;color:var(--accent);border-color:var(--accent)}\n.stopb{height:28px;padding:0;font-size:11px}\n.rowx{height:46px;padding:0;font-size:12px;color:var(--dim)}\n.addrow{grid-column:1 / -1;height:28px}\n.ghost{position:fixed;width:70px;height:40px;border-radius:7px;border:1.5px solid var(--accent);background:rgba(36,40,49,.85);pointer-events:none;z-index:9;transform:translate(-50%,-60%);font-size:10px;display:flex;align-items:center;justify-content:center;color:var(--accent)}\n\n.knob{position:relative;height:44px;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:1px;cursor:ns-resize;touch-action:none;border-radius:7px}\n.knob::before{content:\"\";width:26px;height:26px;border-radius:50%;background:radial-gradient(circle at 50% 40%,#30343e,#1b1e24);border:1.5px solid hsl(var(--h,40) 60% 45%)}\n.knob i{position:absolute;top:2px;left:50%;width:2px;height:12px;margin-left:-1px;background:hsl(var(--h,40) 80% 65%);border-radius:1px;transform-origin:50% 13px}\n.knob span{font-size:9px;color:var(--dim);font-variant-numeric:tabular-nums}\n.knob:focus-visible{outline:2px solid var(--accent)}\n.keys{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:3px;margin-top:8px}\n.keys button{height:44px;padding:0;font-size:10px;border-radius:5px;display:flex;align-items:flex-end;justify-content:center;padding-bottom:4px}\n.keys .wht{background:#d9d4c8;color:#1b1408;border-color:#a7a194}\n.keys .blk{background:#2a2d34;color:#c9c4b8;height:34px}\n.keys button[aria-pressed=\"true\"].wht{background:#ffc65c;border-color:#e0a73c}\n.keys button[aria-pressed=\"true\"].blk{background:#b07d22;color:#fff3d6;border-color:#ffc65c}\n.card select{width:100%}\n\n.top{gap:6px}\n.ic{width:36px;height:34px;padding:0;display:inline-flex;align-items:center;justify-content:center}\n.ic svg{width:20px;height:20px;display:block}\n.ic.play{width:46px;background:var(--accent);color:#1b1408;border-color:transparent}\n.ic.play[aria-pressed=\"true\"]{background:var(--fg);color:var(--bg)}\n.recbtn svg circle{fill:var(--rec)}\n.recbtn.waiting{animation:breathe 1s ease-in-out infinite}\n.recbtn.on{background:#3a1d1f;border-color:var(--rec)}\n.recbtn.on svg circle{fill:#ff8080}\n.drag{width:88px;justify-content:center}\n.pair{display:inline-flex;gap:4px;white-space:nowrap}\n.pair button:disabled{opacity:.38;cursor:default}\n.grow{flex:1}\n.msg{height:16px;line-height:16px;font-size:11px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}\n.msg.rec{color:#ff9b9b}\n.tab{justify-content:space-between}\n.tab .sb{height:22px;width:26px;padding:0;font-size:10px;border-radius:5px;flex:none}\n.tab .sb[aria-pressed=\"true\"]{background:#2b3a1f;color:#b5f08a;border-color:#4b6a30}\n.tab.dim,.hd.dim,.slot.dim,.knob.dim{opacity:.42}\n.songtitle{margin:2px 0 0;font-size:13px;font-weight:700;letter-spacing:.14em;text-transform:uppercase}\n.sess-scroll{overflow-y:scroll;scrollbar-width:thin;scrollbar-color:#4a5060 #15171c}\n.sess-scroll::-webkit-scrollbar{width:8px;height:8px}\n.sess-scroll::-webkit-scrollbar-thumb{background:#4a5060;border-radius:4px}\n.sess-scroll::-webkit-scrollbar-track{background:#15171c}\n.trh{display:flex;align-items:center;justify-content:space-between;gap:3px;height:30px;border-radius:7px;background:var(--panel);border:1px solid var(--line);padding:0 4px 0 7px;min-width:0;cursor:pointer}\n.trh[aria-selected=\"true\"]{border-color:var(--accent);background:#2a2619}\n.trh .n{font-weight:700}\n.trh .bx{display:flex;gap:3px}\n.trh .bx button{height:20px;width:22px;padding:0;font-size:9px;border-radius:4px}\n.trh .bx .mt[aria-pressed=\"true\"]{background:#3a2020;color:#ff9b9b;border-color:#6a3030}\n.trh .bx .sb[aria-pressed=\"true\"]{background:#2b3a1f;color:#b5f08a;border-color:#4b6a30}\n.slot.queued,.launch.queued{animation:breathe .9s ease-in-out infinite}\n@keyframes breathe{0%,100%{box-shadow:0 0 0 1.5px rgba(255,198,92,.15)}50%{box-shadow:0 0 0 2px rgba(255,198,92,.95)}}\n.launch svg{width:14px;height:14px}\n.launch.grab{cursor:grab}\n.songrow-over{outline:2px dashed var(--accent);outline-offset:-2px}\n.sheethead{position:sticky;top:-16px;margin:-16px -16px 0;padding:12px 12px 10px 16px;background:var(--panel);display:flex;align-items:center;gap:8px;z-index:2;border-bottom:1px solid var(--line)}\n.sheethead h2{flex:1}\n.sheethead .x{width:34px;height:34px;padding:0;font-size:18px;line-height:1}\n.danger{border-color:#6a3030;color:#ff9b9b}\n@media (prefers-reduced-motion:reduce){.slot.queued,.launch.queued,.recbtn.waiting{animation:none;box-shadow:0 0 0 2px rgba(255,198,92,.8)}}\n\n/* portrait only: controls stacked over the grid */\n.app{height:100%;display:flex;flex-direction:column;gap:7px;padding-block:10px;position:relative}\n.side{display:flex;flex-direction:column;gap:7px;min-width:0}\n.main{flex:1;min-height:0;display:flex;flex-direction:column}\n.tgrid{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:5px;width:100%;max-width:560px}\n.tgrid>*{width:100%;min-width:0;height:36px}\n.tgrid .ic{width:100%}\n.c23{grid-column:2/4}.c45{grid-column:4/6}.c78{grid-column:7/9}.c12{grid-column:1/3}.c34{grid-column:3/5}.c5{grid-column:5}.c6{grid-column:6}.c7{grid-column:7}.c8{grid-column:8}.c1{grid-column:1}.c2{grid-column:2}.c3{grid-column:3}.c4{grid-column:4}.c56{grid-column:5/7}\n.tgrid .drag{width:100%;padding:0 6px}\n.tgrid button:disabled{opacity:.38;cursor:default}\n.lane{position:relative;inset:auto;width:100%;height:30px;display:block;touch-action:none;flex:none}\n/* app-wide mode colour: normal, latched, global, and global + latched */\n.toggle[aria-pressed=\"true\"]{background:color-mix(in srgb,var(--accent) 18%,#1b1d22);border-color:var(--accent);color:var(--accent)}\n.ic.play{background:var(--accent)}\n.tab[aria-selected=\"true\"]{border-color:var(--accent)}\n.sbox{display:flex;flex-direction:column;gap:4px;align-items:stretch;padding:5px;border-radius:8px;background:var(--panel);border:1px solid var(--line);min-width:0}\n.sbox .top{display:flex;align-items:center;justify-content:space-between;gap:3px}\n.sbox .n{font-weight:700}\n.sbox .bx{display:flex;gap:3px}\n.sbox .bx button{height:20px;width:22px;padding:0;font-size:9px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center}\n.sbox .bx svg{width:10px;height:10px}\n.sbox .bx .mt[aria-pressed=\"true\"]{background:#3a2020;color:#ff9b9b;border-color:#6a3030}\n.sbox .bx .sb[aria-pressed=\"true\"]{background:#2b3a1f;color:#b5f08a;border-color:#4b6a30}\n.sbox .knob{height:42px}\n.ptitle{grid-column:1/-1;text-align:center;font-size:12px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:var(--fg);padding:2px 0 4px}\n.stopall{height:100%;min-height:40px;padding:0;display:flex;align-items:center;justify-content:center}\n.stopall svg{width:14px;height:14px}\n.session{flex:1;min-height:0;display:flex;flex-direction:column;gap:8px}\n.sess-scroll.song{flex:1}\n\n.sbox{padding:4px}\n.sbox .top{gap:2px}\n.sbox .bx{gap:2px}\n.sbox .bx button{width:20px;height:19px}\n.sbox .low{display:flex;align-items:flex-start;justify-content:space-between;gap:2px}\n.sbox .stp{width:20px;height:19px;padding:0;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;flex:none}\n.sbox .stp svg{width:9px;height:9px}\n.sbox .knob{flex:1;min-width:0}\n.tab{padding:0 4px 0 7px;gap:4px}\n.tab .bx{display:flex;gap:3px;flex:none}\n.tab .bx button{height:22px;width:22px;padding:0;font-size:10px;border-radius:5px}\n.tab .bx .mt[aria-pressed=\"true\"]{background:#3a2020;color:#ff9b9b;border-color:#6a3030}\n@media (max-width:520px){ .brand{display:none} button,select{height:30px;padding:0 7px} .drag{height:30px;line-height:28px} .tab .nm{font-size:10px} }\n/* header additions */\n.tgrid .sm{padding:0 2px;font-size:11px;letter-spacing:.02em}\n.ic.play{width:100%}\n.capbtn.waiting{animation:breathe 1s ease-in-out infinite}\n.capbtn:disabled{opacity:.38;cursor:default}\n.recbtn.dub svg circle{fill:#ffb36b}\n.recbtn.on.dub{border-color:#ff9a4a;background:#3a2a1d}\n#recmode[aria-pressed=\"true\"]{background:#3a2a1d;border-color:#ff9a4a;color:#ffc08a}\n.tgrid .drag{height:36px;line-height:34px}\n.foldbtn{width:34px;height:30px;flex:none}\n.knob span{display:block;width:100%;height:12px;line-height:12px;text-align:center;white-space:nowrap;overflow:hidden}\n.sbox .knob{height:42px;overflow:hidden}\n.blen-ctl{align-items:center}\n.blen-ctl button{width:30px;padding:0}\n.blen{min-width:70px;text-align:center;font-variant-numeric:tabular-nums;color:var(--fg)}\n.gridrow{flex-wrap:wrap}\n#clear.armed{background:#3a1d1f;border-color:var(--rec);color:#ffb4b4}\n/* settings sheet: vertical sliders */\n.vrow{display:flex;gap:10px;justify-content:flex-start;flex-wrap:wrap}\n.vcol{display:flex;flex-direction:column;align-items:center;gap:5px;width:86px}\n.vname{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}\n.vval{font-size:11px;font-variant-numeric:tabular-nums;color:var(--fg);min-height:15px;text-align:center;white-space:nowrap}\n.vtrack{position:relative;width:40px;height:170px;border-radius:8px;background:#121418;border:1px solid var(--line);touch-action:none;cursor:ns-resize}\n.vtrack:focus-visible{outline:2px solid var(--accent)}\n.vtrack .vzero{position:absolute;left:4px;right:4px;top:50%;height:1px;background:#4a5060;text-decoration:none}\n.vtrack .vfill{position:absolute;left:6px;right:6px;border-radius:3px;background:color-mix(in srgb,var(--accent) 35%,transparent)}\n.vtrack .vth{position:absolute;left:-4px;right:-4px;height:6px;margin-top:-3px;border-radius:3px;background:var(--accent)}\n.vtrack .vth.lo{background:#1b1d22;border:2px solid var(--accent)}\n.vcol:not(.cell) .vfill{background:#3a3f4a}\n.vcb{display:flex;align-items:center;gap:5px;font-size:11px;min-height:24px}\n.gridrow{display:flex;align-items:center;gap:10px;min-height:34px}\n.gridrow .n{font-weight:700;width:14px}\n.seg{display:inline-flex;gap:4px}\n.seg button{height:28px;padding:0 10px}\n.seg button[aria-pressed=\"true\"]{border-color:var(--accent);color:var(--accent);background:#2a2619}\n.warn{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 10px;margin:2px 0 6px;border-radius:8px;border:1px solid #6a3030;background:#2a1a1c;color:#ffcfcf;font-size:11px}\n.warn .wb{display:inline-flex;gap:6px}\n.warn button{height:28px}\n/* one channel: clips and song side by side, one column each */\n.session{flex-direction:row;gap:8px}\n.session .sess-scroll{flex:1;min-width:0}\n.sgrid.clipcol{grid-template-columns:minmax(0,1fr)}\n.sgrid.songcol{grid-template-columns:30px minmax(0,1fr) 24px}\n.sgrid .slot{height:44px}\n.sgrid .launch,.sgrid .rowx{height:44px}\n.slot .lb{font-size:9px;top:3px;left:5px;color:rgba(236,231,220,.7)}\n.stopall{height:30px;min-height:30px;gap:6px;font-size:10px;letter-spacing:.08em;text-transform:uppercase}\n.stopall svg{width:11px;height:11px}\n/* randomizer: a die that slides along a two-button-wide track and rolls home on release */\n.dice{position:relative;height:36px;border-radius:6px;background:var(--panel);border:1px solid var(--line);touch-action:none;cursor:ew-resize;overflow:hidden}\n.dice::before{content:\"\";position:absolute;left:34px;right:8px;top:50%;height:2px;margin-top:-1px;border-radius:1px;background:linear-gradient(90deg,#2f3440,#6c6450)}\n.dice.held{border-color:var(--accent)}\n.dice i{position:absolute;left:2px;top:2px;width:30px;height:30px;border-radius:6px;background:var(--raise);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;color:var(--fg);will-change:transform}\n.dice.held i{background:#3a3120;border-color:var(--accent);color:var(--accent)}\n.dice i svg{width:20px;height:20px}\n.dice span{position:absolute;right:6px;top:0;line-height:34px;font-size:10px;color:var(--accent);pointer-events:none;font-variant-numeric:tabular-nums}\n.dice span.left{right:auto;left:8px}\n.dice:focus-visible{outline:2px solid var(--accent);outline-offset:1px}\n.tiny{font-size:9px;line-height:1.05;letter-spacing:.04em;text-transform:uppercase;padding:0 2px}\n#fxonly[aria-pressed=\"true\"]{background:#1d2f2a;border-color:#5ee0b4;color:#8ff0cf}\n.trash.held{background:#3a1d1f;border-color:var(--rec);color:#ffb4b4}\n.expclips{display:flex;flex-wrap:wrap;gap:6px}\n.expclips button{min-width:40px}\n.expmsg{color:var(--accent)!important;min-height:18px}\n.clipset{width:auto;padding:0 8px;font-size:10px;letter-spacing:.08em;text-transform:uppercase}\n#trackbar{flex-wrap:nowrap;gap:6px}\n#trackbar select{min-width:0;flex:1 1 auto;max-width:200px}\n#trackbar .grow{flex:0 1 4px}\n.c25{grid-column:2/6}\n/* REPLACE/COMBINE and FX ONLY: the same small caps, one header cell each */\n.tgrid .tiny{font-size:8px;font-stretch:75%;letter-spacing:0;line-height:1.05;padding:0 1px;white-space:normal;overflow:hidden}\n#recmode[aria-pressed=\"true\"]{background:#3a2a1d;border-color:#ff9a4a;color:#ffc08a}\n/* Takes button: a count of the takes kept so far */\n.takesbtn{position:relative}\n.takesbtn b{position:absolute;right:2px;top:2px;min-width:14px;height:13px;padding:0 3px;border-radius:7px;background:var(--accent);color:#1b1408;font-size:8px;line-height:13px;font-weight:700;text-align:center}\n.takesbtn b:empty{display:none}\n.takesbtn.flash b{animation:flash .5s ease-out}\n@keyframes flash{from{transform:scale(1.5)}to{transform:none}}\n/* Takes: one scrolling column, oldest at the top */\n.session{flex-direction:column}\n.takeshead{display:flex;align-items:center;gap:6px;flex-wrap:wrap}\n.takeshead h2{margin:0 auto 0 0;font-size:12px;letter-spacing:.16em;text-transform:uppercase}\n.takeshead button{height:30px;font-size:10px;letter-spacing:.06em;text-transform:uppercase;display:inline-flex;align-items:center;gap:5px}\n.takeshead button svg{width:12px;height:12px}\n.takeshead button[aria-pressed=\"true\"]{background:#3a3120;border-color:var(--accent);color:var(--accent)}\n.takelist{display:flex;flex-direction:column;gap:4px;padding:6px}\n.take{display:grid;grid-template-columns:26px minmax(0,1fr) 76px 28px 26px;gap:4px;align-items:stretch;height:44px}\n.take .hdl{display:flex;align-items:center;justify-content:center;border-radius:6px;background:var(--panel);color:#6c7380;cursor:grab;touch-action:none}\n.take .hdl svg{width:14px;height:14px}\n.take .th{position:relative;border-radius:7px;background:#1c1f25;border:1px solid #262a32;overflow:hidden;cursor:pointer;padding:0}\n.take .th canvas{position:absolute;inset:0;width:100%;height:100%}\n.take .th span{position:absolute;left:5px;top:3px;font-size:9px;color:rgba(236,231,220,.75);pointer-events:none}\n.take.now .th{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}\n.take.now .th::after{content:\"\";position:absolute;right:6px;top:6px;border-left:7px solid var(--accent);border-top:4.5px solid transparent;border-bottom:4.5px solid transparent}\n.take.cur .th{border-color:#8a8f99}\n.take .reps{display:flex;align-items:center;border-radius:6px;background:var(--panel);border:1px solid var(--line);overflow:hidden}\n.take .reps button{height:100%;width:22px;padding:0;border:0;border-radius:0;background:transparent;font-size:13px;color:var(--dim)}\n.take .reps span{flex:1;text-align:center;font-variant-numeric:tabular-nums;font-size:11px}\n.take .sel,.take .del{height:100%;padding:0;font-size:12px;color:var(--dim)}\n.take .sel[aria-pressed=\"true\"]{background:#3a3120;border-color:var(--accent);color:var(--accent)}\n.take.drop{outline:2px dashed var(--accent);outline-offset:1px}\n.takes-empty{color:var(--dim);line-height:1.6;padding:14px 8px}\n.foldbtn:disabled{opacity:.35;cursor:default}\n/* v19: header row 1 is transport and pages, row 2 the loop bar, row 3 the tools (they change with the page) */\n.c35{grid-column:3/6}.c67{grid-column:6/8}\n.tgrid .drag{flex-direction:column;align-items:center;justify-content:center;gap:1px;line-height:1;padding:0}\n.tgrid .drag b{font-size:12px}.tgrid .drag small{font-size:7px;letter-spacing:.06em}\n.recbtn[aria-pressed=\"true\"]{background:#3a1d1f;border-color:var(--rec)}\n.recbtn[aria-pressed=\"true\"] svg circle{fill:#ff6b6b}\n.capbtn.flash{animation:capflash .45s ease-out}\n@keyframes capflash{from{background:var(--accent);color:#1b1408}}\n#cliploop[aria-pressed=\"true\"]{background:var(--accent);border-color:var(--accent);color:#1b1408}\n#dedupe,#loadclip{font-size:8px}\n.take{grid-template-columns:26px minmax(0,1fr)}\n.take.sel .th{border-color:#fff;box-shadow:0 0 0 1.5px #fff}\n.take.held .th{border-color:var(--rec);box-shadow:0 0 0 1.5px var(--rec)}\n.takeshead h2 small{font-size:10px;color:var(--dim);letter-spacing:.04em;text-transform:none;font-weight:400;margin-left:8px}\n.delall{display:flex;gap:8px}\n/* v20: the Clips button sits at the right end of the loop bar, one header column wide, right above Capture */\n.c57{grid-column:5/8}\n#trackbar{display:grid;grid-template-columns:auto minmax(0,1fr) repeat(3,calc((100% - 35px) / 8));gap:5px;max-width:560px;width:100%;align-items:center}\n#trackbar select{max-width:none;width:100%}\n#trackbar .grow{display:none}\n#trackbar .ic{width:100%;height:30px}\n.dropline{position:absolute;left:6px;right:6px;height:3px;margin-top:-2px;border-radius:2px;background:var(--accent);pointer-events:none;z-index:3}\n.takelist{position:relative}\n#loadclip{font-size:8px}\n.projrow{display:flex;flex-wrap:wrap;gap:8px}\n</style>\n\n<div class=\"app\" id=\"app\">\n  <div class=\"side\" id=\"side\">\n    <header class=\"tgrid\" id=\"tgrid\">\n      <button id=\"prefs\" class=\"ic c1\" aria-label=\"Preferences\" title=\"Preferences\"></button>\n      <div class=\"drag c2\" id=\"bpm\" tabindex=\"0\" role=\"slider\" aria-label=\"Tempo\" aria-valuemin=\"60\" aria-valuemax=\"200\"><b>124</b><small>BPM</small></div>\n      <div class=\"drag c3\" id=\"swing\" tabindex=\"0\" role=\"slider\" aria-label=\"Swing\" aria-valuemin=\"50\" aria-valuemax=\"75\"><b>50</b><small>Swing</small></div>\n      <button id=\"export\" class=\"ic c4\" aria-label=\"Export\" title=\"Export clips, the sequence, or what you just heard\"></button>\n      <button id=\"project\" class=\"ic c5\" aria-label=\"Project\" title=\"Save or open a project\"></button>\n      <button id=\"rec\" class=\"ic recbtn c6\" aria-pressed=\"false\" aria-label=\"Record\" title=\"Record: touches are written into the sequence\"></button>\n      <button id=\"play\" class=\"ic play c78\" aria-pressed=\"false\" aria-label=\"Play\"></button>\n    </header>\n    <div class=\"row\" id=\"trackbar\">\n      <span class=\"k\">Loop</span>\n      <select id=\"sound\" aria-label=\"Loop\">\n        <optgroup label=\"Drums\"><option value=\"break\">Breakbeat</option><option value=\"boombap\">Boom bap</option></optgroup>\n        <optgroup label=\"Bass\"><option value=\"acid\">Acid bass</option><option value=\"reese\">Reese bass</option><option value=\"dub\">Dub stabs</option></optgroup>\n        <optgroup label=\"Melodic\"><option value=\"lead\">Synth lead</option><option value=\"keys\">Electric piano</option><option value=\"kalimba\">Kalimba</option><option value=\"vox\">Vocal chops</option></optgroup>\n        <option value=\"pick\">Load your own\u2026</option>\n      </select>\n      <input id=\"file\" type=\"file\" accept=\"audio/*\" hidden><input id=\"projfile\" type=\"file\" accept=\".json,.zip,application/json,application/zip\" hidden>\n      <span class=\"grow\"></span>\n      <button id=\"undo\" class=\"ic foldbtn\" aria-label=\"Undo\" title=\"Undo\" disabled></button>\n      <button id=\"redo\" class=\"ic foldbtn\" aria-label=\"Redo\" title=\"Redo\" disabled></button>\n      <button id=\"sessbtn\" class=\"ic takesbtn\" aria-label=\"Clips\" title=\"Clips\"></button>\n    </div>\n    <div class=\"tgrid\" id=\"tools\">\n      <button id=\"clear\" class=\"ic trash c1\" disabled aria-label=\"Clear\" title=\"Tap: clear the sequence \u00b7 hold and tap steps: empty just those\"></button>\n      <button id=\"stepped\" class=\"ic c2 fieldonly\" aria-label=\"Stepped values\" title=\"Stepped or smooth effect values\"></button>\n      <div id=\"dice\" class=\"dice c35 fieldonly\" tabindex=\"0\" role=\"slider\" aria-label=\"Randomize the sequence\" aria-valuemin=\"0\" aria-valuemax=\"100\" aria-valuenow=\"0\"\n        title=\"Drag the die (or tap the slider) to randomize \u00b7 hold it and tap steps to randomize just those\"><span id=\"diceval\"></span><i id=\"die\"></i></div>\n      <button id=\"recmode\" class=\"toggle tiny c6 fieldonly\" aria-pressed=\"false\">REPLACE</button>\n      <button id=\"fxonly\" class=\"toggle tiny c7 fieldonly\" aria-pressed=\"false\">FX<br>ONLY</button>\n      <button id=\"cliploop\" class=\"tiny c23 clipsonly\" aria-pressed=\"false\" hidden title=\"Loop the selected clip\">LOOP</button>\n      <button id=\"dupclip\" class=\"ic c4 clipsonly\" hidden aria-label=\"Duplicate\" title=\"Duplicate the selected clip\"></button>\n      <button id=\"loadclip\" class=\"tiny c57 clipsonly\" hidden title=\"Load the selected clip into the sequencer to edit it\">LOAD TO<br>SEQUENCER</button>\n      <button id=\"capture\" class=\"ic capbtn c8\" aria-label=\"Capture\" title=\"Capture: save the sequence as it is now to Clips\"></button>\n    </div>\n    <canvas id=\"lane\" class=\"lane\" aria-label=\"Sequencer steps\"></canvas>\n  </div>\n  <div class=\"main\" id=\"mainpane\">\n    <div class=\"gridwrap\" id=\"gridwrap\"><canvas id=\"grid\" aria-label=\"Performance strips and effect grid\"></canvas></div>\n    <section class=\"session\" id=\"session\" hidden aria-label=\"Clips\">\n      <div class=\"takeshead\" id=\"takeshead\"></div>\n      <div class=\"sess-scroll\" id=\"sessScroll\"><div class=\"takelist\" id=\"takelist\"></div></div>\n    </section>\n  </div>\n  <div class=\"ghost\" id=\"ghost\" hidden></div>\n</div>\n<div class=\"sheet\" id=\"sheet\" hidden><div class=\"card\" id=\"card\" role=\"dialog\" aria-modal=\"true\"></div></div>";
+static markup="<style>\n/* Everything lives in the Slicefield element's shadow root, so none of these rules or ids reach the\n   host page. Layout: one-screen instrument. Header, loop bar (with undo/redo), tools, sequencer lane,\n   then a canvas holding the ORDER and SKIP strips and the effect grid (or the Clips list). Single dark stage look. */\n:host{\n  color-scheme: dark;display:block;height:100%;box-sizing:border-box;font-family:var(--mono);font-size:12px;color:var(--fg);\n  --bg:#111317;--panel:#1a1d23;--raise:#242831;--line:#2f3440;--fg:#ece7dc;--dim:#8a8f99;--accent:#ffc65c;--rec:#e5484d;\n  --mono:\"Martian Mono\", ui-monospace, \"SF Mono\", Menlo, Consolas, monospace;\n}\n[hidden]{display:none!important}\n*,*::before,*::after{box-sizing:inherit}\n.app{background:var(--bg);color:var(--fg);font-family:var(--mono);font-size:12px;overflow:hidden;\n  padding-inline:16px;-webkit-user-select:none;user-select:none;-webkit-touch-callout:none;-webkit-tap-highlight-color:transparent}\n.app{height:100%;display:flex;flex-direction:column;gap:7px;padding-block:10px}\n.row{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px}\n.brand{font-weight:700;font-stretch:75%;letter-spacing:.12em;text-transform:uppercase;font-size:12px;color:var(--accent)}\nbutton,select{font:inherit;color:var(--fg);background:var(--raise);border:1px solid var(--line);border-radius:6px;height:32px;padding:0 9px;cursor:pointer}\nbutton:focus-visible,select:focus-visible,.drag:focus-visible{outline:2px solid var(--accent);outline-offset:1px}\n.play{background:var(--accent);color:#1b1408;border-color:transparent;font-weight:700;min-width:70px}\n.play[aria-pressed=\"true\"]{background:var(--fg);color:var(--bg)}\n.toggle[aria-pressed=\"true\"]{background:#3a3120;border-color:var(--accent);color:var(--accent)}\n.recbtn[aria-pressed=\"true\"]{background:#3a1d1f;border-color:var(--rec);color:#ffb4b4}\n\n.drag{height:32px;display:inline-flex;align-items:baseline;gap:5px;padding:0 10px;border:1px dashed var(--line);border-radius:6px;background:var(--panel);\n  cursor:ns-resize;touch-action:none;font-variant-numeric:tabular-nums;line-height:30px}\n.drag b{font-weight:600;font-size:13px}.drag small{color:var(--dim);font-size:10px;letter-spacing:.08em;text-transform:uppercase}\n.k{color:var(--dim);font-size:10px;letter-spacing:.1em;text-transform:uppercase}\n.tabs{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:4px}\n.tab{display:flex;align-items:center;gap:6px;height:34px;padding:0 6px 0 8px;border-radius:7px;background:var(--panel);border:1px solid var(--line);min-width:0;cursor:pointer}\n.tab[aria-selected=\"true\"]{border-color:var(--accent);background:#2a2619}\n.tab .n{font-weight:700;color:var(--accent)}\n.tab .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px;color:var(--dim)}\n.tab[aria-selected=\"true\"] .nm{color:var(--fg)}\n.tab .mt{height:22px;width:24px;padding:0;font-size:10px;border-radius:5px;flex:none}\n.tab .mt[aria-pressed=\"true\"]{background:#3a2020;color:#ff9b9b;border-color:#6a3030}\n.tab i{width:6px;height:6px;border-radius:50%;background:#3a3f4a;flex:none}\n.tab i.on{background:var(--accent)}\n.clips{display:flex;align-items:center;gap:6px;overflow-x:auto;scrollbar-width:none;min-height:26px}\n.clips::-webkit-scrollbar{display:none}\n.chip{height:24px;border-radius:12px;padding:0 10px;font-size:11px;display:inline-flex;align-items:center;gap:6px;background:var(--panel);flex:none}\n.chip.sel{background:var(--raise)}\n.chip.now{box-shadow:inset 0 0 0 1.5px var(--accent);color:var(--accent)}\n.chip.queued{box-shadow:inset 0 0 0 1.5px #6c6450}\n.hint{color:var(--dim);font-size:11px}\n.gridwrap{flex:1;min-height:0;position:relative}\ncanvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;display:block}\n.sheet{position:fixed;inset:0;background:rgba(5,6,8,.72);display:flex;align-items:flex-end;justify-content:center;z-index:5;padding:16px}\n.sheet .card{width:100%;max-width:520px;max-height:88%;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;display:flex;flex-direction:column;gap:14px}\n.card h2{margin:0;font-size:14px;letter-spacing:.06em;text-transform:uppercase;display:flex;align-items:center;gap:8px}\n.card h3{margin:0 0 6px;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim);font-weight:500}\n.card label{display:flex;align-items:center;gap:8px;min-height:28px;cursor:pointer}\n.card .opt{display:flex;flex-direction:column;gap:2px}\n.card input[type=range]{width:100%;accent-color:var(--accent)}\n.card .val{color:var(--dim);font-variant-numeric:tabular-nums;min-width:90px;text-align:right}\n.card .line{display:flex;align-items:center;gap:10px}\n.card .line span:first-child{min-width:110px}\n.swatches{display:flex;flex-wrap:wrap;gap:6px}\n.swatches button{width:28px;height:28px;padding:0;border-radius:50%}\n.swatches button[aria-pressed=\"true\"]{outline:2px solid var(--fg);outline-offset:2px}\n.card .close{align-self:flex-end}\n.card p{margin:0;color:var(--dim);line-height:1.5}\n\n.session{flex:1;min-height:0;display:flex;flex-direction:column;gap:6px}\n.sess-top{display:flex;align-items:center;gap:8px;flex-wrap:wrap}\n.sess-scroll{flex:1;min-height:0;overflow:auto;border-radius:8px;background:#15171c}\n.song{flex:1;min-height:0;display:flex;flex-direction:column;gap:6px}\n.sgrid{display:grid;grid-template-columns:44px repeat(4,minmax(0,1fr)) 28px;gap:4px;padding:6px}\n.sgrid .hd{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);display:flex;align-items:center;gap:5px;min-width:0;overflow:hidden;white-space:nowrap;height:22px}\n.sgrid .hd i{width:8px;height:8px;border-radius:2px;flex:none}\n.slot{position:relative;height:46px;border-radius:7px;background:#1c1f25;border:1px solid #262a32;min-width:0;cursor:pointer;touch-action:none;overflow:hidden}\n.slot canvas{position:absolute;inset:0;width:100%;height:100%}\n.slot .lb{position:absolute;left:5px;top:3px;font-size:9px;color:rgba(236,231,220,.8);pointer-events:none;letter-spacing:.04em}\n.slot.sel{border-color:#fff;box-shadow:0 0 0 1.5px #fff}\n.slot.play::after{content:\"\";position:absolute;right:5px;top:5px;border-left:7px solid var(--accent);border-top:4.5px solid transparent;border-bottom:4.5px solid transparent}\n\n.slot.over{outline:2px dashed var(--accent);outline-offset:-2px}\n.slot.scene{background:#1f1c15}\n@keyframes pulse{to{border-color:var(--accent)}}\n@media (prefers-reduced-motion:reduce){.slot.queued{animation:none;border-color:var(--accent)}}\n.launch{height:46px;padding:0;font-size:13px;touch-action:none}\n.launch.on{background:#3a3120;color:var(--accent);border-color:var(--accent)}\n.stopb{height:28px;padding:0;font-size:11px}\n.rowx{height:46px;padding:0;font-size:12px;color:var(--dim)}\n.addrow{grid-column:1 / -1;height:28px}\n.ghost{position:fixed;width:70px;height:40px;border-radius:7px;border:1.5px solid var(--accent);background:rgba(36,40,49,.85);pointer-events:none;z-index:9;transform:translate(-50%,-60%);font-size:10px;display:flex;align-items:center;justify-content:center;color:var(--accent)}\n\n.knob{position:relative;height:44px;display:flex;flex-direction:column;align-items:center;justify-content:flex-start;gap:1px;cursor:ns-resize;touch-action:none;border-radius:7px}\n.knob::before{content:\"\";width:26px;height:26px;border-radius:50%;background:radial-gradient(circle at 50% 40%,#30343e,#1b1e24);border:1.5px solid hsl(var(--h,40) 60% 45%)}\n.knob i{position:absolute;top:2px;left:50%;width:2px;height:12px;margin-left:-1px;background:hsl(var(--h,40) 80% 65%);border-radius:1px;transform-origin:50% 13px}\n.knob span{font-size:9px;color:var(--dim);font-variant-numeric:tabular-nums}\n.knob:focus-visible{outline:2px solid var(--accent)}\n.keys{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:3px;margin-top:8px}\n.keys button{height:44px;padding:0;font-size:10px;border-radius:5px;display:flex;align-items:flex-end;justify-content:center;padding-bottom:4px}\n.keys .wht{background:#d9d4c8;color:#1b1408;border-color:#a7a194}\n.keys .blk{background:#2a2d34;color:#c9c4b8;height:34px}\n.keys button[aria-pressed=\"true\"].wht{background:#ffc65c;border-color:#e0a73c}\n.keys button[aria-pressed=\"true\"].blk{background:#b07d22;color:#fff3d6;border-color:#ffc65c}\n.card select{width:100%}\n\n.top{gap:6px}\n.ic{width:36px;height:34px;padding:0;display:inline-flex;align-items:center;justify-content:center}\n.ic svg{width:20px;height:20px;display:block}\n.ic.play{width:46px;background:var(--accent);color:#1b1408;border-color:transparent}\n.ic.play[aria-pressed=\"true\"]{background:var(--fg);color:var(--bg)}\n.recbtn svg circle{fill:var(--rec)}\n.recbtn.waiting{animation:breathe 1s ease-in-out infinite}\n.recbtn.on{background:#3a1d1f;border-color:var(--rec)}\n.recbtn.on svg circle{fill:#ff8080}\n.drag{width:88px;justify-content:center}\n.pair{display:inline-flex;gap:4px;white-space:nowrap}\n.pair button:disabled{opacity:.38;cursor:default}\n.grow{flex:1}\n.msg{height:16px;line-height:16px;font-size:11px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}\n.msg.rec{color:#ff9b9b}\n.tab{justify-content:space-between}\n.tab .sb{height:22px;width:26px;padding:0;font-size:10px;border-radius:5px;flex:none}\n.tab .sb[aria-pressed=\"true\"]{background:#2b3a1f;color:#b5f08a;border-color:#4b6a30}\n.tab.dim,.hd.dim,.slot.dim,.knob.dim{opacity:.42}\n.songtitle{margin:2px 0 0;font-size:13px;font-weight:700;letter-spacing:.14em;text-transform:uppercase}\n.sess-scroll{overflow-y:scroll;scrollbar-width:thin;scrollbar-color:#4a5060 #15171c}\n.sess-scroll::-webkit-scrollbar{width:8px;height:8px}\n.sess-scroll::-webkit-scrollbar-thumb{background:#4a5060;border-radius:4px}\n.sess-scroll::-webkit-scrollbar-track{background:#15171c}\n.trh{display:flex;align-items:center;justify-content:space-between;gap:3px;height:30px;border-radius:7px;background:var(--panel);border:1px solid var(--line);padding:0 4px 0 7px;min-width:0;cursor:pointer}\n.trh[aria-selected=\"true\"]{border-color:var(--accent);background:#2a2619}\n.trh .n{font-weight:700}\n.trh .bx{display:flex;gap:3px}\n.trh .bx button{height:20px;width:22px;padding:0;font-size:9px;border-radius:4px}\n.trh .bx .mt[aria-pressed=\"true\"]{background:#3a2020;color:#ff9b9b;border-color:#6a3030}\n.trh .bx .sb[aria-pressed=\"true\"]{background:#2b3a1f;color:#b5f08a;border-color:#4b6a30}\n.slot.queued,.launch.queued{animation:breathe .9s ease-in-out infinite}\n@keyframes breathe{0%,100%{box-shadow:0 0 0 1.5px rgba(255,198,92,.15)}50%{box-shadow:0 0 0 2px rgba(255,198,92,.95)}}\n.launch svg{width:14px;height:14px}\n.launch.grab{cursor:grab}\n.songrow-over{outline:2px dashed var(--accent);outline-offset:-2px}\n.sheethead{position:sticky;top:-16px;margin:-16px -16px 0;padding:12px 12px 10px 16px;background:var(--panel);display:flex;align-items:center;gap:8px;z-index:2;border-bottom:1px solid var(--line)}\n.sheethead h2{flex:1}\n.sheethead .x{width:34px;height:34px;padding:0;font-size:18px;line-height:1}\n.danger{border-color:#6a3030;color:#ff9b9b}\n@media (prefers-reduced-motion:reduce){.slot.queued,.launch.queued,.recbtn.waiting{animation:none;box-shadow:0 0 0 2px rgba(255,198,92,.8)}}\n\n/* portrait only: controls stacked over the grid */\n.app{height:100%;display:flex;flex-direction:column;gap:7px;padding-block:10px;position:relative}\n.side{display:flex;flex-direction:column;gap:7px;min-width:0}\n.main{flex:1;min-height:0;display:flex;flex-direction:column}\n.tgrid{display:grid;grid-template-columns:repeat(8,minmax(0,1fr));gap:5px;width:100%;max-width:560px}\n.tgrid>*{width:100%;min-width:0;height:36px}\n.tgrid .ic{width:100%}\n.c23{grid-column:2/4}.c45{grid-column:4/6}.c78{grid-column:7/9}.c12{grid-column:1/3}.c34{grid-column:3/5}.c5{grid-column:5}.c6{grid-column:6}.c7{grid-column:7}.c8{grid-column:8}.c1{grid-column:1}.c2{grid-column:2}.c3{grid-column:3}.c4{grid-column:4}.c56{grid-column:5/7}\n.tgrid .drag{width:100%;padding:0 6px}\n.tgrid button:disabled{opacity:.38;cursor:default}\n.lane{position:relative;inset:auto;width:100%;height:30px;display:block;touch-action:none;flex:none}\n/* app-wide mode colour: normal, latched, global, and global + latched */\n.toggle[aria-pressed=\"true\"]{background:color-mix(in srgb,var(--accent) 18%,#1b1d22);border-color:var(--accent);color:var(--accent)}\n.ic.play{background:var(--accent)}\n.tab[aria-selected=\"true\"]{border-color:var(--accent)}\n.sbox{display:flex;flex-direction:column;gap:4px;align-items:stretch;padding:5px;border-radius:8px;background:var(--panel);border:1px solid var(--line);min-width:0}\n.sbox .top{display:flex;align-items:center;justify-content:space-between;gap:3px}\n.sbox .n{font-weight:700}\n.sbox .bx{display:flex;gap:3px}\n.sbox .bx button{height:20px;width:22px;padding:0;font-size:9px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center}\n.sbox .bx svg{width:10px;height:10px}\n.sbox .bx .mt[aria-pressed=\"true\"]{background:#3a2020;color:#ff9b9b;border-color:#6a3030}\n.sbox .bx .sb[aria-pressed=\"true\"]{background:#2b3a1f;color:#b5f08a;border-color:#4b6a30}\n.sbox .knob{height:42px}\n.ptitle{grid-column:1/-1;text-align:center;font-size:12px;font-weight:700;letter-spacing:.18em;text-transform:uppercase;color:var(--fg);padding:2px 0 4px}\n.stopall{height:100%;min-height:40px;padding:0;display:flex;align-items:center;justify-content:center}\n.stopall svg{width:14px;height:14px}\n.session{flex:1;min-height:0;display:flex;flex-direction:column;gap:8px}\n.sess-scroll.song{flex:1}\n\n.sbox{padding:4px}\n.sbox .top{gap:2px}\n.sbox .bx{gap:2px}\n.sbox .bx button{width:20px;height:19px}\n.sbox .low{display:flex;align-items:flex-start;justify-content:space-between;gap:2px}\n.sbox .stp{width:20px;height:19px;padding:0;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;flex:none}\n.sbox .stp svg{width:9px;height:9px}\n.sbox .knob{flex:1;min-width:0}\n.tab{padding:0 4px 0 7px;gap:4px}\n.tab .bx{display:flex;gap:3px;flex:none}\n.tab .bx button{height:22px;width:22px;padding:0;font-size:10px;border-radius:5px}\n.tab .bx .mt[aria-pressed=\"true\"]{background:#3a2020;color:#ff9b9b;border-color:#6a3030}\n@media (max-width:520px){ .brand{display:none} button,select{height:30px;padding:0 7px} .drag{height:30px;line-height:28px} .tab .nm{font-size:10px} }\n/* header additions */\n.tgrid .sm{padding:0 2px;font-size:11px;letter-spacing:.02em}\n.ic.play{width:100%}\n.capbtn.waiting{animation:breathe 1s ease-in-out infinite}\n.capbtn:disabled{opacity:.38;cursor:default}\n.recbtn.dub svg circle{fill:#ffb36b}\n.recbtn.on.dub{border-color:#ff9a4a;background:#3a2a1d}\n#recmode[aria-pressed=\"true\"]{background:#3a2a1d;border-color:#ff9a4a;color:#ffc08a}\n.tgrid .drag{height:36px;line-height:34px}\n.foldbtn{width:34px;height:30px;flex:none}\n.knob span{display:block;width:100%;height:12px;line-height:12px;text-align:center;white-space:nowrap;overflow:hidden}\n.sbox .knob{height:42px;overflow:hidden}\n.blen-ctl{align-items:center}\n.blen-ctl button{width:30px;padding:0}\n.blen{min-width:70px;text-align:center;font-variant-numeric:tabular-nums;color:var(--fg)}\n.gridrow{flex-wrap:wrap}\n#clear.armed{background:#3a1d1f;border-color:var(--rec);color:#ffb4b4}\n/* settings sheet: vertical sliders */\n.vrow{display:flex;gap:10px;justify-content:flex-start;flex-wrap:wrap}\n.vcol{display:flex;flex-direction:column;align-items:center;gap:5px;width:86px}\n.vname{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--dim)}\n.vval{font-size:11px;font-variant-numeric:tabular-nums;color:var(--fg);min-height:15px;text-align:center;white-space:nowrap}\n.vtrack{position:relative;width:40px;height:170px;border-radius:8px;background:#121418;border:1px solid var(--line);touch-action:none;cursor:ns-resize}\n.vtrack:focus-visible{outline:2px solid var(--accent)}\n.vtrack .vzero{position:absolute;left:4px;right:4px;top:50%;height:1px;background:#4a5060;text-decoration:none}\n.vtrack .vfill{position:absolute;left:6px;right:6px;border-radius:3px;background:color-mix(in srgb,var(--accent) 35%,transparent)}\n.vtrack .vth{position:absolute;left:-4px;right:-4px;height:6px;margin-top:-3px;border-radius:3px;background:var(--accent)}\n.vtrack .vth.lo{background:#1b1d22;border:2px solid var(--accent)}\n.vcol:not(.cell) .vfill{background:#3a3f4a}\n.vcb{display:flex;align-items:center;gap:5px;font-size:11px;min-height:24px}\n.gridrow{display:flex;align-items:center;gap:10px;min-height:34px}\n.gridrow .n{font-weight:700;width:14px}\n.seg{display:inline-flex;gap:4px}\n.seg button{height:28px;padding:0 10px}\n.seg button[aria-pressed=\"true\"]{border-color:var(--accent);color:var(--accent);background:#2a2619}\n.warn{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:8px 10px;margin:2px 0 6px;border-radius:8px;border:1px solid #6a3030;background:#2a1a1c;color:#ffcfcf;font-size:11px}\n.warn .wb{display:inline-flex;gap:6px}\n.warn button{height:28px}\n/* one channel: clips and song side by side, one column each */\n.session{flex-direction:row;gap:8px}\n.session .sess-scroll{flex:1;min-width:0}\n.sgrid.clipcol{grid-template-columns:minmax(0,1fr)}\n.sgrid.songcol{grid-template-columns:30px minmax(0,1fr) 24px}\n.sgrid .slot{height:44px}\n.sgrid .launch,.sgrid .rowx{height:44px}\n.slot .lb{font-size:9px;top:3px;left:5px;color:rgba(236,231,220,.7)}\n.stopall{height:30px;min-height:30px;gap:6px;font-size:10px;letter-spacing:.08em;text-transform:uppercase}\n.stopall svg{width:11px;height:11px}\n/* randomizer: a die that slides along a two-button-wide track and rolls home on release */\n.dice{position:relative;height:36px;border-radius:6px;background:var(--panel);border:1px solid var(--line);touch-action:none;cursor:ew-resize;overflow:hidden}\n.dice::before{content:\"\";position:absolute;left:34px;right:8px;top:50%;height:2px;margin-top:-1px;border-radius:1px;background:linear-gradient(90deg,#2f3440,#6c6450)}\n.dice.held{border-color:var(--accent)}\n.dice i{position:absolute;left:2px;top:2px;width:30px;height:30px;border-radius:6px;background:var(--raise);border:1px solid var(--line);display:flex;align-items:center;justify-content:center;color:var(--fg);will-change:transform}\n.dice.held i{background:#3a3120;border-color:var(--accent);color:var(--accent)}\n.dice i svg{width:20px;height:20px}\n.dice span{position:absolute;right:6px;top:0;line-height:34px;font-size:10px;color:var(--accent);pointer-events:none;font-variant-numeric:tabular-nums}\n.dice span.left{right:auto;left:8px}\n.dice:focus-visible{outline:2px solid var(--accent);outline-offset:1px}\n.tiny{font-size:9px;line-height:1.05;letter-spacing:.04em;text-transform:uppercase;padding:0 2px}\n#fxonly[aria-pressed=\"true\"]{background:#1d2f2a;border-color:#5ee0b4;color:#8ff0cf}\n.trash.held{background:#3a1d1f;border-color:var(--rec);color:#ffb4b4}\n.expclips{display:flex;flex-wrap:wrap;gap:6px}\n.expclips button{min-width:40px}\n.expmsg{color:var(--accent)!important;min-height:18px}\n.clipset{width:auto;padding:0 8px;font-size:10px;letter-spacing:.08em;text-transform:uppercase}\n#trackbar{flex-wrap:nowrap;gap:6px}\n#trackbar select{min-width:0;flex:1 1 auto;max-width:200px}\n#trackbar .grow{flex:0 1 4px}\n.c25{grid-column:2/6}\n/* REPLACE/COMBINE and FX ONLY: the same small caps, one header cell each */\n.tgrid .tiny{font-size:8px;font-stretch:75%;letter-spacing:0;line-height:1.05;padding:0 1px;white-space:normal;overflow:hidden}\n#recmode[aria-pressed=\"true\"]{background:#3a2a1d;border-color:#ff9a4a;color:#ffc08a}\n/* Takes button: a count of the takes kept so far */\n.takesbtn{position:relative}\n.takesbtn b{position:absolute;right:2px;top:2px;min-width:14px;height:13px;padding:0 3px;border-radius:7px;background:var(--accent);color:#1b1408;font-size:8px;line-height:13px;font-weight:700;text-align:center}\n.takesbtn b:empty{display:none}\n.takesbtn.flash b{animation:flash .5s ease-out}\n@keyframes flash{from{transform:scale(1.5)}to{transform:none}}\n/* Takes: one scrolling column, oldest at the top */\n.session{flex-direction:column}\n.takeshead{display:flex;align-items:center;gap:6px;flex-wrap:wrap}\n.takeshead h2{margin:0 auto 0 0;font-size:12px;letter-spacing:.16em;text-transform:uppercase}\n.takeshead button{height:30px;font-size:10px;letter-spacing:.06em;text-transform:uppercase;display:inline-flex;align-items:center;gap:5px}\n.takeshead button svg{width:12px;height:12px}\n.takeshead button[aria-pressed=\"true\"]{background:#3a3120;border-color:var(--accent);color:var(--accent)}\n.takelist{display:flex;flex-direction:column;gap:4px;padding:6px}\n.take{display:grid;grid-template-columns:26px minmax(0,1fr) 76px 28px 26px;gap:4px;align-items:stretch;height:44px}\n.take .hdl{display:flex;align-items:center;justify-content:center;border-radius:6px;background:var(--panel);color:#6c7380;cursor:grab;touch-action:none}\n.take .hdl svg{width:14px;height:14px}\n.take .th{position:relative;border-radius:7px;background:#1c1f25;border:1px solid #262a32;overflow:hidden;cursor:pointer;padding:0}\n.take .th canvas{position:absolute;inset:0;width:100%;height:100%}\n.take .th span{position:absolute;left:5px;top:3px;font-size:9px;color:rgba(236,231,220,.75);pointer-events:none}\n.take.now .th{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent)}\n.take.now .th::after{content:\"\";position:absolute;right:6px;top:6px;border-left:7px solid var(--accent);border-top:4.5px solid transparent;border-bottom:4.5px solid transparent}\n.take.cur .th{border-color:#8a8f99}\n.take .reps{display:flex;align-items:center;border-radius:6px;background:var(--panel);border:1px solid var(--line);overflow:hidden}\n.take .reps button{height:100%;width:22px;padding:0;border:0;border-radius:0;background:transparent;font-size:13px;color:var(--dim)}\n.take .reps span{flex:1;text-align:center;font-variant-numeric:tabular-nums;font-size:11px}\n.take .sel,.take .del{height:100%;padding:0;font-size:12px;color:var(--dim)}\n.take .sel[aria-pressed=\"true\"]{background:#3a3120;border-color:var(--accent);color:var(--accent)}\n.take.drop{outline:2px dashed var(--accent);outline-offset:1px}\n.takes-empty{color:var(--dim);line-height:1.6;padding:14px 8px}\n.foldbtn:disabled{opacity:.35;cursor:default}\n/* v19: header row 1 is transport and pages, row 2 the loop bar, row 3 the tools (they change with the page) */\n.c35{grid-column:3/6}.c67{grid-column:6/8}\n.tgrid .drag{flex-direction:column;align-items:center;justify-content:center;gap:1px;line-height:1;padding:0}\n.tgrid .drag b{font-size:12px}.tgrid .drag small{font-size:7px;letter-spacing:.06em}\n.recbtn[aria-pressed=\"true\"]{background:#3a1d1f;border-color:var(--rec)}\n.recbtn[aria-pressed=\"true\"] svg circle{fill:#ff6b6b}\n.capbtn.flash{animation:capflash .45s ease-out}\n@keyframes capflash{from{background:var(--accent);color:#1b1408}}\n#cliploop[aria-pressed=\"true\"]{background:var(--accent);border-color:var(--accent);color:#1b1408}\n#dedupe,#loadclip{font-size:8px}\n.take{grid-template-columns:26px minmax(0,1fr)}\n.take.sel .th{border-color:#fff;box-shadow:0 0 0 1.5px #fff}\n.take.held .th{border-color:var(--rec);box-shadow:0 0 0 1.5px var(--rec)}\n.takeshead h2 small{font-size:10px;color:var(--dim);letter-spacing:.04em;text-transform:none;font-weight:400;margin-left:8px}\n.delall{display:flex;gap:8px}\n/* v20: the Clips button sits at the right end of the loop bar, one header column wide, right above Capture */\n.c57{grid-column:5/8}\n#trackbar{display:grid;grid-template-columns:auto minmax(0,1fr) repeat(3,calc((100% - 35px) / 8));gap:5px;max-width:560px;width:100%;align-items:center}\n#trackbar select{max-width:none;width:100%}\n#trackbar .grow{display:none}\n#trackbar .ic{width:100%;height:30px}\n.dropline{position:absolute;left:6px;right:6px;height:3px;margin-top:-2px;border-radius:2px;background:var(--accent);pointer-events:none;z-index:3}\n.takelist{position:relative}\n#loadclip{font-size:8px}\n.projrow{display:flex;flex-wrap:wrap;gap:8px}\n/* v21: clip rows drawn like the sequencer */\n.take{height:auto;align-items:stretch}\n.take .th{padding:0;background:transparent;border:1.5px solid transparent;border-radius:9px;height:auto}\n.take .th canvas{position:static;display:block;width:100%}\n.take.sel .th{border-color:#fff;box-shadow:none}\n.take.held .th{border-color:var(--rec);box-shadow:none}\n.take.now .th{border-color:var(--accent);box-shadow:none}\n.take.now.sel .th{border-color:#fff;box-shadow:0 0 0 1.5px var(--accent)}\n.take .th::after{display:none}\n/* Projects page */\n.projects{flex:1;min-height:0;display:flex;flex-direction:column;gap:6px}\n.projhead{display:flex;align-items:center;gap:8px}\n.projhead input{flex:1;min-width:0;height:32px;font:inherit;font-size:13px;font-weight:600;letter-spacing:.04em;color:var(--fg);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:0 9px}\n.projhead input:focus{outline:2px solid var(--accent);outline-offset:0}\n.projstate{font-size:10px;color:var(--dim);white-space:nowrap}\n.crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:2px;font-size:11px;color:var(--dim);min-height:22px}\n.crumbs button{height:22px;padding:0 6px;font-size:11px;border:0;background:transparent;color:var(--dim)}\n.crumbs button.cur{color:var(--fg);font-weight:600}\n.crumbs button.drop{outline:2px dashed var(--accent)}\n.projlist{display:flex;flex-direction:column;gap:4px;padding:6px;position:relative}\n.prow{display:grid;grid-template-columns:26px minmax(0,1fr);gap:4px;min-height:46px}\n.prow .hdl{display:flex;align-items:center;justify-content:center;border-radius:6px;background:var(--panel);color:#6c7380;cursor:grab;touch-action:none}\n.prow .hdl svg{width:14px;height:14px}\n.prow .pb{height:auto;min-height:46px;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:2px;text-align:left;padding:4px 10px;border-radius:8px}\n.prow .pb b{font-size:12px;font-weight:600}\n.prow .pb small{font-size:10px;color:var(--dim)}\n.prow.folder .pb{flex-direction:row;justify-content:flex-start;align-items:center;gap:8px;background:#1d2026}\n.prow.folder .pb svg{width:16px;height:16px;color:var(--accent)}\n.prow.cur .pb{border-color:var(--accent)}\n.prow.held .pb{border-color:var(--rec)}\n.prow.drop .pb{outline:2px dashed var(--accent);outline-offset:-2px}\n.prow .ni{flex:1;height:30px;font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--accent);border-radius:5px;padding:0 8px}\n.projfoot{display:flex;gap:8px;flex-wrap:wrap}\n.projfoot button{height:30px;font-size:11px}\n.projmsg{display:flex;align-items:center;gap:10px;padding:6px 10px;border-radius:8px;background:var(--raise);font-size:11px}\n.projmsg button{height:26px;font-size:11px}\n.projempty{color:var(--dim);line-height:1.6;padding:12px 8px}\n</style>\n\n<div class=\"app\" id=\"app\">\n  <div class=\"side\" id=\"side\">\n    <header class=\"tgrid\" id=\"tgrid\">\n      <button id=\"prefs\" class=\"ic c1\" aria-label=\"Preferences\" title=\"Preferences\"></button>\n      <div class=\"drag c2\" id=\"bpm\" tabindex=\"0\" role=\"slider\" aria-label=\"Tempo\" aria-valuemin=\"60\" aria-valuemax=\"200\"><b>124</b><small>BPM</small></div>\n      <div class=\"drag c3\" id=\"swing\" tabindex=\"0\" role=\"slider\" aria-label=\"Swing\" aria-valuemin=\"50\" aria-valuemax=\"75\"><b>50</b><small>Swing</small></div>\n      <button id=\"export\" class=\"ic c4\" aria-label=\"Export\" title=\"Export clips, the sequence, or what you just heard\"></button>\n      <button id=\"project\" class=\"ic c5\" aria-label=\"Project\" title=\"Save or open a project\"></button>\n      <button id=\"rec\" class=\"ic recbtn c6\" aria-pressed=\"false\" aria-label=\"Record\" title=\"Record: touches are written into the sequence\"></button>\n      <button id=\"play\" class=\"ic play c78\" aria-pressed=\"false\" aria-label=\"Play\"></button>\n    </header>\n    <div class=\"row\" id=\"trackbar\">\n      <span class=\"k\">Loop</span>\n      <select id=\"sound\" aria-label=\"Loop\">\n        <optgroup label=\"Drums\"><option value=\"break\">Breakbeat</option><option value=\"boombap\">Boom bap</option></optgroup>\n        <optgroup label=\"Bass\"><option value=\"acid\">Acid bass</option><option value=\"reese\">Reese bass</option><option value=\"dub\">Dub stabs</option></optgroup>\n        <optgroup label=\"Melodic\"><option value=\"lead\">Synth lead</option><option value=\"keys\">Electric piano</option><option value=\"kalimba\">Kalimba</option><option value=\"vox\">Vocal chops</option></optgroup>\n        <option value=\"pick\">Load your own\u2026</option>\n      </select>\n      <input id=\"file\" type=\"file\" accept=\"audio/*\" hidden><input id=\"projfile\" type=\"file\" accept=\".json,.zip,application/json,application/zip\" hidden>\n      <span class=\"grow\"></span>\n      <button id=\"undo\" class=\"ic foldbtn\" aria-label=\"Undo\" title=\"Undo\" disabled></button>\n      <button id=\"redo\" class=\"ic foldbtn\" aria-label=\"Redo\" title=\"Redo\" disabled></button>\n      <button id=\"sessbtn\" class=\"ic takesbtn\" aria-label=\"Clips\" title=\"Clips\"></button>\n    </div>\n    <div class=\"tgrid\" id=\"tools\">\n      <button id=\"clear\" class=\"ic trash c1\" disabled aria-label=\"Clear\" title=\"Tap: clear the sequence \u00b7 hold and tap steps: empty just those\"></button>\n      <button id=\"stepped\" class=\"ic c2 fieldonly\" aria-label=\"Stepped values\" title=\"Stepped or smooth effect values\"></button>\n      <div id=\"dice\" class=\"dice c35 fieldonly\" tabindex=\"0\" role=\"slider\" aria-label=\"Randomize the sequence\" aria-valuemin=\"0\" aria-valuemax=\"100\" aria-valuenow=\"0\"\n        title=\"Drag the die (or tap the slider) to randomize \u00b7 hold it and tap steps to randomize just those\"><span id=\"diceval\"></span><i id=\"die\"></i></div>\n      <button id=\"recmode\" class=\"toggle tiny c6 fieldonly\" aria-pressed=\"false\">REPLACE</button>\n      <button id=\"fxonly\" class=\"toggle tiny c7 fieldonly\" aria-pressed=\"false\">FX<br>ONLY</button>\n      <button id=\"cliploop\" class=\"tiny c23 clipsonly\" aria-pressed=\"false\" hidden title=\"Loop the selected clip\">LOOP</button>\n      <button id=\"dupclip\" class=\"ic c4 clipsonly\" hidden aria-label=\"Duplicate\" title=\"Duplicate the selected clip\"></button>\n      <button id=\"loadclip\" class=\"tiny c57 clipsonly\" hidden title=\"Load the selected clip into the sequencer to edit it\">LOAD TO<br>SEQUENCER</button>\n      <button id=\"newfolder\" class=\"tiny c23 projonly\" hidden title=\"Make a folder inside the one you are looking at\">NEW<br>FOLDER</button>\n      <button id=\"saveproj\" class=\"tiny c45 projonly\" hidden title=\"Save this project\">SAVE</button>\n      <button id=\"newproj\" class=\"tiny c67 projonly\" hidden title=\"Start a new project (this one is saved first if it changed)\">NEW<br>PROJECT</button>\n      <button id=\"capture\" class=\"ic capbtn c8\" aria-label=\"Capture\" title=\"Capture: save the sequence as it is now to Clips\"></button>\n    </div>\n    <canvas id=\"lane\" class=\"lane\" aria-label=\"Sequencer steps\"></canvas>\n  </div>\n  <div class=\"main\" id=\"mainpane\">\n    <div class=\"gridwrap\" id=\"gridwrap\"><canvas id=\"grid\" aria-label=\"Performance strips and effect grid\"></canvas></div>\n    <section class=\"projects\" id=\"projects\" hidden aria-label=\"Projects\">\n      <div class=\"projhead\"><input id=\"projname\" type=\"text\" maxlength=\"40\" spellcheck=\"false\" aria-label=\"Project name\" placeholder=\"Untitled\"><span id=\"projstate\" class=\"projstate\"></span></div>\n      <div class=\"crumbs\" id=\"crumbs\"></div>\n      <div class=\"sess-scroll\" id=\"projScroll\"><div class=\"projlist\" id=\"projlist\"></div></div>\n      <div class=\"projfoot\"><button id=\"tofile\" type=\"button\">Save to file</button><button id=\"fromfile\" type=\"button\">Open file\u2026</button></div>\n      <div class=\"projmsg\" id=\"projmsg\" hidden></div>\n    </section>\n    <section class=\"session\" id=\"session\" hidden aria-label=\"Clips\">\n      <div class=\"takeshead\" id=\"takeshead\"></div>\n      <div class=\"sess-scroll\" id=\"sessScroll\"><div class=\"takelist\" id=\"takelist\"></div></div>\n    </section>\n  </div>\n  <div class=\"ghost\" id=\"ghost\" hidden></div>\n</div>\n<div class=\"sheet\" id=\"sheet\" hidden><div class=\"card\" id=\"card\" role=\"dialog\" aria-modal=\"true\"></div></div>";
 static ui=// The interface. Runs as the Slicefield constructor: everything it keeps is local to this instance, and it
 // draws into the host element's shadow root.
 function slicefieldUI(hostEl,engineFactory,synth,markup){
@@ -994,7 +998,8 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   // imported audio, by id: {id, name, L, R} at the file's own rate and level
   const files=new Map();
   const loopName=k=>k&&k.startsWith('f:')?(files.get(k.slice(2))||{}).name||'Your file':LOOP_NAMES[k]||k;
-  let bpm=124,swing=0,stepped=true,sessOn=false,playMode='replace',fxOnly=false;
+  // page: 'field', 'clips' or 'proj' (sessOn and projOn say which of the last two is showing)
+  let bpm=124,swing=0,stepped=true,sessOn=false,projOn=false,page='field',playMode='replace',fxOnly=false;
   // Clips: sequences saved with Capture, in list order. While any exist, one is selected.
   // songPlaying: the Clips list is playing (songList: the clips it was sent, in its order).
   // recOn: Record is on, so touches are written into the sequence (recBn: the bar of the last write).
@@ -1312,6 +1317,8 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     }
     if(h.handle){special.set(e.pointerId,{kind:'handle',id:h.id,y0:y,y,moved:false});return;}
     if(laneHold&&h.cell){special.set(e.pointerId,{kind:'assign'});assignStep(h);return;}
+    // FX ONLY with the trash held: tapping an effect row takes that effect off every step of the sequence
+    if(trashHeld&&fxOnly&&h.cell){trashHeld.used=true;special.set(e.pointerId,{kind:'assign'});if(h.fx!=='dry')removeEffect(t,h.fx);return;}
     const ptr={x,y,tr:view,col:-1,fx:null,raw:0,ri:-1,order:-1,ts:0,hid:null,live:false};ptrs.set(e.pointerId,ptr);
     checkBlocked();await ready;
     if(ptrs.get(e.pointerId)===ptr){ptr.live=true;update(ptr);}else ensurePlaying();
@@ -1407,7 +1414,8 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   // ---------- transport ----------
   async function togglePlay(){
     initAudio();checkBlocked();await ready;
-    if(st.playing||intent){intent=null;tx({type:'stop'});if(songPlaying)songEnded();paintIcons();updateSession();}
+    // Stop also turns Record off
+    if(st.playing||intent){intent=null;tx({type:'stop'});if(songPlaying)songEnded();if(recOn){recOn=false;recBn=-1;sendRec();}paintIcons();updateSession();}
     // on the Clips page, Play plays the list from the selected clip (with nothing captured it does nothing)
     else if(sessOn){if(selClip)playClips(selClip);}
     else{intent={type:'play'};tx(intent);paintIcons();}
@@ -1461,8 +1469,11 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     try{clearBtn.setPointerCapture(e.pointerId);}catch(_){}
     if(!sessOn&&laneHolds.size){trashHeld.used=true;clearSteps(T(),[...laneHolds.values()].map(h=>{h.used=true;return h.idx;}));}
     if(sessOn&&clipHolds.size){trashHeld.used=true;deleteClips([...clipHolds.values()].map(h=>{h.used=true;return h.k;}));}
+    if(projOn&&projHolds.size){trashHeld.used=true;for(const h of projHolds.values()){h.used=true;deleteEntry(h.what);}}
   });
-  const trashTap=()=>{if(sessOn)askDeleteAll();else clearSequence(T());};
+  // a tap on its own: the field's sequence is cleared; on the Clips page every clip goes at once (Undo
+  // brings them back); on the Projects page it does nothing
+  const trashTap=()=>{if(projOn)return;if(sessOn)deleteClips(clips.slice());else clearSequence(T());};
   const trashUp=e=>{const h=trashHeld;if(!h||h.id!==e.pointerId)return;trashHeld=null;clearBtn.classList.remove('held');
     if(e.type==='pointerup'&&!h.used)trashTap();};
   ['pointerup','pointercancel','lostpointercapture'].forEach(ev=>clearBtn.addEventListener(ev,trashUp));
@@ -1470,6 +1481,11 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   // while recording, clearing leaves an empty sequence to keep recording into
   function clearSequence(t){
     if(!t.seq)return;checkpoint();loadSeq(t,recOn?blankClip(t):null,recOn);
+  }
+  function removeEffect(t,k){
+    const c=t.seq;if(!c||!c.slots.some(s=>(s.fx||[]).some(f=>f.k===k)))return;checkpoint();
+    c.slots=c.slots.map(s=>(s.fx||[]).some(f=>f.k===k)?Object.assign({},s,{fx:s.fx.filter(f=>f.k!==k)}):s);
+    seqEdited(t);
   }
   // an emptied step plays the loop's own slice for its position
   function clearSteps(t,idxs){
@@ -1560,11 +1576,12 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     playBtn.innerHTML=st.playing||intent?ICON.stop:ICON.play;playBtn.setAttribute('aria-label',st.playing||intent?'Stop':'Play');
     expBtn.innerHTML=ICON.share;clearBtn.innerHTML=ICON.trash;capBtn.innerHTML=ICON.capture;recBtn.innerHTML=ICON.rec;
     press(recBtn,recOn);recBtn.setAttribute('aria-label',recOn?'Record (on)':'Record');
-    capBtn.disabled=sessOn;press(loopBtn,clipLoop);
-    root.querySelectorAll('.fieldonly').forEach(n=>{n.hidden=sessOn;});root.querySelectorAll('.clipsonly').forEach(n=>{n.hidden=!sessOn;});
-    loopBtn.disabled=dupBtn.disabled=loadBtn.disabled=!clips.length;dupBtn.innerHTML=ICON.dup;projBtn.innerHTML=ICON.folder;
-    clearBtn.disabled=sessOn?!clips.length:!T().seq;
-    clearBtn.title=sessOn?'Hold and tap clips to delete them · tap: delete duplicates or all clips':'Tap: clear the sequence · hold and tap steps: empty just those';
+    capBtn.disabled=page!=='field';press(loopBtn,clipLoop);
+    root.querySelectorAll('.fieldonly').forEach(n=>{n.hidden=page!=='field';});root.querySelectorAll('.clipsonly').forEach(n=>{n.hidden=!sessOn;});
+    root.querySelectorAll('.projonly').forEach(n=>{n.hidden=!projOn;});
+    loopBtn.disabled=dupBtn.disabled=loadBtn.disabled=!clips.length;dupBtn.innerHTML=ICON.dup;projBtn.innerHTML=projOn?ICON.grid:ICON.folder;projBtn.setAttribute('aria-label',projOn?'Back to the field':'Projects');projBtn.title=projBtn.getAttribute('aria-label');
+    clearBtn.disabled=projOn?false:sessOn?!clips.length:!T().seq;
+    clearBtn.title=projOn?'Hold and tap a project or folder to delete it':sessOn?'Hold and tap clips to delete them · tap: delete every clip (Undo brings them back)':'Tap: clear the sequence · hold and tap steps: empty just those';
     const cmb=playMode==='combine';modeBtn.textContent=cmb?'COMBINE':'REPLACE';press(modeBtn,cmb);
     modeBtn.title=cmb?'Combine: every held effect plays on each step':'Replace: each step plays one touch and its effect';
     press(fxoBtn,fxOnly);fxoBtn.title=fxOnly?'FX only: slices come from the sequence or loop; touches only bring effects':'FX only is off: touched slices play';
@@ -1630,7 +1647,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     return h.base;
   }
   function storeDice(h,c){
-    const t=h.t;if(!h.cp){h.cp=true;checkpoint();}c.edited=true;
+    const t=h.t;if(!h.cp){h.cp=true;checkpoint();}c.edited=true;ensurePlaying();   // a roll starts playback
     if(t.seq&&t.seq.id===c.id){t.seq=c;tx({type:'clipEdit',tr:t.i,clip:clipForm(c)});}
     else loadSeq(t,c);
   }
@@ -1672,9 +1689,6 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   // the sequencer to edit. On the Clips page, tapping a clip selects it and plays the list from there (at
   // the next bar line if something is playing); the selection follows playback. LOOP repeats just the
   // selected clip; otherwise the list plays to its end and stops.
-  const fxKey=f=>f.k+(f.auto?f.auto.map(x=>x.toFixed(3)).join('/'):(+f.raw).toFixed(3));
-  const stepKey=s=>s.empty?(s.on===false?'e0':'e1'):(s.on===false?0:1)+':'+(+s.a).toFixed(3)+':'+(s.off||0)+':'+(+(s.slen||1)).toFixed(3)+':'+(s.fx||[]).map(fxKey).join(',');
-  const clipKey=k=>k.loop+'/'+k.cols+'/'+k.n+'/'+patNo(k.orderV)+'/'+patNo(k.muteV)+'/'+(k.silPat||'mute')+'|'+k.slots.map(stepKey).join('|');
   // a clip in engine form: its patterns, its SKIP/GAP mode and the key of its loop (sent to the engine first)
   function clipEngine(k,send){if(send!==false)engineLoop(k.loop);
     return {id:k.id,cols:k.cols,n:k.n,slots:k.slots,ord:ordOf(tr0(),k.orderV),mute:muteOf(tr0(),k.muteV),silPat:k.silPat||'mute',loop:k.loop};}
@@ -1747,7 +1761,6 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     if(clipLoop){songList=[selClip];tx({type:'song',rows:songRowsOf(songList),from:0,once:false});}
     else{songList=clips.slice();tx({type:'song',rows:songRowsOf(songList),from:clips.indexOf(selClip)+1,once:true});}
   });
-  const duplicatesOf=()=>{const seen=new Set();return clips.filter(k=>{const key=clipKey(k);if(seen.has(key))return true;seen.add(key);return false;});};
   function deleteClips(list){
     const gone=new Set(list.filter(k=>clips.includes(k)));if(!gone.size)return;checkpoint();
     if(selClip&&gone.has(selClip)){
@@ -1757,36 +1770,6 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     clips=clips.filter(k=>!gone.has(k));
     resyncSong();renderSession();paintIcons();
   }
-  // the trash tapped on its own on the Clips page: delete the duplicates (the first of each stays) or everything
-  function askDeleteAll(){
-    if(!clips.length)return;
-    openSheet('Delete clips',cardEl=>{
-      const dups=duplicatesOf();
-      const dd=el('button',{type:'button',textContent:dups.length?'Delete duplicates ('+dups.length+')':'No duplicates',disabled:!dups.length});
-      const go=el('button',{type:'button',className:'danger',textContent:'Delete all '+clips.length+(clips.length>1?' clips':' clip')}),no=el('button',{type:'button',textContent:'Cancel'});
-      dd.addEventListener('click',()=>{closeSheet();deleteClips(dups);});
-      go.addEventListener('click',()=>{closeSheet();deleteClips(clips.slice());});no.addEventListener('click',()=>closeSheet());
-      cardEl.appendChild(el('p',{},['Duplicates: clips identical to an earlier one (the first of each stays). Undo brings deleted clips back.']));
-      cardEl.appendChild(el('div',{className:'delall'},[dd,go,no]));
-    });
-  }
-  // Thumbnail: one mark per step at its slice's height; a step with several effects is split into one
-  // colour per effect (up to four).
-  function drawThumb(cv,clip,hue){
-    const w=cv.clientWidth||70,h=cv.clientHeight||44,d=Math.min(2,window.devicePixelRatio||1);
-    cv.width=Math.round(w*d);cv.height=Math.round(h*d);const x=cv.getContext('2d');x.scale(d,d);
-    x.fillStyle=`hsl(${hue} 30% 14%)`;x.fillRect(0,0,w,h);
-    if(!clip)return;
-    const S=clip.slots,L=S.length,bw=w/L,top=6,hh=h-top-4,cfg=tracks[0].cfg;
-    S.forEach((s,i)=>{
-      const a=s.empty?(i%clip.n)*16/clip.cols:s.a,y=top+(1-(a+0.5)/16)*hh,fx=(s.fx||[]).slice(0,4);
-      x.globalAlpha=s.on===false?0.18:s.empty?0.35:1;
-      const x0=i*bw+0.5,ww=Math.max(1,bw-1.5);
-      if(!fx.length){x.fillStyle=`hsl(${hue} 60% 70%)`;x.fillRect(x0,y-1.5,ww,3);return;}
-      const sw=ww/fx.length;fx.forEach((f,j)=>{x.fillStyle=`hsl(${(cfg[f.k]||{}).hue} 75% 60%)`;x.fillRect(x0+j*sw,y-2,Math.max(1,sw-(j<fx.length-1?0.5:0)),4);});
-    });
-    x.globalAlpha=1;
-  }
   let sessBusy=0,sessDirty=false;
   const busy=on=>{sessBusy+=on?1:-1;if(sessBusy<0)sessBusy=0;if(!sessBusy&&sessDirty){sessDirty=false;renderSession();}};
   function paintTakesHead(){
@@ -1795,12 +1778,12 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   }
   // A clip held down can be deleted by tapping the trash; with the trash held, tapping a clip deletes it.
   // A tap (released without either) selects the clip and plays from it.
-  const clipHolds=new Map();
+  const clipHolds=new Map(),clipCvs=new Map();   // clipCvs: each row's canvas, so the playing clip can light its step
   function takeRow(k,i){
     const row=el('div',{className:'take'});row.dataset.i=i;
     const hdl=el('div',{className:'hdl',title:'Drag to move this clip'});hdl.innerHTML=ICON.handle;rowMover(hdl,k);
     const th=el('button',{type:'button',className:'th',title:'Play from clip '+k.num+' · '+loopName(k.loop)});const cv=el('canvas');
-    th.appendChild(cv);th.appendChild(el('span',{textContent:String(k.num)+(k.loop!==T().kind?' · '+loopName(k.loop):'')}));
+    cv.style.height=((k.n>8?2:1)*LROW+4)+'px';th.appendChild(cv);clipCvs.set(k.id,cv);
     th.addEventListener('pointerdown',e=>{
       if(trashHeld){trashHeld.used=true;deleteClips([k]);return;}
       clipHolds.set(e.pointerId,{k,used:false,row});row.classList.add('held');
@@ -1810,7 +1793,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     ['pointerup','pointercancel','pointerleave'].forEach(ev=>th.addEventListener(ev,up));
     th.addEventListener('click',e=>{if(e.detail===0){initAudio();playClips(k);}});   // keyboard
     row.append(hdl,th);
-    requestAnimationFrame(()=>drawThumb(cv,k,TRACK_HUES[0]));
+    requestAnimationFrame(()=>drawClipLane(cv,k,-1));
     return row;
   }
   // Lightweight refresh: only classes change, so a drag in progress is never rebuilt away.
@@ -1823,7 +1806,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   function renderSession(){
     if(!sessOn)return;
     if(sessBusy){sessDirty=true;return;}
-    paintTakesHead();takeList.textContent='';clipHolds.clear();
+    paintTakesHead();takeList.textContent='';clipHolds.clear();clipCvs.clear();
     if(!clips.length){takeList.appendChild(el('p',{className:'takes-empty',textContent:'Nothing captured yet. On the field page, press Capture (right of the tools, under this button) to save the sequence as it is now. Clips are added here in order.'}));return;}
     clips.forEach((k,i)=>takeList.appendChild(takeRow(k,i)));
     updateSession();
@@ -1855,29 +1838,33 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     node.addEventListener('pointerup',end);node.addEventListener('pointercancel',end);
     node.addEventListener('lostpointercapture',e=>{if(s0&&e.pointerId===s0.id&&!s0.drag){s0=null;busy(false);}});
   }
-  // Switching pages. Back on the field page without Load, the sequencer's own sequence plays again (from
+  // Switching pages. Leaving the Clips page without Load, the sequencer's own sequence plays again (from
   // the next bar line if the list was playing).
-  function showClips(on){
-    if(on===sessOn)return;
-    sessOn=on;sessEl.hidden=!on;wrap.hidden=on;laneCv.hidden=on;
-    for(const id of [...special.keys(),...ptrs.keys()])end({pointerId:id});laneHolds.clear();laneHold=null;
-    if(on){if(!selClip&&clips.length)selClip=clips[clips.length-1];renderSession();
-      const r=takeList.querySelector('.take.sel');if(r)r.scrollIntoView({block:'nearest'});else sessScroll.scrollTop=sessScroll.scrollHeight;}
-    else{
+  function showPage(p){
+    if(p===page)return;const from=page;
+    for(const id of [...special.keys(),...ptrs.keys()])end({pointerId:id});laneHolds.clear();laneHold=null;clipHolds.clear();projHolds.clear();
+    page=p;sessOn=p==='clips';projOn=p==='proj';
+    sessEl.hidden=!sessOn;projEl.hidden=!projOn;wrap.hidden=p!=='field';laneCv.hidden=p!=='field';
+    if(from==='clips'){
       if(songPlaying){songPlaying=false;songList=[];tx({type:'songStop'});}
       const t=T(),f=info(t.i),id=t.seq?t.seq.id:null;
       if(f.clipId!==id||f.clipQ!==undefined)tx({type:'launch',tr:t.i,clip:t.seq?clipForm(t.seq):null});
-      sendRec();requestAnimationFrame(resize);
+      sendRec();
     }
+    if(sessOn){if(!selClip&&clips.length)selClip=clips[clips.length-1];renderSession();
+      const r=takeList.querySelector('.take.sel');if(r)r.scrollIntoView({block:'nearest'});else sessScroll.scrollTop=sessScroll.scrollHeight;}
+    if(projOn){renderProjects();refreshLib().then(renderProjects);}
+    if(p==='field')requestAnimationFrame(resize);
     paintIcons();
   }
-  sessBtn.addEventListener('click',()=>showClips(!sessOn));
+  const showClips=on=>showPage(on?'clips':'field');
+  sessBtn.addEventListener('click',()=>showPage(sessOn?'field':'clips'));
 
   let sessKey='';
   function onStatus(m){
     gotStatus=true;m.recv=performance.now();const was=st.playing;st=m;
     if(was!==m.playing){if(!m.playing){intent=null;songEnded();}paintIcons();}
-    clearBtn.disabled=sessOn?!clips.length:!T().seq;paintUndo();
+    clearBtn.disabled=projOn?false:sessOn?!clips.length:!T().seq;paintUndo();
     if(sessOn){const k=(m.song?m.song.idx:-1)+'|'+m.playing+'|'+(selClip?selClip.id:'');if(k!==sessKey){sessKey=k;updateSession();}}
     const lr=laneInfo().rows;if(lr!==laneRows)computeLayout();
   }
@@ -1902,10 +1889,12 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     bpmEl.querySelector('b').textContent='124';swingEl.querySelector('b').textContent='50';
     files.clear();soundSel.querySelectorAll('option[value^="f:"]').forEach(o=>o.remove());sentLoops.clear();
     soundSel.value='break';
-    if(sessOn){sessOn=false;sessEl.hidden=true;wrap.hidden=false;laneCv.hidden=false;clipHolds.clear();}
+    if(page!=='field'){page='field';sessOn=projOn=false;sessEl.hidden=true;projEl.hidden=true;wrap.hidden=false;laneCv.hidden=false;clipHolds.clear();}
+    cur={id:null,name:'',folder:''};
     computeLayout();
     sheet.hidden=true;paintIcons();requestAnimationFrame(resize);
     (function pre(){let n=0;const nx=()=>{if(n>=tracks.length)return;const t=tracks[n++];if(!t.buf){t.buf=buildLoop(t,48000);t.pk=peaks(t.buf);}setTimeout(nx,10);};setTimeout(nx,0);})();
+    savedSig=projSig();
   }
 
   // ---------- sheets ----------
@@ -2203,7 +2192,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     t.kind=q.kind&&(!q.kind.startsWith('f:')||files.has(q.kind.slice(2)))?q.kind:'break';
     t.cols=q.cols===8?8:16;t.colsQ=0;t.len16=clamp(q.len16||16,1,16);
     // effects added since the project was saved get their defaults, and a row
-    t.cfg=Object.assign(defCfg(),q.cfg||{});t.rows=(q.rows||[]).filter(r=>r==='center'||FX[r]);
+    t.cfg=defCfg();for(const k in q.cfg||{}){const c=q.cfg[k];if(FX[k]&&c&&c.x&&Object.keys(FX[k].params).every(n=>n in c.x))t.cfg[k]=c;}t.rows=(q.rows||[]).filter(r=>r==='center'||FX[r]);
     for(const r of newTrack(0,'break').rows)if(!t.rows.includes(r))t.rows.push(r);
     t.loopSet=Object.assign({orderV:1,muteV:1,silPat:'mute'},q.loopSet||{});
     t.seq=q.seq?clipForm(Object.assign({},q.seq)):null;
@@ -2237,24 +2226,198 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     }
     return JSON.parse(new TextDecoder().decode(u));
   }
-  let projStatus=null;
-  projIn.addEventListener('change',async()=>{
-    const f=projIn.files&&projIn.files[0];projIn.value='';if(!f)return;const say=projStatus||(()=>{});
-    try{await openProject(readProjectFile(await f.arrayBuffer()));say('Opened '+f.name);closeSheet();}
-    catch(err){say('Could not open '+f.name+': '+err.message);}
+  // ---------- project library ----------
+  // Projects are kept in a library with folders (nested, as paths like "Beats/Drafts"). Inside claude.ai
+  // the library lives in this artifact's database, in the viewer's own private space; elsewhere in this
+  // browser's IndexedDB. Both keep the same records: a small meta record per project (listed), its state
+  // (split into chunks under 200 kB, since a project with imported audio can be megabytes), and one record
+  // holding the folder list (so empty folders survive).
+  const CHUNK=200000;
+  function dbLib(db,uid){
+    const col=db.collection('data/users/'+uid),one=async f=>{try{return await f();}catch(e){if(e&&e.code==='unavailable'){await new Promise(r=>setTimeout(r,400+Math.random()*400));return f();}throw e;}};
+    return {
+      where:'your Claude library',
+      async list(){const q=await one(()=>col.where('kind','==','project').get());return q.docs.map(d=>d.data());},
+      async folders(){const d=await one(()=>col.doc('folders').get());return d.exists?(d.data().list||[]):[];},
+      async setFolders(list){await one(()=>col.doc('folders').set({kind:'folders',list}));},
+      async load(id){const m=await one(()=>col.doc('p_'+id).get());if(!m.exists)throw new Error('missing');let s='';
+        for(let i=0;i<m.data().chunks;i++){const c=await one(()=>col.doc('p_'+id+'_'+i).get());s+=c.exists?c.data().d:'';}return JSON.parse(s);},
+      async save(meta,json){const old=await one(()=>col.doc('p_'+meta.id).get()),n=Math.max(1,Math.ceil(json.length/CHUNK));
+        for(let i=0;i<n;i++){const d=json.slice(i*CHUNK,(i+1)*CHUNK);await one(()=>col.doc('p_'+meta.id+'_'+i).set({kind:'chunk',d}));}
+        await one(()=>col.doc('p_'+meta.id).set(Object.assign({kind:'project',chunks:n},meta)));
+        const was=old.exists?old.data().chunks||0:0;for(let i=n;i<was;i++)await one(()=>col.doc('p_'+meta.id+'_'+i).delete());},
+      async meta(meta){await one(()=>col.doc('p_'+meta.id).update(meta));},
+      async remove(id){const m=await one(()=>col.doc('p_'+id).get());const n=m.exists?m.data().chunks||0:0;
+        await one(()=>col.doc('p_'+id).delete());for(let i=0;i<n;i++)await one(()=>col.doc('p_'+id+'_'+i).delete());},
+    };
+  }
+  function idbLib(){
+    let dbp=null;
+    const open=()=>dbp||(dbp=new Promise((res,rej)=>{const r=indexedDB.open('slicefield',1);r.onupgradeneeded=()=>r.result.createObjectStore('kv');r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);}));
+    const run=async(mode,f)=>{const d=await open();return new Promise((res,rej)=>{const tr=d.transaction('kv',mode),st=tr.objectStore('kv'),q=f(st);tr.oncomplete=()=>res(q&&q.result);tr.onerror=()=>rej(tr.error);});};
+    return {
+      where:'this browser',
+      async list(){const all=await run('readonly',st=>st.getAll());return (all||[]).filter(x=>x&&x.kind==='project');},
+      async folders(){const f=await run('readonly',st=>st.get('folders'));return f?f.list:[];},
+      async setFolders(list){await run('readwrite',st=>st.put({kind:'folders',list},'folders'));},
+      async load(id){const s=await run('readonly',st=>st.get('d_'+id));if(!s)throw new Error('missing');return JSON.parse(s.json);},
+      async save(meta,json){await run('readwrite',st=>{st.put({kind:'data',json},'d_'+meta.id);st.put(Object.assign({kind:'project'},meta),'p_'+meta.id);});},
+      async meta(meta){const m=await run('readonly',st=>st.get('p_'+meta.id));if(m)await run('readwrite',st=>st.put(Object.assign(m,meta),'p_'+meta.id));},
+      async remove(id){await run('readwrite',st=>{st.delete('p_'+id);st.delete('d_'+id);});},
+    };
+  }
+  let libP=null;
+  function library(){
+    if(!libP)libP=(async()=>{
+      try{if(window.claude&&window.claude.use){const db=await window.claude.use('db'),u=await window.claude.use('user'),uid=u&&await u.id();if(db&&uid)return dbLib(db,uid);}}catch(_){}
+      if(window.indexedDB)return idbLib();
+      return null;
+    })();
+    return libP;
+  }
+
+  // ---------- projects page ----------
+  // The project open now (id null until first saved), the folder being looked at, and what the library holds.
+  // A project is saved when you press SAVE, and automatically before another one is opened or a new one is
+  // started (if it changed), and when the page is hidden.
+  const projEl=$('projects'),projList=$('projlist'),projScroll=$('projScroll'),crumbsEl=$('crumbs'),projName=$('projname'),projStateEl=$('projstate'),projMsg=$('projmsg');
+  const newFolderBtn=$('newfolder'),saveProjBtn=$('saveproj'),newProjBtn=$('newproj');
+  let cur={id:null,name:'',folder:''},browse='',libItems=[],libFolders=[],savedSig='',libBusy=false;
+  const projHolds=new Map();
+  // what a project's content is, to tell whether it changed since it was saved (imported audio by id only)
+  const projSig=()=>{const p=projectState();p.files=p.files.map(f=>f.id);return JSON.stringify(p);};
+  const isDirty=()=>projSig()!==savedSig;
+  savedSig=projSig();
+  const newProjId=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+  function say(text,undo){
+    projMsg.textContent='';projMsg.appendChild(el('span',{textContent:text}));
+    if(undo){const b=el('button',{type:'button',textContent:'Undo'});b.addEventListener('click',()=>{projMsg.hidden=true;undo();});projMsg.appendChild(b);}
+    projMsg.hidden=false;clearTimeout(say.t);say.t=setTimeout(()=>{projMsg.hidden=true;},undo?7000:3500);
+  }
+  async function refreshLib(){
+    const L=await library();if(!L){libItems=[];libFolders=[];return;}
+    try{libItems=await L.list();libFolders=await L.folders();}catch(e){say('The library could not be read ('+(e&&(e.code||e.message))+')');}
+  }
+  function untitled(){let n=1;const names=new Set(libItems.map(x=>x.name));while(names.has('Untitled '+n))n++;return 'Untitled '+n;}
+  async function saveCurrent(quiet){
+    const L=await library();if(!L){say('No library here: use Save to file');return false;}
+    if(!cur.id){cur.id=newProjId();cur.folder=browse;if(!cur.name)cur.name=projName.value.trim()||untitled();}
+    const st=projectState(),json=JSON.stringify(st);
+    const meta={id:cur.id,name:cur.name,folder:cur.folder,updated:Date.now(),clips:clips.length,loop:loopName(T().kind),bpm};
+    try{libBusy=true;paintProjState('Saving…');await L.save(meta,json);savedSig=projSig();
+      const i=libItems.findIndex(x=>x.id===meta.id);if(i>=0)libItems[i]=Object.assign({},libItems[i],meta);else libItems.push(meta);
+      if(!quiet)say('Saved '+cur.name);return true;}
+    catch(e){say('Not saved: '+(e&&e.code==='quota_exceeded'?'the library is full; delete some projects':(e&&(e.code||e.message))));return false;}
+    finally{libBusy=false;renderProjects();}
+  }
+  // before leaving the current project: keep it if it changed (a new, untouched project is not kept)
+  async function keepCurrent(){if(isDirty())return saveCurrent(true);return true;}
+  async function openFromLibrary(m){
+    if(m.id===cur.id)return;
+    if(!(await keepCurrent()))return;
+    const L=await library();
+    try{const p=await L.load(m.id);await openProject(p);cur={id:m.id,name:m.name,folder:m.folder||''};savedSig=projSig();say('Opened '+m.name);}
+    catch(e){say('Could not open '+m.name+': '+(e&&(e.code||e.message)));}
+    renderProjects();
+  }
+  newProjBtn.addEventListener('click',async()=>{
+    if(!(await keepCurrent()))return;
+    await openProject({app:'slicefield',track:{}});cur={id:null,name:'',folder:browse};savedSig=projSig();renderProjects();say('New project');
   });
-  projBtn.addEventListener('click',()=>openSheet('Project',cardEl=>{
-    const msg=el('p',{className:'expmsg'}),status=x=>{msg.textContent=x;};projStatus=status;
-    const sv=el('button',{type:'button',textContent:'Save project'}),op=el('button',{type:'button',textContent:'Open project…'}),nw=el('button',{type:'button',className:'danger',textContent:'New project'});
-    sv.addEventListener('click',()=>{status('Saving…');saveProject(status);});
-    op.addEventListener('click',()=>{initAudio();projIn.click();});
-    let arm=0;nw.addEventListener('click',()=>{
-      if(!arm){arm=setTimeout(()=>{arm=0;nw.textContent='New project';},2500);nw.textContent='Tap again: start over';return;}
-      clearTimeout(arm);arm=0;hardReset();});
-    cardEl.appendChild(el('div',{className:'projrow'},[sv,op,nw]));
-    cardEl.appendChild(el('p',{},['Saves everything: tempo, swing, modes, the loop (your imported audio too), effect settings, the sequence and every clip. Open a saved project (.json, or the .zip this page saves inside Claude) to carry on. New project starts over; save first to keep this one.']));
-    cardEl.appendChild(msg);
-  }));
+  saveProjBtn.addEventListener('click',()=>saveCurrent(false));
+  projName.addEventListener('change',async()=>{
+    cur.name=projName.value.trim()||cur.name;projName.value=cur.name;
+    if(cur.id){const L=await library();try{await L.meta({id:cur.id,name:cur.name});const m=libItems.find(x=>x.id===cur.id);if(m)m.name=cur.name;}catch(_){}renderProjects();}
+  });
+  // a new folder inside the one being looked at: name it in place
+  newFolderBtn.addEventListener('click',()=>{
+    if(projList.querySelector('.ni'))return;
+    const row=el('div',{className:'prow folder'}),inp=el('input',{className:'ni',type:'text',maxLength:30,placeholder:'Folder name'});
+    const box=el('div',{className:'pb'});box.innerHTML=ICON.folder;box.appendChild(inp);row.append(el('div'),box);projList.prepend(row);inp.focus();
+    let fin=false;   // Enter and losing focus both finish it, once
+    const done=async ok=>{if(fin)return;fin=true;const nm=inp.value.replace(/\//g,' ').trim();row.remove();if(!ok||!nm)return;
+      const path=(browse?browse+'/':'')+nm;if(!libFolders.includes(path)){libFolders.push(path);const L=await library();try{await L.setFolders(libFolders);}catch(_){}}
+      renderProjects();};
+    inp.addEventListener('keydown',e=>{if(e.key==='Enter')done(true);if(e.key==='Escape')done(false);});inp.addEventListener('blur',()=>done(true));
+  });
+  // folders that exist: named ones and every folder a project sits in, with their parents
+  function allFolders(){const s=new Set();const add=p=>{while(p){s.add(p);p=p.includes('/')?p.slice(0,p.lastIndexOf('/')):'';}};
+    libFolders.forEach(add);libItems.forEach(x=>add(x.folder||''));return [...s];}
+  const childFolders=f=>allFolders().filter(p=>(f?p.startsWith(f+'/'):true)&&!p.slice(f?f.length+1:0).includes('/')&&p!==f).sort();
+  const inFolder=f=>libItems.filter(x=>(x.folder||'')===f).sort((a,b)=>b.updated-a.updated);
+  const under=f=>libItems.filter(x=>(x.folder||'')===f||(x.folder||'').startsWith(f+'/'));
+  const fmtDate=t=>{const d=new Date(t);return d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+' '+d.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'});};
+  function paintProjState(x){projStateEl.textContent=x!=null?x:!cur.id?'not saved yet':isDirty()?'changed':'saved';}
+  function renderProjects(){
+    if(!projOn)return;
+    if(document.activeElement!==projName&&root.activeElement!==projName)projName.value=cur.name;projName.placeholder=cur.id?'':'Untitled';
+    paintProjState(libBusy?'Saving…':null);
+    crumbsEl.textContent='';const parts=browse?browse.split('/'):[];
+    const crumb=(label,path)=>{const b=el('button',{type:'button',textContent:label,className:path===browse?'cur':''});b.dataset.folder=path;b.addEventListener('click',()=>{browse=path;renderProjects();});return b;};
+    crumbsEl.appendChild(crumb('Projects',''));parts.forEach((p,i)=>{crumbsEl.appendChild(document.createTextNode('›'));crumbsEl.appendChild(crumb(p,parts.slice(0,i+1).join('/')));});
+    projList.textContent='';projHolds.clear();
+    const folders=childFolders(browse),items=inFolder(browse);
+    for(const f of folders){
+      const row=el('div',{className:'prow folder'});row.dataset.folder=f;const b=el('button',{type:'button',className:'pb'});
+      const n=under(f).length;b.innerHTML=ICON.folder;b.appendChild(el('b',{textContent:f.slice(f.lastIndexOf('/')+1)}));b.appendChild(el('small',{textContent:n?n+(n>1?' projects':' project'):'empty'}));
+      holdable(b,row,{folder:f},()=>{browse=f;renderProjects();});row.append(el('div'),b);projList.appendChild(row);
+    }
+    for(const m of items){
+      const row=el('div',{className:'prow'+(m.id===cur.id?' cur':'')});const b=el('button',{type:'button',className:'pb'});
+      b.appendChild(el('b',{textContent:m.name}));b.appendChild(el('small',{textContent:fmtDate(m.updated)+' · '+(m.clips||0)+(m.clips===1?' clip':' clips')+(m.loop?' · '+m.loop:'')+(m.bpm?' · '+m.bpm+' BPM':'')}));
+      const hdl=el('div',{className:'hdl',title:'Drag onto a folder to move it'});hdl.innerHTML=ICON.handle;projMover(hdl,m);
+      holdable(b,row,{proj:m},()=>openFromLibrary(m));row.append(hdl,b);projList.appendChild(row);
+    }
+    if(!folders.length&&!items.length)projList.appendChild(el('p',{className:'projempty',textContent:browse?'This folder is empty. SAVE puts a new project here; drag projects onto a folder to move them.':
+      'No saved projects yet. Name this one above and press SAVE. Projects are kept in '+(libP?'the library':'your library')+'; Save to file makes a copy you can keep anywhere.'}));
+  }
+  // a row: tap to open; hold it and tap the trash, or hold the trash and tap it, to delete
+  function holdable(b,row,what,open){
+    b.addEventListener('pointerdown',e=>{if(trashHeld){trashHeld.used=true;deleteEntry(what);return;}projHolds.set(e.pointerId,{what,used:false,row});row.classList.add('held');});
+    const up=e=>{const h=projHolds.get(e.pointerId);if(!h)return;projHolds.delete(e.pointerId);row.classList.remove('held');if(e.type==='pointerup'&&!h.used)open();};
+    ['pointerup','pointercancel','pointerleave'].forEach(ev=>b.addEventListener(ev,up));
+    b.addEventListener('click',e=>{if(e.detail===0)open();});
+  }
+  // Deleting is immediate, with an Undo in the message for a few seconds (the data is held until then).
+  async function deleteEntry(what){
+    const L=await library();if(!L)return;
+    const gone=what.proj?[what.proj]:under(what.folder),folders=what.folder?allFolders().filter(p=>p===what.folder||p.startsWith(what.folder+'/')):[];
+    const kept=[];for(const m of gone){try{kept.push({m,p:await L.load(m.id)});}catch(_){}}
+    for(const m of gone){try{await L.remove(m.id);}catch(_){}}
+    libItems=libItems.filter(x=>!gone.includes(x));
+    if(folders.length){libFolders=libFolders.filter(p=>!folders.includes(p));try{await L.setFolders(libFolders);}catch(_){}}
+    if(gone.some(m=>m.id===cur.id)){cur.id=null;savedSig='';}   // the open project stays open, now unsaved
+    renderProjects();
+    const name=what.proj?what.proj.name:'folder '+what.folder.slice(what.folder.lastIndexOf('/')+1)+(gone.length?' and '+gone.length+(gone.length>1?' projects':' project'):'');
+    say('Deleted '+name,async()=>{for(const k of kept){await L.save(k.m,JSON.stringify(k.p));libItems.push(k.m);}
+      if(folders.length){libFolders=libFolders.concat(folders);await L.setFolders(libFolders);}renderProjects();});
+  }
+  // drag a project's handle onto a folder row (or a folder in the path above) to move it there
+  function projMover(node,m){
+    let s0=null;const target=(x,y)=>{const n=root.elementFromPoint(x,y);if(!n||!n.closest)return null;return n.closest('.prow.folder')||n.closest('.crumbs button');};
+    const clear=()=>root.querySelectorAll('.prow.drop,.crumbs button.drop').forEach(n=>n.classList.remove('drop'));
+    node.addEventListener('pointerdown',e=>{e.preventDefault();s0={y:e.clientY,id:e.pointerId,drag:false};try{node.setPointerCapture(e.pointerId);}catch(_){}});
+    node.addEventListener('pointermove',e=>{if(!s0||e.pointerId!==s0.id)return;
+      if(!s0.drag&&Math.abs(e.clientY-s0.y)>6){s0.drag=true;ghost.textContent=m.name.slice(0,10);ghost.hidden=false;}
+      if(s0.drag){ghost.style.left=e.clientX+'px';ghost.style.top=e.clientY+'px';clear();const t=target(e.clientX,e.clientY);if(t)t.classList.add('drop');}});
+    const end=async e=>{if(!s0||e.pointerId!==s0.id)return;const s=s0;s0=null;ghost.hidden=true;clear();if(!s.drag)return;
+      const t=target(e.clientX,e.clientY);if(!t)return;const f=t.dataset.folder;if(f==null||f===(m.folder||''))return;
+      const L=await library();try{await L.meta({id:m.id,folder:f});m.folder=f;if(m.id===cur.id)cur.folder=f;say('Moved '+m.name+' to '+(f||'Projects'));}catch(err){say('Not moved: '+(err&&(err.code||err.message)));}
+      renderProjects();};
+    node.addEventListener('pointerup',end);node.addEventListener('pointercancel',end);
+  }
+  $('tofile').addEventListener('click',()=>{say('Saving…');saveProject(say);});
+  $('fromfile').addEventListener('click',()=>{initAudio();projIn.click();});
+  projIn.addEventListener('change',async()=>{
+    const f=projIn.files&&projIn.files[0];projIn.value='';if(!f)return;
+    try{const p=readProjectFile(await f.arrayBuffer());if(!(await keepCurrent()))return;await openProject(p);
+      cur={id:null,name:f.name.replace(/\.(json|zip)$/i,'').replace(/^slicefield-/,'').slice(0,40),folder:browse};savedSig='';say('Opened '+f.name+' (not in the library until you SAVE)');}
+    catch(err){say('Could not open '+f.name+': '+err.message);}
+    renderProjects();
+  });
+  // the page being hidden (another app, a closed tab) keeps a saved project's latest changes
+  document.addEventListener('visibilitychange',()=>{if(document.hidden&&cur.id&&isDirty())saveCurrent(true);});
+  projBtn.addEventListener('click',()=>showPage(projOn?'field':'proj'));
 
   // ---------- undo / redo ----------
   // Every edit gesture saves a snapshot of the sequence, the plain loop's strips and the Clips list first
@@ -2314,6 +2477,40 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     if(silOf(t)!=='mute')return false;
     const b=EF.skipPattern(mV(t),barSteps(t));return !!b&&!b[idx%b.length];
   }
+  // the lane's label column: a clip number in the Capture icon's corner ticks (or SEQ / LIVE), and a note under it
+  function laneLabel(num,edited,word,on,sub,red,h,fs){
+    const col=on?`hsl(${TRACK_HUES[0]} 75% 62%)`:'#6c7380',cy=h/2-(sub?8:0);
+    g.textBaseline='middle';g.textAlign='center';g.fillStyle=col;
+    if(num){
+      const lab=String(num)+(edited?'*':'');g.font=`600 ${lab.length>3?fs-2:fs}px ${FONT}`;g.fillText(lab,LLAB/2,cy+0.5);
+      const bw=26,bh=20,x0=LLAB/2-bw/2,y0=cy-bh/2,k=5;g.strokeStyle=col;g.lineWidth=1.4;g.lineCap='round';g.beginPath();
+      for(const [x,y,dx,dy] of [[x0,y0,1,1],[x0+bw,y0,-1,1],[x0,y0+bh,1,-1],[x0+bw,y0+bh,-1,-1]]){g.moveTo(x+dx*k,y);g.lineTo(x,y);g.lineTo(x,y+dy*k);}
+      g.stroke();
+    }else{g.font=`600 ${fs}px ${FONT}`;g.fillText(word,LLAB/2,cy);}
+    if(sub){g.font=`${red?600:400} ${fs-2}px ${FONT}`;g.fillStyle=red?'#ff6b6b':'#8a8f99';g.fillText(sub,LLAB/2,h/2+12);}
+  }
+  // A clip drawn exactly as the sequencer shows it (without the rotate column); lit: the step playing.
+  function drawClipLane(cv,k,lit){
+    const W=cv.clientWidth||300,rows=k.n>8?2:1,pr=Math.ceil(k.n/rows),H=rows*LROW+4,d=Math.min(3,window.devicePixelRatio||1);
+    if(cv.width!==Math.round(W*d)||cv.height!==Math.round(H*d)){cv.width=Math.round(W*d);cv.height=Math.round(H*d);}
+    const keep=g;g=cv.getContext('2d');g.setTransform(d,0,0,d,0,0);g.clearRect(0,0,W,H);
+    if('letterSpacing' in g)g.letterSpacing='0.06em';
+    const t=T(),fs=10,bits=(k.silPat||'mute')==='mute'?EF.skipPattern(k.muteV,k.n):null;
+    g.fillStyle='#16181d';rr(0,0,W,H,7);g.fill();
+    const other=k.loop&&k.loop!==t.kind?loopName(k.loop).replace(/\s.*/,'').slice(0,5).toUpperCase():'';
+    laneLabel(k.num,false,'',true,other,false,H,fs);
+    const w=(W-LLAB-3)/pr;
+    for(let j=0;j<k.slots.length&&j<k.n;j++){const s=k.slots[j];
+      laneCell(t,s,LLAB+(j%pr)*w,4+Math.floor(j/pr)*LROW,w,LROW-5,j===lit,s.on===false||(!!bits&&!bits[j%bits.length]),fs,(s.off||0)>0,j*16/k.cols);}
+    g=keep;
+  }
+  let litClip=null;
+  function drawPlayingClip(){
+    const i=info(0),k=songPlaying&&st.playing?clips.find(c=>c.id===i.clipId):null,cv=k&&clipCvs.get(k.id),idx=cv?i.cIdx:-1,key=k?k.id+':'+idx:'';
+    if(key===litClip)return;
+    if(litClip){const [id]=litClip.split(':'),o=clips.find(c=>c.id===id),oc=o&&clipCvs.get(id);if(oc)drawClipLane(oc,o,-1);}
+    litClip=key;if(cv)drawClipLane(cv,k,idx);
+  }
   function drawLane(fs){
     const d=lanePageInfo(),t=d.t,i=info(view),h=laneRows*LROW+4;
     g.fillStyle='#16181d';rr(0,0,LW,h,7);g.fill();
@@ -2321,15 +2518,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     // LIVE: the plain loop as it plays. The clip's number, in the corner ticks of the Capture icon, when the
     // sequence came from (or was captured as) that clip, with a * once it has changed since; SEQ otherwise.
     // REC underneath while recording.
-    const col=d.clip?`hsl(${TRACK_HUES[view]} 75% 62%)`:'#6c7380',sub=recOn?'REC':d.pages>1?(d.page+1)+'/'+d.pages:'';
-    const cy=h/2-(sub?8:0);g.fillStyle=col;
-    if(d.clip&&d.clip.num){
-      const lab=String(d.clip.num)+(d.clip.edited?'*':'');g.font=`600 ${lab.length>3?fs-2:fs}px ${FONT}`;g.fillText(lab,LLAB/2,cy+0.5);
-      const bw=26,bh=20,x0=LLAB/2-bw/2,y0=cy-bh/2,k=5;g.strokeStyle=col;g.lineWidth=1.4;g.lineCap='round';g.beginPath();
-      for(const [x,y,dx,dy] of [[x0,y0,1,1],[x0+bw,y0,-1,1],[x0,y0+bh,1,-1],[x0+bw,y0+bh,-1,-1]]){g.moveTo(x+dx*k,y);g.lineTo(x,y);g.lineTo(x,y+dy*k);}
-      g.stroke();
-    }else{const lab=d.clip?'SEQ':'LIVE';g.fillText(lab,LLAB/2,cy);}
-    if(sub){g.font=`${recOn?600:400} ${fs-1}px ${FONT}`;g.fillStyle=recOn?'#ff6b6b':'#8a8f99';g.fillText(sub,LLAB/2,h/2+12);}
+    laneLabel(d.clip?d.clip.num:0,d.clip&&d.clip.edited,d.clip?'SEQ':'LIVE',!!d.clip,recOn?'REC':d.pages>1?(d.page+1)+'/'+d.pages:'',recOn,h,fs);
     // the rotate column: move the whole sequence one step left (upper half) or right (lower half)
     {const x0=LW-LROT+3,hh=(h-6)/2;
       for(const [y,dir] of [[3,-1],[3+hh+1,1]]){g.fillStyle='#1f2229';rr(x0,y,LROT-4,hh-1,5);g.fill();
@@ -2379,7 +2568,8 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   }
   function draw(){
     requestAnimationFrame(draw);
-    if(sessOn)return;
+    if(sessOn){drawPlayingClip();return;}
+    if(projOn)return;
     g=gridG;g.setTransform(dpr,0,0,dpr,0,0);g.fillStyle=BG;g.fillRect(0,0,cssW,cssH);
     if('letterSpacing' in g)g.letterSpacing='0.06em';
     const t=T(),i=info(view),cols=t.cols,cw=W()/cols,gap=3;

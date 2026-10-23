@@ -51,10 +51,12 @@ function engineFactory(){
       params:{send:{name:'Send',def:1,lab:pct},
               time:{name:'Time',def:(2+0.5)/6,lab:v=>DLAB[step(v,6)]},
               fb:{name:'Feedback',def:0.55,lab:pct}}},
-    // a send into a small feedback-delay-network reverb (four lines, Hadamard mixing, damped)
-    reverb:{name:'Reverb',hue:214,cells:['send'],
-      opts:{tails:{name:'Tails',def:'ring',choices:[['ring','Always ring out'],['cut','Cut at the next step without reverb']]}},
-      params:{send:{name:'Send',def:1,lab:pct},
+    // a small feedback-delay-network reverb (four lines, Hadamard mixing, damped): the step's dry level and
+    // how much of it goes into the reverb (wet); its tail is cut at the next step without reverb by default
+    reverb:{name:'Reverb',hue:214,cells:['wet'],
+      opts:{tails:{name:'Tails',def:'cut',choices:[['cut','Cut at the next step without reverb'],['ring','Always ring out']]}},
+      params:{wet:{name:'Wet',def:1,lab:pct},
+              dry:{name:'Dry',def:1,lab:pct},
               size:{name:'Size',def:0.5,lab:v=>rvSec(v).toFixed(1)+' s'},
               tone:{name:'Tone',def:0.6,lab:pct}}},
     filter:{name:'Filter',hue:40,cells:['cut'],
@@ -164,7 +166,7 @@ function engineFactory(){
       const rk=E.sr/48000;this.rvLen=RVL.map(x=>Math.round(x*rk));this.rvN=1<<Math.ceil(Math.log2(Math.max(...this.rvLen)+2));this.rvM=this.rvN-1;
       this.rvB=this.rvLen.map(()=>new Float32Array(this.rvN));this.rvLp=new Float64Array(4);this.rvG=new Float64Array(4);this.rvW=0;
       this.apLen=[Math.round(142*rk),Math.round(379*rk)];this.apB=this.apLen.map(n=>new Float32Array(n));this.apI=[0,0];
-      this.rSend=0;this.rWet=1;this.rDamp=0.5;this.rKey=-1;
+      this.rSend=0;this.rWet=1;this.rDry=1;this.rDamp=0.5;this.rKey=-1;
       // the loop this track plays: base (from 'load') unless the playing sequence names one of the engine's loops
       this.base=null;
       this.dSend=0;this.dTime=0;this.dFb=0.55;this.dTv=0;this.dlp1=0;this.dlp2=0;
@@ -518,6 +520,8 @@ function engineFactory(){
         // With tails set to cut, a step without the effect fades its echoes out in a few ms and stops
         // feeding them back, so the buffer empties and nothing old comes back with the next delayed step.
         const dry=ol+or;
+        let rv=null;for(let j=0;j<F.length;j++)if(F[j].k==='reverb'){rv=F[j].v;break;}
+        this.rDry+=((rv?rv.dry:1)-this.rDry)*0.004;ol*=this.rDry;or*=this.rDry;   // reverb's dry level: the step itself, before any echoes
         {let dv=null;for(let j=0;j<F.length;j++)if(F[j].k==='delay'){dv=F[j].v;break;}
           if(dv){this.dTv=len*DT[step(dv.time,6)]/16;this.dFb=Math.min(0.95,dv.fb);}
           this.dSend+=((dv&&this.gate?dv.send:0)-this.dSend)*0.004;
@@ -530,10 +534,9 @@ function engineFactory(){
             ol+=wl*this.dWet;or+=wr*this.dWet;
           }}
         // reverb send: a four-line feedback delay network after two diffusing allpasses
-        {let rv=null;for(let j=0;j<F.length;j++)if(F[j].k==='reverb'){rv=F[j].v;break;}
-          if(rv){const key=rv.size*1000+rv.tone;if(key!==this.rKey){this.rKey=key;const T60=rvSec(rv.size)*sr;
+        {if(rv){const key=rv.size*1000+rv.tone;if(key!==this.rKey){this.rKey=key;const T60=rvSec(rv.size)*sr;
             for(let q=0;q<4;q++)this.rvG[q]=Math.pow(10,-3*this.rvLen[q]/T60);this.rDamp=0.12+0.85*rv.tone;}}
-          this.rSend+=((rv&&this.gate?rv.send:0)-this.rSend)*0.004;
+          this.rSend+=((rv&&this.gate?rv.wet:0)-this.rSend)*0.004;
           const cut=!rv&&this.cfg.reverb.o.tails==='cut';this.rWet+=((cut?0:1)-this.rWet)*0.005;
           let x=dry*0.5*this.rSend;
           for(let q=0;q<2;q++){const b=this.apB[q],i=this.apI[q],d=b[i],y=d-0.6*x;b[i]=x+0.6*y;this.apI[q]=i+1>=b.length?0:i+1;x=y;}

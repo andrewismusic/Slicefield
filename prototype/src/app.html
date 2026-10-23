@@ -310,6 +310,43 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
 .takelist{position:relative}
 #loadclip{font-size:8px}
 .projrow{display:flex;flex-wrap:wrap;gap:8px}
+/* v21: clip rows drawn like the sequencer */
+.take{height:auto;align-items:stretch}
+.take .th{padding:0;background:transparent;border:1.5px solid transparent;border-radius:9px;height:auto}
+.take .th canvas{position:static;display:block;width:100%}
+.take.sel .th{border-color:#fff;box-shadow:none}
+.take.held .th{border-color:var(--rec);box-shadow:none}
+.take.now .th{border-color:var(--accent);box-shadow:none}
+.take.now.sel .th{border-color:#fff;box-shadow:0 0 0 1.5px var(--accent)}
+.take .th::after{display:none}
+/* Projects page */
+.projects{flex:1;min-height:0;display:flex;flex-direction:column;gap:6px}
+.projhead{display:flex;align-items:center;gap:8px}
+.projhead input{flex:1;min-width:0;height:32px;font:inherit;font-size:13px;font-weight:600;letter-spacing:.04em;color:var(--fg);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:0 9px}
+.projhead input:focus{outline:2px solid var(--accent);outline-offset:0}
+.projstate{font-size:10px;color:var(--dim);white-space:nowrap}
+.crumbs{display:flex;flex-wrap:wrap;align-items:center;gap:2px;font-size:11px;color:var(--dim);min-height:22px}
+.crumbs button{height:22px;padding:0 6px;font-size:11px;border:0;background:transparent;color:var(--dim)}
+.crumbs button.cur{color:var(--fg);font-weight:600}
+.crumbs button.drop{outline:2px dashed var(--accent)}
+.projlist{display:flex;flex-direction:column;gap:4px;padding:6px;position:relative}
+.prow{display:grid;grid-template-columns:26px minmax(0,1fr);gap:4px;min-height:46px}
+.prow .hdl{display:flex;align-items:center;justify-content:center;border-radius:6px;background:var(--panel);color:#6c7380;cursor:grab;touch-action:none}
+.prow .hdl svg{width:14px;height:14px}
+.prow .pb{height:auto;min-height:46px;display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:2px;text-align:left;padding:4px 10px;border-radius:8px}
+.prow .pb b{font-size:12px;font-weight:600}
+.prow .pb small{font-size:10px;color:var(--dim)}
+.prow.folder .pb{flex-direction:row;justify-content:flex-start;align-items:center;gap:8px;background:#1d2026}
+.prow.folder .pb svg{width:16px;height:16px;color:var(--accent)}
+.prow.cur .pb{border-color:var(--accent)}
+.prow.held .pb{border-color:var(--rec)}
+.prow.drop .pb{outline:2px dashed var(--accent);outline-offset:-2px}
+.prow .ni{flex:1;height:30px;font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--accent);border-radius:5px;padding:0 8px}
+.projfoot{display:flex;gap:8px;flex-wrap:wrap}
+.projfoot button{height:30px;font-size:11px}
+.projmsg{display:flex;align-items:center;gap:10px;padding:6px 10px;border-radius:8px;background:var(--raise);font-size:11px}
+.projmsg button{height:26px;font-size:11px}
+.projempty{color:var(--dim);line-height:1.6;padding:12px 8px}
 </style>
 
 <div class="app" id="app">
@@ -347,12 +384,22 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
       <button id="cliploop" class="tiny c23 clipsonly" aria-pressed="false" hidden title="Loop the selected clip">LOOP</button>
       <button id="dupclip" class="ic c4 clipsonly" hidden aria-label="Duplicate" title="Duplicate the selected clip"></button>
       <button id="loadclip" class="tiny c57 clipsonly" hidden title="Load the selected clip into the sequencer to edit it">LOAD TO<br>SEQUENCER</button>
+      <button id="newfolder" class="tiny c23 projonly" hidden title="Make a folder inside the one you are looking at">NEW<br>FOLDER</button>
+      <button id="saveproj" class="tiny c45 projonly" hidden title="Save this project">SAVE</button>
+      <button id="newproj" class="tiny c67 projonly" hidden title="Start a new project (this one is saved first if it changed)">NEW<br>PROJECT</button>
       <button id="capture" class="ic capbtn c8" aria-label="Capture" title="Capture: save the sequence as it is now to Clips"></button>
     </div>
     <canvas id="lane" class="lane" aria-label="Sequencer steps"></canvas>
   </div>
   <div class="main" id="mainpane">
     <div class="gridwrap" id="gridwrap"><canvas id="grid" aria-label="Performance strips and effect grid"></canvas></div>
+    <section class="projects" id="projects" hidden aria-label="Projects">
+      <div class="projhead"><input id="projname" type="text" maxlength="40" spellcheck="false" aria-label="Project name" placeholder="Untitled"><span id="projstate" class="projstate"></span></div>
+      <div class="crumbs" id="crumbs"></div>
+      <div class="sess-scroll" id="projScroll"><div class="projlist" id="projlist"></div></div>
+      <div class="projfoot"><button id="tofile" type="button">Save to file</button><button id="fromfile" type="button">Open file…</button></div>
+      <div class="projmsg" id="projmsg" hidden></div>
+    </section>
     <section class="session" id="session" hidden aria-label="Clips">
       <div class="takeshead" id="takeshead"></div>
       <div class="sess-scroll" id="sessScroll"><div class="takelist" id="takelist"></div></div>

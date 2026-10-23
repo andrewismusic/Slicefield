@@ -46,7 +46,8 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   // imported audio, by id: {id, name, L, R} at the file's own rate and level
   const files=new Map();
   const loopName=k=>k&&k.startsWith('f:')?(files.get(k.slice(2))||{}).name||'Your file':LOOP_NAMES[k]||k;
-  let bpm=124,swing=0,stepped=true,sessOn=false,playMode='replace',fxOnly=false;
+  // page: 'field', 'clips' or 'proj' (sessOn and projOn say which of the last two is showing)
+  let bpm=124,swing=0,stepped=true,sessOn=false,projOn=false,page='field',playMode='replace',fxOnly=false;
   // Clips: sequences saved with Capture, in list order. While any exist, one is selected.
   // songPlaying: the Clips list is playing (songList: the clips it was sent, in its order).
   // recOn: Record is on, so touches are written into the sequence (recBn: the bar of the last write).
@@ -364,6 +365,8 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     }
     if(h.handle){special.set(e.pointerId,{kind:'handle',id:h.id,y0:y,y,moved:false});return;}
     if(laneHold&&h.cell){special.set(e.pointerId,{kind:'assign'});assignStep(h);return;}
+    // FX ONLY with the trash held: tapping an effect row takes that effect off every step of the sequence
+    if(trashHeld&&fxOnly&&h.cell){trashHeld.used=true;special.set(e.pointerId,{kind:'assign'});if(h.fx!=='dry')removeEffect(t,h.fx);return;}
     const ptr={x,y,tr:view,col:-1,fx:null,raw:0,ri:-1,order:-1,ts:0,hid:null,live:false};ptrs.set(e.pointerId,ptr);
     checkBlocked();await ready;
     if(ptrs.get(e.pointerId)===ptr){ptr.live=true;update(ptr);}else ensurePlaying();
@@ -459,7 +462,8 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   // ---------- transport ----------
   async function togglePlay(){
     initAudio();checkBlocked();await ready;
-    if(st.playing||intent){intent=null;tx({type:'stop'});if(songPlaying)songEnded();paintIcons();updateSession();}
+    // Stop also turns Record off
+    if(st.playing||intent){intent=null;tx({type:'stop'});if(songPlaying)songEnded();if(recOn){recOn=false;recBn=-1;sendRec();}paintIcons();updateSession();}
     // on the Clips page, Play plays the list from the selected clip (with nothing captured it does nothing)
     else if(sessOn){if(selClip)playClips(selClip);}
     else{intent={type:'play'};tx(intent);paintIcons();}
@@ -513,8 +517,11 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     try{clearBtn.setPointerCapture(e.pointerId);}catch(_){}
     if(!sessOn&&laneHolds.size){trashHeld.used=true;clearSteps(T(),[...laneHolds.values()].map(h=>{h.used=true;return h.idx;}));}
     if(sessOn&&clipHolds.size){trashHeld.used=true;deleteClips([...clipHolds.values()].map(h=>{h.used=true;return h.k;}));}
+    if(projOn&&projHolds.size){trashHeld.used=true;for(const h of projHolds.values()){h.used=true;deleteEntry(h.what);}}
   });
-  const trashTap=()=>{if(sessOn)askDeleteAll();else clearSequence(T());};
+  // a tap on its own: the field's sequence is cleared; on the Clips page every clip goes at once (Undo
+  // brings them back); on the Projects page it does nothing
+  const trashTap=()=>{if(projOn)return;if(sessOn)deleteClips(clips.slice());else clearSequence(T());};
   const trashUp=e=>{const h=trashHeld;if(!h||h.id!==e.pointerId)return;trashHeld=null;clearBtn.classList.remove('held');
     if(e.type==='pointerup'&&!h.used)trashTap();};
   ['pointerup','pointercancel','lostpointercapture'].forEach(ev=>clearBtn.addEventListener(ev,trashUp));
@@ -522,6 +529,11 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   // while recording, clearing leaves an empty sequence to keep recording into
   function clearSequence(t){
     if(!t.seq)return;checkpoint();loadSeq(t,recOn?blankClip(t):null,recOn);
+  }
+  function removeEffect(t,k){
+    const c=t.seq;if(!c||!c.slots.some(s=>(s.fx||[]).some(f=>f.k===k)))return;checkpoint();
+    c.slots=c.slots.map(s=>(s.fx||[]).some(f=>f.k===k)?Object.assign({},s,{fx:s.fx.filter(f=>f.k!==k)}):s);
+    seqEdited(t);
   }
   // an emptied step plays the loop's own slice for its position
   function clearSteps(t,idxs){
@@ -612,11 +624,12 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     playBtn.innerHTML=st.playing||intent?ICON.stop:ICON.play;playBtn.setAttribute('aria-label',st.playing||intent?'Stop':'Play');
     expBtn.innerHTML=ICON.share;clearBtn.innerHTML=ICON.trash;capBtn.innerHTML=ICON.capture;recBtn.innerHTML=ICON.rec;
     press(recBtn,recOn);recBtn.setAttribute('aria-label',recOn?'Record (on)':'Record');
-    capBtn.disabled=sessOn;press(loopBtn,clipLoop);
-    root.querySelectorAll('.fieldonly').forEach(n=>{n.hidden=sessOn;});root.querySelectorAll('.clipsonly').forEach(n=>{n.hidden=!sessOn;});
-    loopBtn.disabled=dupBtn.disabled=loadBtn.disabled=!clips.length;dupBtn.innerHTML=ICON.dup;projBtn.innerHTML=ICON.folder;
-    clearBtn.disabled=sessOn?!clips.length:!T().seq;
-    clearBtn.title=sessOn?'Hold and tap clips to delete them · tap: delete duplicates or all clips':'Tap: clear the sequence · hold and tap steps: empty just those';
+    capBtn.disabled=page!=='field';press(loopBtn,clipLoop);
+    root.querySelectorAll('.fieldonly').forEach(n=>{n.hidden=page!=='field';});root.querySelectorAll('.clipsonly').forEach(n=>{n.hidden=!sessOn;});
+    root.querySelectorAll('.projonly').forEach(n=>{n.hidden=!projOn;});
+    loopBtn.disabled=dupBtn.disabled=loadBtn.disabled=!clips.length;dupBtn.innerHTML=ICON.dup;projBtn.innerHTML=projOn?ICON.grid:ICON.folder;projBtn.setAttribute('aria-label',projOn?'Back to the field':'Projects');projBtn.title=projBtn.getAttribute('aria-label');
+    clearBtn.disabled=projOn?false:sessOn?!clips.length:!T().seq;
+    clearBtn.title=projOn?'Hold and tap a project or folder to delete it':sessOn?'Hold and tap clips to delete them · tap: delete every clip (Undo brings them back)':'Tap: clear the sequence · hold and tap steps: empty just those';
     const cmb=playMode==='combine';modeBtn.textContent=cmb?'COMBINE':'REPLACE';press(modeBtn,cmb);
     modeBtn.title=cmb?'Combine: every held effect plays on each step':'Replace: each step plays one touch and its effect';
     press(fxoBtn,fxOnly);fxoBtn.title=fxOnly?'FX only: slices come from the sequence or loop; touches only bring effects':'FX only is off: touched slices play';
@@ -682,7 +695,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     return h.base;
   }
   function storeDice(h,c){
-    const t=h.t;if(!h.cp){h.cp=true;checkpoint();}c.edited=true;
+    const t=h.t;if(!h.cp){h.cp=true;checkpoint();}c.edited=true;ensurePlaying();   // a roll starts playback
     if(t.seq&&t.seq.id===c.id){t.seq=c;tx({type:'clipEdit',tr:t.i,clip:clipForm(c)});}
     else loadSeq(t,c);
   }
@@ -724,9 +737,6 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   // the sequencer to edit. On the Clips page, tapping a clip selects it and plays the list from there (at
   // the next bar line if something is playing); the selection follows playback. LOOP repeats just the
   // selected clip; otherwise the list plays to its end and stops.
-  const fxKey=f=>f.k+(f.auto?f.auto.map(x=>x.toFixed(3)).join('/'):(+f.raw).toFixed(3));
-  const stepKey=s=>s.empty?(s.on===false?'e0':'e1'):(s.on===false?0:1)+':'+(+s.a).toFixed(3)+':'+(s.off||0)+':'+(+(s.slen||1)).toFixed(3)+':'+(s.fx||[]).map(fxKey).join(',');
-  const clipKey=k=>k.loop+'/'+k.cols+'/'+k.n+'/'+patNo(k.orderV)+'/'+patNo(k.muteV)+'/'+(k.silPat||'mute')+'|'+k.slots.map(stepKey).join('|');
   // a clip in engine form: its patterns, its SKIP/GAP mode and the key of its loop (sent to the engine first)
   function clipEngine(k,send){if(send!==false)engineLoop(k.loop);
     return {id:k.id,cols:k.cols,n:k.n,slots:k.slots,ord:ordOf(tr0(),k.orderV),mute:muteOf(tr0(),k.muteV),silPat:k.silPat||'mute',loop:k.loop};}
@@ -799,7 +809,6 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     if(clipLoop){songList=[selClip];tx({type:'song',rows:songRowsOf(songList),from:0,once:false});}
     else{songList=clips.slice();tx({type:'song',rows:songRowsOf(songList),from:clips.indexOf(selClip)+1,once:true});}
   });
-  const duplicatesOf=()=>{const seen=new Set();return clips.filter(k=>{const key=clipKey(k);if(seen.has(key))return true;seen.add(key);return false;});};
   function deleteClips(list){
     const gone=new Set(list.filter(k=>clips.includes(k)));if(!gone.size)return;checkpoint();
     if(selClip&&gone.has(selClip)){
@@ -809,36 +818,6 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     clips=clips.filter(k=>!gone.has(k));
     resyncSong();renderSession();paintIcons();
   }
-  // the trash tapped on its own on the Clips page: delete the duplicates (the first of each stays) or everything
-  function askDeleteAll(){
-    if(!clips.length)return;
-    openSheet('Delete clips',cardEl=>{
-      const dups=duplicatesOf();
-      const dd=el('button',{type:'button',textContent:dups.length?'Delete duplicates ('+dups.length+')':'No duplicates',disabled:!dups.length});
-      const go=el('button',{type:'button',className:'danger',textContent:'Delete all '+clips.length+(clips.length>1?' clips':' clip')}),no=el('button',{type:'button',textContent:'Cancel'});
-      dd.addEventListener('click',()=>{closeSheet();deleteClips(dups);});
-      go.addEventListener('click',()=>{closeSheet();deleteClips(clips.slice());});no.addEventListener('click',()=>closeSheet());
-      cardEl.appendChild(el('p',{},['Duplicates: clips identical to an earlier one (the first of each stays). Undo brings deleted clips back.']));
-      cardEl.appendChild(el('div',{className:'delall'},[dd,go,no]));
-    });
-  }
-  // Thumbnail: one mark per step at its slice's height; a step with several effects is split into one
-  // colour per effect (up to four).
-  function drawThumb(cv,clip,hue){
-    const w=cv.clientWidth||70,h=cv.clientHeight||44,d=Math.min(2,window.devicePixelRatio||1);
-    cv.width=Math.round(w*d);cv.height=Math.round(h*d);const x=cv.getContext('2d');x.scale(d,d);
-    x.fillStyle=`hsl(${hue} 30% 14%)`;x.fillRect(0,0,w,h);
-    if(!clip)return;
-    const S=clip.slots,L=S.length,bw=w/L,top=6,hh=h-top-4,cfg=tracks[0].cfg;
-    S.forEach((s,i)=>{
-      const a=s.empty?(i%clip.n)*16/clip.cols:s.a,y=top+(1-(a+0.5)/16)*hh,fx=(s.fx||[]).slice(0,4);
-      x.globalAlpha=s.on===false?0.18:s.empty?0.35:1;
-      const x0=i*bw+0.5,ww=Math.max(1,bw-1.5);
-      if(!fx.length){x.fillStyle=`hsl(${hue} 60% 70%)`;x.fillRect(x0,y-1.5,ww,3);return;}
-      const sw=ww/fx.length;fx.forEach((f,j)=>{x.fillStyle=`hsl(${(cfg[f.k]||{}).hue} 75% 60%)`;x.fillRect(x0+j*sw,y-2,Math.max(1,sw-(j<fx.length-1?0.5:0)),4);});
-    });
-    x.globalAlpha=1;
-  }
   let sessBusy=0,sessDirty=false;
   const busy=on=>{sessBusy+=on?1:-1;if(sessBusy<0)sessBusy=0;if(!sessBusy&&sessDirty){sessDirty=false;renderSession();}};
   function paintTakesHead(){
@@ -847,12 +826,12 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   }
   // A clip held down can be deleted by tapping the trash; with the trash held, tapping a clip deletes it.
   // A tap (released without either) selects the clip and plays from it.
-  const clipHolds=new Map();
+  const clipHolds=new Map(),clipCvs=new Map();   // clipCvs: each row's canvas, so the playing clip can light its step
   function takeRow(k,i){
     const row=el('div',{className:'take'});row.dataset.i=i;
     const hdl=el('div',{className:'hdl',title:'Drag to move this clip'});hdl.innerHTML=ICON.handle;rowMover(hdl,k);
     const th=el('button',{type:'button',className:'th',title:'Play from clip '+k.num+' · '+loopName(k.loop)});const cv=el('canvas');
-    th.appendChild(cv);th.appendChild(el('span',{textContent:String(k.num)+(k.loop!==T().kind?' · '+loopName(k.loop):'')}));
+    cv.style.height=((k.n>8?2:1)*LROW+4)+'px';th.appendChild(cv);clipCvs.set(k.id,cv);
     th.addEventListener('pointerdown',e=>{
       if(trashHeld){trashHeld.used=true;deleteClips([k]);return;}
       clipHolds.set(e.pointerId,{k,used:false,row});row.classList.add('held');
@@ -862,7 +841,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     ['pointerup','pointercancel','pointerleave'].forEach(ev=>th.addEventListener(ev,up));
     th.addEventListener('click',e=>{if(e.detail===0){initAudio();playClips(k);}});   // keyboard
     row.append(hdl,th);
-    requestAnimationFrame(()=>drawThumb(cv,k,TRACK_HUES[0]));
+    requestAnimationFrame(()=>drawClipLane(cv,k,-1));
     return row;
   }
   // Lightweight refresh: only classes change, so a drag in progress is never rebuilt away.
@@ -875,7 +854,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   function renderSession(){
     if(!sessOn)return;
     if(sessBusy){sessDirty=true;return;}
-    paintTakesHead();takeList.textContent='';clipHolds.clear();
+    paintTakesHead();takeList.textContent='';clipHolds.clear();clipCvs.clear();
     if(!clips.length){takeList.appendChild(el('p',{className:'takes-empty',textContent:'Nothing captured yet. On the field page, press Capture (right of the tools, under this button) to save the sequence as it is now. Clips are added here in order.'}));return;}
     clips.forEach((k,i)=>takeList.appendChild(takeRow(k,i)));
     updateSession();
@@ -907,29 +886,33 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     node.addEventListener('pointerup',end);node.addEventListener('pointercancel',end);
     node.addEventListener('lostpointercapture',e=>{if(s0&&e.pointerId===s0.id&&!s0.drag){s0=null;busy(false);}});
   }
-  // Switching pages. Back on the field page without Load, the sequencer's own sequence plays again (from
+  // Switching pages. Leaving the Clips page without Load, the sequencer's own sequence plays again (from
   // the next bar line if the list was playing).
-  function showClips(on){
-    if(on===sessOn)return;
-    sessOn=on;sessEl.hidden=!on;wrap.hidden=on;laneCv.hidden=on;
-    for(const id of [...special.keys(),...ptrs.keys()])end({pointerId:id});laneHolds.clear();laneHold=null;
-    if(on){if(!selClip&&clips.length)selClip=clips[clips.length-1];renderSession();
-      const r=takeList.querySelector('.take.sel');if(r)r.scrollIntoView({block:'nearest'});else sessScroll.scrollTop=sessScroll.scrollHeight;}
-    else{
+  function showPage(p){
+    if(p===page)return;const from=page;
+    for(const id of [...special.keys(),...ptrs.keys()])end({pointerId:id});laneHolds.clear();laneHold=null;clipHolds.clear();projHolds.clear();
+    page=p;sessOn=p==='clips';projOn=p==='proj';
+    sessEl.hidden=!sessOn;projEl.hidden=!projOn;wrap.hidden=p!=='field';laneCv.hidden=p!=='field';
+    if(from==='clips'){
       if(songPlaying){songPlaying=false;songList=[];tx({type:'songStop'});}
       const t=T(),f=info(t.i),id=t.seq?t.seq.id:null;
       if(f.clipId!==id||f.clipQ!==undefined)tx({type:'launch',tr:t.i,clip:t.seq?clipForm(t.seq):null});
-      sendRec();requestAnimationFrame(resize);
+      sendRec();
     }
+    if(sessOn){if(!selClip&&clips.length)selClip=clips[clips.length-1];renderSession();
+      const r=takeList.querySelector('.take.sel');if(r)r.scrollIntoView({block:'nearest'});else sessScroll.scrollTop=sessScroll.scrollHeight;}
+    if(projOn){renderProjects();refreshLib().then(renderProjects);}
+    if(p==='field')requestAnimationFrame(resize);
     paintIcons();
   }
-  sessBtn.addEventListener('click',()=>showClips(!sessOn));
+  const showClips=on=>showPage(on?'clips':'field');
+  sessBtn.addEventListener('click',()=>showPage(sessOn?'field':'clips'));
 
   let sessKey='';
   function onStatus(m){
     gotStatus=true;m.recv=performance.now();const was=st.playing;st=m;
     if(was!==m.playing){if(!m.playing){intent=null;songEnded();}paintIcons();}
-    clearBtn.disabled=sessOn?!clips.length:!T().seq;paintUndo();
+    clearBtn.disabled=projOn?false:sessOn?!clips.length:!T().seq;paintUndo();
     if(sessOn){const k=(m.song?m.song.idx:-1)+'|'+m.playing+'|'+(selClip?selClip.id:'');if(k!==sessKey){sessKey=k;updateSession();}}
     const lr=laneInfo().rows;if(lr!==laneRows)computeLayout();
   }
@@ -954,10 +937,12 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     bpmEl.querySelector('b').textContent='124';swingEl.querySelector('b').textContent='50';
     files.clear();soundSel.querySelectorAll('option[value^="f:"]').forEach(o=>o.remove());sentLoops.clear();
     soundSel.value='break';
-    if(sessOn){sessOn=false;sessEl.hidden=true;wrap.hidden=false;laneCv.hidden=false;clipHolds.clear();}
+    if(page!=='field'){page='field';sessOn=projOn=false;sessEl.hidden=true;projEl.hidden=true;wrap.hidden=false;laneCv.hidden=false;clipHolds.clear();}
+    cur={id:null,name:'',folder:''};
     computeLayout();
     sheet.hidden=true;paintIcons();requestAnimationFrame(resize);
     (function pre(){let n=0;const nx=()=>{if(n>=tracks.length)return;const t=tracks[n++];if(!t.buf){t.buf=buildLoop(t,48000);t.pk=peaks(t.buf);}setTimeout(nx,10);};setTimeout(nx,0);})();
+    savedSig=projSig();
   }
 
   // ---------- sheets ----------
@@ -1255,7 +1240,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     t.kind=q.kind&&(!q.kind.startsWith('f:')||files.has(q.kind.slice(2)))?q.kind:'break';
     t.cols=q.cols===8?8:16;t.colsQ=0;t.len16=clamp(q.len16||16,1,16);
     // effects added since the project was saved get their defaults, and a row
-    t.cfg=Object.assign(defCfg(),q.cfg||{});t.rows=(q.rows||[]).filter(r=>r==='center'||FX[r]);
+    t.cfg=defCfg();for(const k in q.cfg||{}){const c=q.cfg[k];if(FX[k]&&c&&c.x&&Object.keys(FX[k].params).every(n=>n in c.x))t.cfg[k]=c;}t.rows=(q.rows||[]).filter(r=>r==='center'||FX[r]);
     for(const r of newTrack(0,'break').rows)if(!t.rows.includes(r))t.rows.push(r);
     t.loopSet=Object.assign({orderV:1,muteV:1,silPat:'mute'},q.loopSet||{});
     t.seq=q.seq?clipForm(Object.assign({},q.seq)):null;
@@ -1289,24 +1274,198 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     }
     return JSON.parse(new TextDecoder().decode(u));
   }
-  let projStatus=null;
-  projIn.addEventListener('change',async()=>{
-    const f=projIn.files&&projIn.files[0];projIn.value='';if(!f)return;const say=projStatus||(()=>{});
-    try{await openProject(readProjectFile(await f.arrayBuffer()));say('Opened '+f.name);closeSheet();}
-    catch(err){say('Could not open '+f.name+': '+err.message);}
+  // ---------- project library ----------
+  // Projects are kept in a library with folders (nested, as paths like "Beats/Drafts"). Inside claude.ai
+  // the library lives in this artifact's database, in the viewer's own private space; elsewhere in this
+  // browser's IndexedDB. Both keep the same records: a small meta record per project (listed), its state
+  // (split into chunks under 200 kB, since a project with imported audio can be megabytes), and one record
+  // holding the folder list (so empty folders survive).
+  const CHUNK=200000;
+  function dbLib(db,uid){
+    const col=db.collection('data/users/'+uid),one=async f=>{try{return await f();}catch(e){if(e&&e.code==='unavailable'){await new Promise(r=>setTimeout(r,400+Math.random()*400));return f();}throw e;}};
+    return {
+      where:'your Claude library',
+      async list(){const q=await one(()=>col.where('kind','==','project').get());return q.docs.map(d=>d.data());},
+      async folders(){const d=await one(()=>col.doc('folders').get());return d.exists?(d.data().list||[]):[];},
+      async setFolders(list){await one(()=>col.doc('folders').set({kind:'folders',list}));},
+      async load(id){const m=await one(()=>col.doc('p_'+id).get());if(!m.exists)throw new Error('missing');let s='';
+        for(let i=0;i<m.data().chunks;i++){const c=await one(()=>col.doc('p_'+id+'_'+i).get());s+=c.exists?c.data().d:'';}return JSON.parse(s);},
+      async save(meta,json){const old=await one(()=>col.doc('p_'+meta.id).get()),n=Math.max(1,Math.ceil(json.length/CHUNK));
+        for(let i=0;i<n;i++){const d=json.slice(i*CHUNK,(i+1)*CHUNK);await one(()=>col.doc('p_'+meta.id+'_'+i).set({kind:'chunk',d}));}
+        await one(()=>col.doc('p_'+meta.id).set(Object.assign({kind:'project',chunks:n},meta)));
+        const was=old.exists?old.data().chunks||0:0;for(let i=n;i<was;i++)await one(()=>col.doc('p_'+meta.id+'_'+i).delete());},
+      async meta(meta){await one(()=>col.doc('p_'+meta.id).update(meta));},
+      async remove(id){const m=await one(()=>col.doc('p_'+id).get());const n=m.exists?m.data().chunks||0:0;
+        await one(()=>col.doc('p_'+id).delete());for(let i=0;i<n;i++)await one(()=>col.doc('p_'+id+'_'+i).delete());},
+    };
+  }
+  function idbLib(){
+    let dbp=null;
+    const open=()=>dbp||(dbp=new Promise((res,rej)=>{const r=indexedDB.open('slicefield',1);r.onupgradeneeded=()=>r.result.createObjectStore('kv');r.onsuccess=()=>res(r.result);r.onerror=()=>rej(r.error);}));
+    const run=async(mode,f)=>{const d=await open();return new Promise((res,rej)=>{const tr=d.transaction('kv',mode),st=tr.objectStore('kv'),q=f(st);tr.oncomplete=()=>res(q&&q.result);tr.onerror=()=>rej(tr.error);});};
+    return {
+      where:'this browser',
+      async list(){const all=await run('readonly',st=>st.getAll());return (all||[]).filter(x=>x&&x.kind==='project');},
+      async folders(){const f=await run('readonly',st=>st.get('folders'));return f?f.list:[];},
+      async setFolders(list){await run('readwrite',st=>st.put({kind:'folders',list},'folders'));},
+      async load(id){const s=await run('readonly',st=>st.get('d_'+id));if(!s)throw new Error('missing');return JSON.parse(s.json);},
+      async save(meta,json){await run('readwrite',st=>{st.put({kind:'data',json},'d_'+meta.id);st.put(Object.assign({kind:'project'},meta),'p_'+meta.id);});},
+      async meta(meta){const m=await run('readonly',st=>st.get('p_'+meta.id));if(m)await run('readwrite',st=>st.put(Object.assign(m,meta),'p_'+meta.id));},
+      async remove(id){await run('readwrite',st=>{st.delete('p_'+id);st.delete('d_'+id);});},
+    };
+  }
+  let libP=null;
+  function library(){
+    if(!libP)libP=(async()=>{
+      try{if(window.claude&&window.claude.use){const db=await window.claude.use('db'),u=await window.claude.use('user'),uid=u&&await u.id();if(db&&uid)return dbLib(db,uid);}}catch(_){}
+      if(window.indexedDB)return idbLib();
+      return null;
+    })();
+    return libP;
+  }
+
+  // ---------- projects page ----------
+  // The project open now (id null until first saved), the folder being looked at, and what the library holds.
+  // A project is saved when you press SAVE, and automatically before another one is opened or a new one is
+  // started (if it changed), and when the page is hidden.
+  const projEl=$('projects'),projList=$('projlist'),projScroll=$('projScroll'),crumbsEl=$('crumbs'),projName=$('projname'),projStateEl=$('projstate'),projMsg=$('projmsg');
+  const newFolderBtn=$('newfolder'),saveProjBtn=$('saveproj'),newProjBtn=$('newproj');
+  let cur={id:null,name:'',folder:''},browse='',libItems=[],libFolders=[],savedSig='',libBusy=false;
+  const projHolds=new Map();
+  // what a project's content is, to tell whether it changed since it was saved (imported audio by id only)
+  const projSig=()=>{const p=projectState();p.files=p.files.map(f=>f.id);return JSON.stringify(p);};
+  const isDirty=()=>projSig()!==savedSig;
+  savedSig=projSig();
+  const newProjId=()=>Date.now().toString(36)+Math.random().toString(36).slice(2,7);
+  function say(text,undo){
+    projMsg.textContent='';projMsg.appendChild(el('span',{textContent:text}));
+    if(undo){const b=el('button',{type:'button',textContent:'Undo'});b.addEventListener('click',()=>{projMsg.hidden=true;undo();});projMsg.appendChild(b);}
+    projMsg.hidden=false;clearTimeout(say.t);say.t=setTimeout(()=>{projMsg.hidden=true;},undo?7000:3500);
+  }
+  async function refreshLib(){
+    const L=await library();if(!L){libItems=[];libFolders=[];return;}
+    try{libItems=await L.list();libFolders=await L.folders();}catch(e){say('The library could not be read ('+(e&&(e.code||e.message))+')');}
+  }
+  function untitled(){let n=1;const names=new Set(libItems.map(x=>x.name));while(names.has('Untitled '+n))n++;return 'Untitled '+n;}
+  async function saveCurrent(quiet){
+    const L=await library();if(!L){say('No library here: use Save to file');return false;}
+    if(!cur.id){cur.id=newProjId();cur.folder=browse;if(!cur.name)cur.name=projName.value.trim()||untitled();}
+    const st=projectState(),json=JSON.stringify(st);
+    const meta={id:cur.id,name:cur.name,folder:cur.folder,updated:Date.now(),clips:clips.length,loop:loopName(T().kind),bpm};
+    try{libBusy=true;paintProjState('Saving…');await L.save(meta,json);savedSig=projSig();
+      const i=libItems.findIndex(x=>x.id===meta.id);if(i>=0)libItems[i]=Object.assign({},libItems[i],meta);else libItems.push(meta);
+      if(!quiet)say('Saved '+cur.name);return true;}
+    catch(e){say('Not saved: '+(e&&e.code==='quota_exceeded'?'the library is full; delete some projects':(e&&(e.code||e.message))));return false;}
+    finally{libBusy=false;renderProjects();}
+  }
+  // before leaving the current project: keep it if it changed (a new, untouched project is not kept)
+  async function keepCurrent(){if(isDirty())return saveCurrent(true);return true;}
+  async function openFromLibrary(m){
+    if(m.id===cur.id)return;
+    if(!(await keepCurrent()))return;
+    const L=await library();
+    try{const p=await L.load(m.id);await openProject(p);cur={id:m.id,name:m.name,folder:m.folder||''};savedSig=projSig();say('Opened '+m.name);}
+    catch(e){say('Could not open '+m.name+': '+(e&&(e.code||e.message)));}
+    renderProjects();
+  }
+  newProjBtn.addEventListener('click',async()=>{
+    if(!(await keepCurrent()))return;
+    await openProject({app:'slicefield',track:{}});cur={id:null,name:'',folder:browse};savedSig=projSig();renderProjects();say('New project');
   });
-  projBtn.addEventListener('click',()=>openSheet('Project',cardEl=>{
-    const msg=el('p',{className:'expmsg'}),status=x=>{msg.textContent=x;};projStatus=status;
-    const sv=el('button',{type:'button',textContent:'Save project'}),op=el('button',{type:'button',textContent:'Open project…'}),nw=el('button',{type:'button',className:'danger',textContent:'New project'});
-    sv.addEventListener('click',()=>{status('Saving…');saveProject(status);});
-    op.addEventListener('click',()=>{initAudio();projIn.click();});
-    let arm=0;nw.addEventListener('click',()=>{
-      if(!arm){arm=setTimeout(()=>{arm=0;nw.textContent='New project';},2500);nw.textContent='Tap again: start over';return;}
-      clearTimeout(arm);arm=0;hardReset();});
-    cardEl.appendChild(el('div',{className:'projrow'},[sv,op,nw]));
-    cardEl.appendChild(el('p',{},['Saves everything: tempo, swing, modes, the loop (your imported audio too), effect settings, the sequence and every clip. Open a saved project (.json, or the .zip this page saves inside Claude) to carry on. New project starts over; save first to keep this one.']));
-    cardEl.appendChild(msg);
-  }));
+  saveProjBtn.addEventListener('click',()=>saveCurrent(false));
+  projName.addEventListener('change',async()=>{
+    cur.name=projName.value.trim()||cur.name;projName.value=cur.name;
+    if(cur.id){const L=await library();try{await L.meta({id:cur.id,name:cur.name});const m=libItems.find(x=>x.id===cur.id);if(m)m.name=cur.name;}catch(_){}renderProjects();}
+  });
+  // a new folder inside the one being looked at: name it in place
+  newFolderBtn.addEventListener('click',()=>{
+    if(projList.querySelector('.ni'))return;
+    const row=el('div',{className:'prow folder'}),inp=el('input',{className:'ni',type:'text',maxLength:30,placeholder:'Folder name'});
+    const box=el('div',{className:'pb'});box.innerHTML=ICON.folder;box.appendChild(inp);row.append(el('div'),box);projList.prepend(row);inp.focus();
+    let fin=false;   // Enter and losing focus both finish it, once
+    const done=async ok=>{if(fin)return;fin=true;const nm=inp.value.replace(/\//g,' ').trim();row.remove();if(!ok||!nm)return;
+      const path=(browse?browse+'/':'')+nm;if(!libFolders.includes(path)){libFolders.push(path);const L=await library();try{await L.setFolders(libFolders);}catch(_){}}
+      renderProjects();};
+    inp.addEventListener('keydown',e=>{if(e.key==='Enter')done(true);if(e.key==='Escape')done(false);});inp.addEventListener('blur',()=>done(true));
+  });
+  // folders that exist: named ones and every folder a project sits in, with their parents
+  function allFolders(){const s=new Set();const add=p=>{while(p){s.add(p);p=p.includes('/')?p.slice(0,p.lastIndexOf('/')):'';}};
+    libFolders.forEach(add);libItems.forEach(x=>add(x.folder||''));return [...s];}
+  const childFolders=f=>allFolders().filter(p=>(f?p.startsWith(f+'/'):true)&&!p.slice(f?f.length+1:0).includes('/')&&p!==f).sort();
+  const inFolder=f=>libItems.filter(x=>(x.folder||'')===f).sort((a,b)=>b.updated-a.updated);
+  const under=f=>libItems.filter(x=>(x.folder||'')===f||(x.folder||'').startsWith(f+'/'));
+  const fmtDate=t=>{const d=new Date(t);return d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+' '+d.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit'});};
+  function paintProjState(x){projStateEl.textContent=x!=null?x:!cur.id?'not saved yet':isDirty()?'changed':'saved';}
+  function renderProjects(){
+    if(!projOn)return;
+    if(document.activeElement!==projName&&root.activeElement!==projName)projName.value=cur.name;projName.placeholder=cur.id?'':'Untitled';
+    paintProjState(libBusy?'Saving…':null);
+    crumbsEl.textContent='';const parts=browse?browse.split('/'):[];
+    const crumb=(label,path)=>{const b=el('button',{type:'button',textContent:label,className:path===browse?'cur':''});b.dataset.folder=path;b.addEventListener('click',()=>{browse=path;renderProjects();});return b;};
+    crumbsEl.appendChild(crumb('Projects',''));parts.forEach((p,i)=>{crumbsEl.appendChild(document.createTextNode('›'));crumbsEl.appendChild(crumb(p,parts.slice(0,i+1).join('/')));});
+    projList.textContent='';projHolds.clear();
+    const folders=childFolders(browse),items=inFolder(browse);
+    for(const f of folders){
+      const row=el('div',{className:'prow folder'});row.dataset.folder=f;const b=el('button',{type:'button',className:'pb'});
+      const n=under(f).length;b.innerHTML=ICON.folder;b.appendChild(el('b',{textContent:f.slice(f.lastIndexOf('/')+1)}));b.appendChild(el('small',{textContent:n?n+(n>1?' projects':' project'):'empty'}));
+      holdable(b,row,{folder:f},()=>{browse=f;renderProjects();});row.append(el('div'),b);projList.appendChild(row);
+    }
+    for(const m of items){
+      const row=el('div',{className:'prow'+(m.id===cur.id?' cur':'')});const b=el('button',{type:'button',className:'pb'});
+      b.appendChild(el('b',{textContent:m.name}));b.appendChild(el('small',{textContent:fmtDate(m.updated)+' · '+(m.clips||0)+(m.clips===1?' clip':' clips')+(m.loop?' · '+m.loop:'')+(m.bpm?' · '+m.bpm+' BPM':'')}));
+      const hdl=el('div',{className:'hdl',title:'Drag onto a folder to move it'});hdl.innerHTML=ICON.handle;projMover(hdl,m);
+      holdable(b,row,{proj:m},()=>openFromLibrary(m));row.append(hdl,b);projList.appendChild(row);
+    }
+    if(!folders.length&&!items.length)projList.appendChild(el('p',{className:'projempty',textContent:browse?'This folder is empty. SAVE puts a new project here; drag projects onto a folder to move them.':
+      'No saved projects yet. Name this one above and press SAVE. Projects are kept in '+(libP?'the library':'your library')+'; Save to file makes a copy you can keep anywhere.'}));
+  }
+  // a row: tap to open; hold it and tap the trash, or hold the trash and tap it, to delete
+  function holdable(b,row,what,open){
+    b.addEventListener('pointerdown',e=>{if(trashHeld){trashHeld.used=true;deleteEntry(what);return;}projHolds.set(e.pointerId,{what,used:false,row});row.classList.add('held');});
+    const up=e=>{const h=projHolds.get(e.pointerId);if(!h)return;projHolds.delete(e.pointerId);row.classList.remove('held');if(e.type==='pointerup'&&!h.used)open();};
+    ['pointerup','pointercancel','pointerleave'].forEach(ev=>b.addEventListener(ev,up));
+    b.addEventListener('click',e=>{if(e.detail===0)open();});
+  }
+  // Deleting is immediate, with an Undo in the message for a few seconds (the data is held until then).
+  async function deleteEntry(what){
+    const L=await library();if(!L)return;
+    const gone=what.proj?[what.proj]:under(what.folder),folders=what.folder?allFolders().filter(p=>p===what.folder||p.startsWith(what.folder+'/')):[];
+    const kept=[];for(const m of gone){try{kept.push({m,p:await L.load(m.id)});}catch(_){}}
+    for(const m of gone){try{await L.remove(m.id);}catch(_){}}
+    libItems=libItems.filter(x=>!gone.includes(x));
+    if(folders.length){libFolders=libFolders.filter(p=>!folders.includes(p));try{await L.setFolders(libFolders);}catch(_){}}
+    if(gone.some(m=>m.id===cur.id)){cur.id=null;savedSig='';}   // the open project stays open, now unsaved
+    renderProjects();
+    const name=what.proj?what.proj.name:'folder '+what.folder.slice(what.folder.lastIndexOf('/')+1)+(gone.length?' and '+gone.length+(gone.length>1?' projects':' project'):'');
+    say('Deleted '+name,async()=>{for(const k of kept){await L.save(k.m,JSON.stringify(k.p));libItems.push(k.m);}
+      if(folders.length){libFolders=libFolders.concat(folders);await L.setFolders(libFolders);}renderProjects();});
+  }
+  // drag a project's handle onto a folder row (or a folder in the path above) to move it there
+  function projMover(node,m){
+    let s0=null;const target=(x,y)=>{const n=root.elementFromPoint(x,y);if(!n||!n.closest)return null;return n.closest('.prow.folder')||n.closest('.crumbs button');};
+    const clear=()=>root.querySelectorAll('.prow.drop,.crumbs button.drop').forEach(n=>n.classList.remove('drop'));
+    node.addEventListener('pointerdown',e=>{e.preventDefault();s0={y:e.clientY,id:e.pointerId,drag:false};try{node.setPointerCapture(e.pointerId);}catch(_){}});
+    node.addEventListener('pointermove',e=>{if(!s0||e.pointerId!==s0.id)return;
+      if(!s0.drag&&Math.abs(e.clientY-s0.y)>6){s0.drag=true;ghost.textContent=m.name.slice(0,10);ghost.hidden=false;}
+      if(s0.drag){ghost.style.left=e.clientX+'px';ghost.style.top=e.clientY+'px';clear();const t=target(e.clientX,e.clientY);if(t)t.classList.add('drop');}});
+    const end=async e=>{if(!s0||e.pointerId!==s0.id)return;const s=s0;s0=null;ghost.hidden=true;clear();if(!s.drag)return;
+      const t=target(e.clientX,e.clientY);if(!t)return;const f=t.dataset.folder;if(f==null||f===(m.folder||''))return;
+      const L=await library();try{await L.meta({id:m.id,folder:f});m.folder=f;if(m.id===cur.id)cur.folder=f;say('Moved '+m.name+' to '+(f||'Projects'));}catch(err){say('Not moved: '+(err&&(err.code||err.message)));}
+      renderProjects();};
+    node.addEventListener('pointerup',end);node.addEventListener('pointercancel',end);
+  }
+  $('tofile').addEventListener('click',()=>{say('Saving…');saveProject(say);});
+  $('fromfile').addEventListener('click',()=>{initAudio();projIn.click();});
+  projIn.addEventListener('change',async()=>{
+    const f=projIn.files&&projIn.files[0];projIn.value='';if(!f)return;
+    try{const p=readProjectFile(await f.arrayBuffer());if(!(await keepCurrent()))return;await openProject(p);
+      cur={id:null,name:f.name.replace(/\.(json|zip)$/i,'').replace(/^slicefield-/,'').slice(0,40),folder:browse};savedSig='';say('Opened '+f.name+' (not in the library until you SAVE)');}
+    catch(err){say('Could not open '+f.name+': '+err.message);}
+    renderProjects();
+  });
+  // the page being hidden (another app, a closed tab) keeps a saved project's latest changes
+  document.addEventListener('visibilitychange',()=>{if(document.hidden&&cur.id&&isDirty())saveCurrent(true);});
+  projBtn.addEventListener('click',()=>showPage(projOn?'field':'proj'));
 
   // ---------- undo / redo ----------
   // Every edit gesture saves a snapshot of the sequence, the plain loop's strips and the Clips list first
@@ -1366,6 +1525,40 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     if(silOf(t)!=='mute')return false;
     const b=EF.skipPattern(mV(t),barSteps(t));return !!b&&!b[idx%b.length];
   }
+  // the lane's label column: a clip number in the Capture icon's corner ticks (or SEQ / LIVE), and a note under it
+  function laneLabel(num,edited,word,on,sub,red,h,fs){
+    const col=on?`hsl(${TRACK_HUES[0]} 75% 62%)`:'#6c7380',cy=h/2-(sub?8:0);
+    g.textBaseline='middle';g.textAlign='center';g.fillStyle=col;
+    if(num){
+      const lab=String(num)+(edited?'*':'');g.font=`600 ${lab.length>3?fs-2:fs}px ${FONT}`;g.fillText(lab,LLAB/2,cy+0.5);
+      const bw=26,bh=20,x0=LLAB/2-bw/2,y0=cy-bh/2,k=5;g.strokeStyle=col;g.lineWidth=1.4;g.lineCap='round';g.beginPath();
+      for(const [x,y,dx,dy] of [[x0,y0,1,1],[x0+bw,y0,-1,1],[x0,y0+bh,1,-1],[x0+bw,y0+bh,-1,-1]]){g.moveTo(x+dx*k,y);g.lineTo(x,y);g.lineTo(x,y+dy*k);}
+      g.stroke();
+    }else{g.font=`600 ${fs}px ${FONT}`;g.fillText(word,LLAB/2,cy);}
+    if(sub){g.font=`${red?600:400} ${fs-2}px ${FONT}`;g.fillStyle=red?'#ff6b6b':'#8a8f99';g.fillText(sub,LLAB/2,h/2+12);}
+  }
+  // A clip drawn exactly as the sequencer shows it (without the rotate column); lit: the step playing.
+  function drawClipLane(cv,k,lit){
+    const W=cv.clientWidth||300,rows=k.n>8?2:1,pr=Math.ceil(k.n/rows),H=rows*LROW+4,d=Math.min(3,window.devicePixelRatio||1);
+    if(cv.width!==Math.round(W*d)||cv.height!==Math.round(H*d)){cv.width=Math.round(W*d);cv.height=Math.round(H*d);}
+    const keep=g;g=cv.getContext('2d');g.setTransform(d,0,0,d,0,0);g.clearRect(0,0,W,H);
+    if('letterSpacing' in g)g.letterSpacing='0.06em';
+    const t=T(),fs=10,bits=(k.silPat||'mute')==='mute'?EF.skipPattern(k.muteV,k.n):null;
+    g.fillStyle='#16181d';rr(0,0,W,H,7);g.fill();
+    const other=k.loop&&k.loop!==t.kind?loopName(k.loop).replace(/\s.*/,'').slice(0,5).toUpperCase():'';
+    laneLabel(k.num,false,'',true,other,false,H,fs);
+    const w=(W-LLAB-3)/pr;
+    for(let j=0;j<k.slots.length&&j<k.n;j++){const s=k.slots[j];
+      laneCell(t,s,LLAB+(j%pr)*w,4+Math.floor(j/pr)*LROW,w,LROW-5,j===lit,s.on===false||(!!bits&&!bits[j%bits.length]),fs,(s.off||0)>0,j*16/k.cols);}
+    g=keep;
+  }
+  let litClip=null;
+  function drawPlayingClip(){
+    const i=info(0),k=songPlaying&&st.playing?clips.find(c=>c.id===i.clipId):null,cv=k&&clipCvs.get(k.id),idx=cv?i.cIdx:-1,key=k?k.id+':'+idx:'';
+    if(key===litClip)return;
+    if(litClip){const [id]=litClip.split(':'),o=clips.find(c=>c.id===id),oc=o&&clipCvs.get(id);if(oc)drawClipLane(oc,o,-1);}
+    litClip=key;if(cv)drawClipLane(cv,k,idx);
+  }
   function drawLane(fs){
     const d=lanePageInfo(),t=d.t,i=info(view),h=laneRows*LROW+4;
     g.fillStyle='#16181d';rr(0,0,LW,h,7);g.fill();
@@ -1373,15 +1566,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     // LIVE: the plain loop as it plays. The clip's number, in the corner ticks of the Capture icon, when the
     // sequence came from (or was captured as) that clip, with a * once it has changed since; SEQ otherwise.
     // REC underneath while recording.
-    const col=d.clip?`hsl(${TRACK_HUES[view]} 75% 62%)`:'#6c7380',sub=recOn?'REC':d.pages>1?(d.page+1)+'/'+d.pages:'';
-    const cy=h/2-(sub?8:0);g.fillStyle=col;
-    if(d.clip&&d.clip.num){
-      const lab=String(d.clip.num)+(d.clip.edited?'*':'');g.font=`600 ${lab.length>3?fs-2:fs}px ${FONT}`;g.fillText(lab,LLAB/2,cy+0.5);
-      const bw=26,bh=20,x0=LLAB/2-bw/2,y0=cy-bh/2,k=5;g.strokeStyle=col;g.lineWidth=1.4;g.lineCap='round';g.beginPath();
-      for(const [x,y,dx,dy] of [[x0,y0,1,1],[x0+bw,y0,-1,1],[x0,y0+bh,1,-1],[x0+bw,y0+bh,-1,-1]]){g.moveTo(x+dx*k,y);g.lineTo(x,y);g.lineTo(x,y+dy*k);}
-      g.stroke();
-    }else{const lab=d.clip?'SEQ':'LIVE';g.fillText(lab,LLAB/2,cy);}
-    if(sub){g.font=`${recOn?600:400} ${fs-1}px ${FONT}`;g.fillStyle=recOn?'#ff6b6b':'#8a8f99';g.fillText(sub,LLAB/2,h/2+12);}
+    laneLabel(d.clip?d.clip.num:0,d.clip&&d.clip.edited,d.clip?'SEQ':'LIVE',!!d.clip,recOn?'REC':d.pages>1?(d.page+1)+'/'+d.pages:'',recOn,h,fs);
     // the rotate column: move the whole sequence one step left (upper half) or right (lower half)
     {const x0=LW-LROT+3,hh=(h-6)/2;
       for(const [y,dir] of [[3,-1],[3+hh+1,1]]){g.fillStyle='#1f2229';rr(x0,y,LROT-4,hh-1,5);g.fill();
@@ -1431,7 +1616,8 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   }
   function draw(){
     requestAnimationFrame(draw);
-    if(sessOn)return;
+    if(sessOn){drawPlayingClip();return;}
+    if(projOn)return;
     g=gridG;g.setTransform(dpr,0,0,dpr,0,0);g.fillStyle=BG;g.fillRect(0,0,cssW,cssH);
     if('letterSpacing' in g)g.letterSpacing='0.06em';
     const t=T(),i=info(view),cols=t.cols,cw=W()/cols,gap=3;
