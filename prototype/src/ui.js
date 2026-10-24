@@ -104,11 +104,14 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   // page: 'field' or 'clips' (sessOn: the Clips page is showing); projects are a sheet
   let bpm=124,swing=0,stepped=true,sessOn=false,projOn=false,page='field',playMode='replace',fxOnly=false;
   // Clips: sequences saved with Capture, in list order. While any exist, one is selected.
-  // songPlaying: a clip is playing from the Clips page (songList: just that clip; it loops).
+  // songPlaying: clips are playing from the Clips page (songList: the list as the engine has it: every clip
+  // in order, played through once, or with clipLoop just the selected one, looping). armed: a tapped clip
+  // waiting for the next bar line.
   // recOn: Record is on, so touches are written into the sequence (recBn: the bar of the last write).
-  let clips=[],clipNum=0,selClip=null,songPlaying=false,songList=[],recOn=false,recBn=-1;
+  let clips=[],clipNum=0,selClip=null,songPlaying=false,songList=[],recOn=false,recBn=-1,clipLoop=false,armed=null;
   let st={playing:false,t:0,len:1,tracks:[],hist:[],song:null,recv:0};
   let fieldEdit=false;   // the field editor is open (see setFieldEdit)
+  let gameOn=false,game=null;const HUDH=44,GBASE=62;   // a game round is on (see startGame); HUDH: its status bar, GBASE: the station
   const ptrs=new Map();let orderCtr=0,tsCtr=0,idCtr=0;
   let cssW=300,cssH=400,dpr=1,lay=[],laneRows=1,TOP=100;
   let lanePage=0,laneFollow=true;
@@ -157,6 +160,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     else if(m.type==='clipStep')onClipStep(m);
     else if(m.type==='songRow')onSongRow(m);
     else if(m.type==='songEnd')songEnded();
+    else if(m.type==='take')onTake(m);
     else if(m.type==='grabbed')onGrabbed(m);
     else if(m.type==='grid'){
       const t=tracks[m.tr],old=t.cols;t.cols=m.n;t.colsQ=0;
@@ -330,11 +334,11 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   // b0, b1}. b0/b1: the band a row answers touches in; y/h: where it is drawn (a small gap to its neighbours).
   // Above the rows, under the ORDER and SKIP strips, the ruler shows the loop's waveform and its slices.
   // the field's height (the editor's bar takes the bottom while editing)
-  const fieldH=()=>cssH-(fieldEdit?48:0);
+  const fieldH=()=>cssH-(fieldEdit?48:gameOn?GBASE:0);
   const RY=STRIP+4+STRIP+6,RULER=24;
   function computeLayout(){
     laneRows=laneInfo().rows;
-    TOP=RY+RULER+4;
+    TOP=gameOn?HUDH:RY+RULER+4;
     sizeLane();
     const t=T(),f=t.field,area=Math.max(1,fieldH()-TOP);let u=0;
     lay=f.rows.map((row,ri)=>{const b0=TOP+u/FG*area,b1=TOP+(u+row.h)/FG*area;u+=row.h;return {ri,ks:row.fx,hue:rowHue(row.fx),y:b0+1.5,h:Math.max(4,b1-b0-3),b0,b1};});
@@ -378,9 +382,12 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   const rowAt=y=>lay.findIndex(r=>y>=r.b0&&(y<r.b1||r.b1>=fieldH()-1&&y<=fieldH()));
   function hit(x,y){
     const t=T();
-    if(y<yMute()-2)return {strip:'order',snapBox:x<SX-2};
-    if(y<RY-3)return {strip:'mute',snapBox:x<SX-2};
-    if(y<TOP-2)return {ruler:true};
+    if(gameOn){if(y<TOP)return {};}
+    else{
+      if(y<yMute()-2)return {strip:'order',snapBox:x<SX-2};
+      if(y<RY-3)return {strip:'mute',snapBox:x<SX-2};
+      if(y<TOP-2)return {ruler:true};
+    }
     const ri=rowAt(y);if(ri<0)return {};
     if(x<HW)return {handle:true,ri};
     const col=Math.min(t.cols-1,Math.max(0,Math.floor((x-HW)/W()*t.cols))),r=lay[ri];
@@ -411,7 +418,6 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     const [x,y]=pos(e),h=hit(x,y),t=T();
     initAudio();
     if(fieldEdit&&y>=TOP-3){editDown(e.pointerId,x,y);return;}
-    if(h.strip&&(gameOn||gameMsg))return;   // the round's display covers the strips
     if(h.ruler)return;
     if(h.strip){
       if(h.snapBox){
@@ -532,7 +538,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   async function togglePlay(){
     initAudio();checkBlocked();await ready;
     // Stop also turns Record off
-    if(st.playing||intent){intent=null;tx({type:'stop'});if(songPlaying)songEnded();if(gameOn)endGame(true,'Round stopped');if(recOn){recOn=false;recBn=-1;sendRec();}paintIcons();updateSession();}
+    if(st.playing||intent){intent=null;tx({type:'stop'});if(songPlaying)songEnded();if(gameOn)endGame(true);if(recOn){recOn=false;recBn=-1;sendRec();}paintIcons();updateSession();}
     // on the Clips page, Play plays the list from the selected clip (with nothing captured it does nothing)
     else if(sessOn){if(selClip)playClips(selClip);}
     else{intent={type:'play'};tx(intent);paintIcons();}
@@ -578,14 +584,12 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   fxoBtn.addEventListener('click',()=>{fxOnly=!fxOnly;tx({type:'fxonly',on:fxOnly});paintIcons();});
   // Trash: a tap (on release) clears the sequence, so the plain loop plays. Hold it and tap steps, or hold
   // steps and tap it, to empty just those steps; then releasing it clears nothing more.
-  // On the Clips page it works the same way on clips: hold it and tap clips (or hold clips and tap it) to
-  // delete them; a tap on its own deletes the selected clip.
+  // On the Clips page: hold it and tap clips to delete them; a tap on its own deletes the selected clip.
   let trashHeld=null;
   clearBtn.addEventListener('pointerdown',e=>{
     if(clearBtn.disabled)return;trashHeld={id:e.pointerId,used:false};clearBtn.classList.add('held');
     try{clearBtn.setPointerCapture(e.pointerId);}catch(_){}
     if(!sessOn&&laneHolds.size){trashHeld.used=true;clearSteps(T(),[...laneHolds.values()].map(h=>{h.used=true;return h.idx;}));}
-    if(sessOn&&clipHolds.size){trashHeld.used=true;deleteClips([...clipHolds.values()].map(h=>{h.used=true;return h.k;}));}
   });
   // a tap on its own: the field's sequence is cleared; on the Clips page the selected clip is deleted
   const trashTap=()=>{if(sessOn){if(selClip)deleteClips([selClip]);}else clearSequence(T());};
@@ -671,6 +675,8 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     play:svg('<path d="M6 4.5l10 5.5-10 5.5z" fill="currentColor" stroke="none"/>'),
     stop:svg('<rect x="5" y="5" width="10" height="10" rx="1" fill="currentColor" stroke="none"/>'),
     rec:svg('<circle cx="10" cy="10" r="5.5" stroke="none"/>'),
+    // loop: a circle of arrows
+    loop:svg('<path d="M4 9a5 5 0 0 1 9-3l2 2M16 11a5 5 0 0 1-9 3l-2-2M15 4v4h-4M5 16v-4h4"/>'),
     stepOn:svg('<path d="M2 15H6V9H10V12H14V5H18"/>'),
     stepOff:svg('<path d="M2 15C4.5 15 4.5 9 7 9S9.5 12 12 12S13.5 5 18 5"/>'),
     // just the pips: the die's own outline is its edge
@@ -701,6 +707,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     press(recBtn,recOn);recBtn.setAttribute('aria-label',recOn?'Record (on)':'Record');
     // row 3 and the lane are the field's; row 2's middle shows the loop, field and game there, LOAD on the Clips page
     root.querySelectorAll('.fieldonly').forEach(n=>{n.hidden=page!=='field';});root.querySelectorAll('.clipsonly').forEach(n=>{n.hidden=!sessOn;});
+    loopBtn.innerHTML=ICON.loop;press(loopBtn,clipLoop);
     loadBtn.disabled=!selClip;projBtn.innerHTML=ICON.folder;fieldBtn.innerHTML=ICON.field;gameBtn.innerHTML=ICON.game;press(gameBtn,gameOn);
     capBtn.disabled=gameOn;recBtn.disabled=gameOn;fieldBtn.disabled=gameOn;
     clearBtn.disabled=sessOn?!selClip:seqEmpty(T());
@@ -847,25 +854,35 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     return per?L/gcd(per,L):1;
   }
   function songRowsOf(list,full){return list.map(k=>({bars:full?cycleBars(k):1,clips:[clipEngine(k)]}));}
-  // tap a clip: it is selected and loops (from the next bar line if something is playing)
+  // Tap a clip: it is selected and plays from the next bar line (at once if nothing is playing), blinking
+  // ("armed") until then. Clips play on down the list and stop after the last; with LOOP on, only the
+  // selected clip plays, over and over.
   function playClips(k){
-    if(!clips.includes(k))return;selClip=k;songPlaying=true;songList=[k];
-    initAudio();ready.then(()=>{tx({type:'live',tr:0,ord:null,mute:null});tx({type:'song',rows:songRowsOf(songList),from:0,once:false});});
+    if(!clips.includes(k))return;selClip=k;songPlaying=true;
+    songList=clipLoop?[k]:clips.slice();armed=st.playing?k:null;
+    initAudio();ready.then(()=>{tx({type:'live',tr:0,ord:null,mute:null});tx({type:'song',rows:songRowsOf(songList),from:songList.indexOf(k),once:!clipLoop});});
     liveV.order=liveV.mute=null;paintIcons();updateSession();
   }
-  function onSongRow(m){if(!songPlaying)return;updateSession();}
-  // the clip stopped (Stop): the engine goes back to the sequencer's sequence
+  // the playing clip changed: the selection follows it (so LOOP, Load and the trash act on what you hear)
+  function onSongRow(m){if(!songPlaying)return;const k=songList[m.idx];if(k&&clips.includes(k)){selClip=k;if(armed===k)armed=null;}updateSession();paintIcons();}
+  // the clips stopped (Stop, or the end of the list): the engine goes back to the sequencer's sequence
   function songEnded(){
-    if(!songPlaying)return;songPlaying=false;songList=[];const t=T();
+    if(!songPlaying)return;songPlaying=false;songList=[];armed=null;const t=T();
     tx({type:'launch',tr:t.i,clip:t.seq?clipForm(t.seq):null});sendRec();paintIcons();updateSession();
   }
-  // after the list changes while a clip plays: if the playing clip went, the new selection takes over
+  // after the list (or LOOP) changes while clips play: the engine gets the new list, the clip playing now
+  // keeps playing (if it went, the selection takes over at the next bar line)
   function resyncSong(){
     if(!songPlaying)return;
-    const cur=songList[0];if(cur&&clips.includes(cur))return;
-    if(!selClip){stopAll();return;}
-    songList=[selClip];tx({type:'songRows',rows:songRowsOf(songList),idx:0});
+    const pi=st.song?st.song.idx:-1,cur=songList[pi],has=cur&&clips.includes(cur);
+    if(!clips.length||!selClip&&!has){stopAll();return;}
+    if(clipLoop){const k=has&&!armed?cur:armed||selClip;songList=[k];tx({type:'songRows',rows:songRowsOf(songList),idx:has&&k===cur?0:-1,once:false});return;}
+    songList=clips.slice();
+    const idx=armed?clips.indexOf(armed)-1:has?clips.indexOf(cur):clips.indexOf(selClip)-1;
+    tx({type:'songRows',rows:songRowsOf(songList),idx,once:true});
   }
+  const loopBtn=$('cliploop');
+  loopBtn.addEventListener('click',()=>{clipLoop=!clipLoop;resyncSong();paintIcons();});
   function stopAll(){intent=null;tx({type:'stop'});songEnded();}
   function deleteClips(list){
     const gone=new Set(list.filter(k=>clips.includes(k)));if(!gone.size)return;checkpoint();
@@ -878,8 +895,8 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   }
   let sessBusy=0,sessDirty=false;
   const busy=on=>{sessBusy+=on?1:-1;if(sessBusy<0)sessBusy=0;if(!sessBusy&&sessDirty){sessDirty=false;renderSession();}};
-  // A clip held down can be deleted by tapping the trash; with the trash held, tapping a clip deletes it.
-  // A tap (released without either) selects the clip and plays from it.
+  // With the trash held, tapping a clip deletes it. A tap selects the clip and plays from it. A finger that
+  // moves scrolls the list instead (the browser cancels the tap).
   const clipHolds=new Map(),clipCvs=new Map();   // clipCvs: each row's canvas, so the playing clip can light its step
   function takeRow(k,i){
     const row=el('div',{className:'take'});row.dataset.i=i;
@@ -888,9 +905,9 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     cv.style.height=((k.n>8?2:1)*LROW+4)+'px';th.appendChild(cv);clipCvs.set(k.id,cv);
     th.addEventListener('pointerdown',e=>{
       if(trashHeld){trashHeld.used=true;deleteClips([k]);return;}
-      clipHolds.set(e.pointerId,{k,used:false,row});row.classList.add('held');
+      clipHolds.set(e.pointerId,{k,used:false,row});
     });
-    const up=e=>{const h=clipHolds.get(e.pointerId);if(!h)return;clipHolds.delete(e.pointerId);row.classList.remove('held');
+    const up=e=>{const h=clipHolds.get(e.pointerId);if(!h)return;clipHolds.delete(e.pointerId);
       if(e.type==='pointerup'&&!h.used){initAudio();checkBlocked();playClips(k);}};
     ['pointerup','pointercancel','pointerleave'].forEach(ev=>th.addEventListener(ev,up));
     th.addEventListener('click',e=>{if(e.detail===0){initAudio();playClips(k);}});   // keyboard
@@ -903,7 +920,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     if(!sessOn)return;
     const pi=songPlaying&&st.song?st.song.idx:-1,now=pi>=0?songList[pi]:null;
     takeList.querySelectorAll('.take').forEach(r=>{const k=clips[+r.dataset.i];if(!k)return;
-      r.classList.toggle('now',st.playing&&k===now);r.classList.toggle('sel',k===selClip);});
+      r.classList.toggle('now',st.playing&&k===now);r.classList.toggle('sel',k===selClip);r.classList.toggle('armed',k===armed);});
   }
   function renderSession(){
     if(!sessOn)return;
@@ -980,7 +997,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     if(mediaEl){try{mediaEl.pause();}catch(_){}}
     ptrs.clear();special.clear();laneHolds.clear();laneHold=null;trashHeld=null;diceHeld=null;clipHolds.clear();
     const keep=tracks[0].kind==='break'&&tracks[0].buf&&tracks[0].buf.L.length===loopLen(48000)?tracks[0]:null;
-    if(gameOn)endGame(false);if(fieldEdit)setFieldEdit(false);
+    if(gameOn)endGame(true,true);if(fieldEdit)setFieldEdit(false);
     tracks[0]=newTrack(0,'break',tracks[0].field);if(keep){tracks[0].buf=keep.buf;tracks[0].pk=keep.pk;}
     tracks[0].seq=blankClip(tracks[0]);
     view=0;clips=[];clipNum=0;selClip=null;songPlaying=false;songList=[];recOn=false;recBn=-1;
@@ -1478,7 +1495,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   async function openProject(p,name){
     if(!p||p.app!=='slicefield'||!p.track)throw new Error('not a Slicefield project');
     initAudio();await ready;
-    if(gameOn)endGame(false);if(fieldEdit)setFieldEdit(false);
+    if(gameOn)endGame(true,true);if(fieldEdit)setFieldEdit(false);
     if(st.playing||intent){intent=null;tx({type:'stop'});}
     songPlaying=false;songList=[];recOn=false;recBn=-1;
     // imported audio first, so the loop and clips can find it
@@ -2009,13 +2026,13 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
       g.font=`400 ${fs}px ${FONT}`;g.textAlign='right';g.fillStyle=latest?'#fff':`hsl(${hue} 14% 52%)`;
       if(lab&&lw<W()-tw-28)g.fillText(lab,cssW-12,ty);
     });
-    drawRuler(t,i,curSlice,cw,fs);
-    const y0=RY;
+    if(!gameOn)drawRuler(t,i,curSlice,cw,fs);
+    const y0=gameOn?TOP:RY;
     // columns past this track's bar length still play their slices, but sit outside the bar
     const xe=cellX(t,t.len16);if(!fxOnly&&xe<cssW-1){g.fillStyle='rgba(10,11,14,.42)';g.fillRect(xe,y0,cssW-xe,cssH-y0);}
     // the current step when it is silenced
     if(!fxOnly&&st.playing&&i.gate===false&&i.src){g.fillStyle='rgba(10,11,14,.5)';const x=i.rest?HW+((i.s+Math.max(0,i.barPos))%cols)*cw:HW+curSlice*cw;if(x>=HW)g.fillRect(x,y0,cw,cssH-y0);}
-    drawStrips(fs);drawGame(fs);
+    if(gameOn)drawGame(fs);else drawStrips(fs);
     g=laneG;laneG.setTransform(laneDpr,0,0,laneDpr,0,0);laneG.fillStyle=BG;laneG.fillRect(0,0,LW,laneRows*LROW+6);
     if('letterSpacing' in laneG)laneG.letterSpacing='0.06em';drawLane(fs);g=gridG;
     for(const p of ptrs.values())if(p.tr===view){g.strokeStyle='rgba(255,255,255,.85)';g.lineWidth=2;g.beginPath();g.arc(p.x,p.y,17,0,Math.PI*2);g.stroke();}
@@ -2057,193 +2074,185 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   }
   const rowTitle=(ks,maxW)=>{const long=ks.map(k=>fxName(k).toUpperCase()).join(' + ');return g.measureText(long).width<=maxW?long:ks.map(k=>SHORT[k]).join('+');};
 
-  // ---------- game (second pass: no scoring) ----------
-  // A round is 16 bars after a one-bar count-in. Targets come in gestures that make good loops: one, two or
-  // three touches at once (mostly in different rows), each held or dragged slowly up or down its row, for
-  // half a bar to two bars (a single drag: a beat to two bars). Hitting a target is just touching the field
-  // under it, so everything you do is played and, with Record on for the round, written into the sequence.
-  // At the end of every round bar the sequence is captured, so a round always leaves 16 clips.
-  //   A ring closes on each target as its moment comes (most of them late in the bar). A held target swells
-  //   until it bursts at its end; a dragged one is a marker moving slowly along its track. The beats left
-  //   are shown above the finger, where the hand can't hide them. Hold or follow it for most of its time
-  //   to clear it. New targets appear above the ones already held (a held finger hides what is below it),
-  //   and on an empty field they start low. Mines (later in the round): a finger that touches one is
-  //   silenced until it lifts.
-  // Holds and drags follow the effects: Stutter, Filter and Crush are mostly dragged; Reverse, Freeze,
-  // Delay and Reverb mostly held; the rest either. Past two beats a target is more likely dragged, and past
-  // a bar it always is. The game only reads touches; the engine is driven as by any fingers.
-  let gameOn=false,game=null,gameMsg=null;
-  const GBARS=16,BEAT=0.25,APPR=0.25,MAXF=5;
+  // ---------- game (third pass: a shooter, still no scoring) ----------
+  // The game is its own mode. The field fills the screen (the header, strips and lane go; × leaves), and a
+  // multi-barrelled laser turret sits on the station at the bottom. Touching anywhere plays the field as
+  // always and aims: every 16th step each finger's barrel fires a bolt along the line through the finger.
+  // 8-bit alien ships appear anywhere and head for the station (straight, diagonally, winding or looping),
+  // each needing a number of hits; the path always leaves more time than shooting it down takes. Ships that
+  // reach the bottom get through (counted, nothing more).
+  // The sound side: recording is off, touches are Replace and stepped, FX ONLY is off, and the plain loop
+  // plays through empty steps; the sequence is set aside. The engine hands over each bar's touched steps as
+  // a take, so the 16 bars after the count-in become 16 clips, each made only of what was played in it.
+  // The count-in is bar 0: playback restarts from its start and counts its four beats down at the tempo.
+  const GBARS=16,gameX=$('gamex'),appEl=$('app');
   const nowSamples=()=>st.playing?st.t+(performance.now()-st.recv)*sr/1000:st.t;
   const barS=()=>{const t=T();return Math.max(1,barSteps(t)*st.len/t.cols);};
   const nowBar=()=>nowSamples()/barS();
-  gameBtn.addEventListener('click',()=>{if(gameOn)endGame(true,'Round stopped');else startGame();});
+  gameBtn.addEventListener('click',()=>{if(gameOn)endGame(true);else startGame();});
+  gameX.addEventListener('click',()=>endGame(true));
+  // a blank sequence with ORDER and SKIP at their defaults: the plain loop, straight through
+  function plainBlank(t){const c=blankClip(t);c.orderV=STRIP_DEF.order;c.muteV=STRIP_DEF.mute;c.silPat='mute';return c;}
   function startGame(){
     if(sessOn||gameOn)return;if(fieldEdit)setFieldEdit(false);
-    gameOn=true;checkpoint();recOn=true;recBn=-1;sendRec();
-    game={startBar:null,plan:null,next:0,enemies:[],parts:[],captured:0,hits:0,missed:0,lastNb:-1,capNext:0};
-    ensurePlaying();gameMsg=null;paintIcons();
+    for(const id of [...special.keys(),...ptrs.keys()])end({pointerId:id,type:'pointercancel'});
+    if(songPlaying)songEnded();
+    checkpoint();const t=T();
+    game={keep:{playMode,stepped,fxOnly},startBar:1,taken:0,seen:false,plan:makePlan(1),next:0,enemies:[],bolts:[],parts:[],down:0,through:0,lastStep:-1,lastT:performance.now(),hitT:0};
+    gameOn=true;recOn=false;recBn=-1;appEl.classList.add('gaming');gameX.hidden=false;gameX.innerHTML=ICON.x;
+    initAudio();ready.then(()=>{
+      if(!gameOn)return;
+      tx({type:'stop'});sendRec();tx({type:'mode',mode:'replace'});tx({type:'stepped',on:true});tx({type:'fxonly',on:false});
+      tx({type:'pref',pref:{fill:true}});tx({type:'live',tr:t.i,ord:null,mute:null});
+      tx({type:'launch',tr:t.i,clip:clipForm(plainBlank(t))});tx({type:'take',tr:t.i,on:true});
+      intent={type:'play'};tx(intent);
+    });
+    paintIcons();requestAnimationFrame(resize);
   }
-  function endGame(early,text){
-    if(!gameOn)return;const g0=game;gameOn=false;game=null;
-    recOn=false;recBn=-1;sendRec();
-    for(const p of ptrs.values())if(p.mined){p.mined=false;}push(T());
-    gameMsg={text:text||(g0.captured+' clips saved'),sub:g0.hits+' cleared · '+g0.missed+' missed'+(g0.captured<GBARS?'':' · see them on the Clips page'),until:performance.now()+5000};
-    paintIcons();
+  // early: left with × or Stop (the clips made so far stay). quiet: no message (a project opening).
+  function endGame(early,quiet){
+    if(!gameOn)return;const g0=game,t=T();gameOn=false;game=null;
+    for(const id of [...ptrs.keys()])end({pointerId:id,type:'pointercancel'});
+    appEl.classList.remove('gaming');gameX.hidden=true;
+    playMode=g0.keep.playMode;stepped=g0.keep.stepped;fxOnly=g0.keep.fxOnly;
+    intent=null;tx({type:'stop'});tx({type:'take',tr:t.i,on:false});tx({type:'mode',mode:playMode});tx({type:'stepped',on:stepped});tx({type:'fxonly',on:fxOnly});tx(prefMsg());
+    tx({type:'launch',tr:t.i,clip:t.seq?clipForm(t.seq):null});
+    paintIcons();requestAnimationFrame(resize);
+    if(quiet||!g0.taken&&early)return;
+    const n=g0.taken;
+    openSheet(early?'Round stopped':'Round over',cardEl=>{
+      const go=el('button',{type:'button',className:'play',textContent:'Open Clips'});go.addEventListener('click',()=>{closeSheet();showPage('clips');});
+      const stay=el('button',{type:'button',textContent:'Stay here'});stay.addEventListener('click',()=>closeSheet());
+      cardEl.appendChild(el('div',{},[el('p',{},[n+' new clip'+(n===1?' is':'s are')+' on the Clips page'+(early?', one for each bar played.':', one for each bar of the round.')]),
+        el('p',{},[g0.down+' ship'+(g0.down===1?'':'s')+' shot down · '+g0.through+' got through']),el('div',{className:'btnrow'},[go,stay])]));
+    });
   }
-  const FAV={stutter:'drag',filter:'drag',crush:'drag',reverse:'hold',freeze:'hold',delay:'hold',reverb:'hold',random:'any',pitch:'any',env:'any'};
-  const PDRAG={drag:0.75,hold:0.2,any:0.5};
-  // where in the bar a gesture starts (in beats): weighted toward the second half, and most of all its end
+  // each bar of the round, as the engine hands it over, becomes a clip
+  function onTake(m){
+    const g0=game;if(!gameOn||!g0||m.tr!==view)return;
+    const r=m.bn-g0.startBar;if(r<0||r>=GBARS)return;
+    const t=T(),k=clipOf(t,{cols:t.cols,n:m.n,slots:m.slots,orderV:STRIP_DEF.order,muteV:STRIP_DEF.mute,silPat:'mute'});
+    clips.push(k);selClip=k;g0.taken++;flashCapture();paintIcons();
+    if(g0.taken>=GBARS)endGame(false);
+  }
+
+  // The ships, as 8-bit sprites (two frames, swapped on the beat). hp: hits to shoot one down; base: the
+  // shortest time (s) it takes to reach the station.
+  const SHIPS={
+    scout:{hp:3,px:3,col:'#8dff6a',base:5,frames:[
+      ['....X....','...XXX...','..XX.XX..','.XXXXXXX.','XX.XXX.XX','X...X...X','....X....'],
+      ['....X....','...XXX...','..XX.XX..','.XXXXXXX.','XX.XXX.XX','.X..X..X.','...X.X...']]},
+    saucer:{hp:6,px:3,col:'#5fe0ff',base:7,frames:[
+      ['...XXXXX...','.XXXXXXXXX.','XX.XX.XX.XX','XXXXXXXXXXX','..XXX.XXX..','...X...X...'],
+      ['...XXXXX...','.XXXXXXXXX.','X.XX.XX.XXX','XXXXXXXXXXX','..XXX.XXX..','..X.....X..']]},
+    crab:{hp:10,px:3.5,col:'#ff5fa2',base:9,frames:[
+      ['..X.....X..','...X...X...','..XXXXXXX..','.XX.XXX.XX.','XXXXXXXXXXX','X.XXXXXXX.X','X.X.....X.X','...XX.XX...'],
+      ['..X.....X..','X..X...X..X','X.XXXXXXX.X','XXX.XXX.XXX','XXXXXXXXXXX','.XXXXXXXXX.','..X.....X..','.X.......X.']]},
+    mother:{hp:24,px:4,col:'#ffb84d',base:14,frames:[
+      ['.....XXXXXX.....','...XXXXXXXXXX...','..XXXXXXXXXXXX..','.XX.XX.XX.XX.XX.','XXXXXXXXXXXXXXXX','..XXX..XX..XXX..','...X........X...'],
+      ['.....XXXXXX.....','...XXXXXXXXXX...','..XXXXXXXXXXXX..','.X.XX.XX.XX.XX.X','XXXXXXXXXXXXXXXX','..XXX..XX..XXX..','..X..........X..']]},
+  };
+  const shipW=s=>s.frames[0][0].length*s.px,shipH=s=>s.frames[0].length*s.px;
+  // where in the bar ships arrive (in beats): weighted toward its second half, and most of all its end
   const STARTS=[0,0.5,1,1.5,2,2.5,3,3.5],SW=[1,0.4,0.8,0.5,2,1.5,3,4];
   function wpick(ws,R){let s=0;for(const w of ws)s+=w;let x=R()*s;for(let i=0;i<ws.length;i++){x-=ws[i];if(x<0)return i;}return ws.length-1;}
-  // the plan: gestures {t0 (in bars from the start of playback), D (beats), n (touches)}, at most MAXF
-  // fingers at once; the next gesture may begin while one is still held
+  // the plan: {t0 (bars from the start of playback), type}; more and tougher ships as the round goes on,
+  // and a mothership in bars 6, 10 and 14
   function makePlan(b0){
-    const R=Math.random,out=[],end=b0+GBARS;let c=b0;
-    const busy=x=>out.reduce((s,e)=>s+(x>=e.t0-0.01&&x<e.t0+e.D*BEAT?e.n:0),0);
-    for(let guard=0;c<end-0.2&&guard<200;guard++){
-      const lv=(c-b0)/GBARS,r=R();
-      const n=lv<0.12?(r<0.6?1:2):r<0.55?3:r<0.85?1:2;
-      let D=n===1?[1,2,3,4,6,8][wpick([1,1.5,1.5,2,1.5,1.5],R)]:[2,3,4,6,8][wpick([2,1.5,2,1.5,1],R)];
-      // a start at or after the cursor, in the cursor's bar or the next
-      let bar=Math.floor(c+1e-9),t0=null;
-      for(let tries=0;tries<12&&t0==null;tries++){const s=bar+STARTS[wpick(SW,R)]*BEAT;if(s>=c-1e-9&&busy(s)+n<=MAXF)t0=s;else if(tries%3===2)bar++;}
-      if(t0==null||t0>=end-0.1){c=bar+1;continue;}
-      D=Math.min(D,Math.floor((end-t0)/BEAT+1e-9));if(D<(n===1?1:2)){c=end;continue;}
-      out.push({t0,D,n});
-      // the next one: often while this one is still held, otherwise after it
-      c=t0+D*BEAT*(R()<0.5?0.5+0.3*R():1)+(n===3?BEAT:0);
+    const R=Math.random,out=[];
+    for(let b=0;b<GBARS;b++){
+      const lv=b/GBARS,n=Math.min(5,1+Math.floor(b/3)+(R()<0.4?1:0));
+      for(let i=0;i<n;i++){const type=['scout','saucer','crab'][wpick([1.2,lv>0.1?1:0.3,lv>0.3?0.9:0],R)];out.push({t0:b0+b+STARTS[wpick(SW,R)]*0.25,type});}
+      if(b===5||b===9||b===13)out.push({t0:b0+b,type:'mother'});
     }
-    // mines, from bar 8: one in some bars, for a bar and a half
-    for(let b=8;b<GBARS;b++)if(R()<0.3)out.push({t0:b0+b+Math.floor(R()*4)*BEAT,D:6,n:1,mine:true});
     return out.sort((a,b)=>a.t0-b.t0);
   }
-  const fpx=(fx,fy)=>[HW+fx*W(),TOP+fy*(fieldH()-TOP)];
-  const RAD=()=>Math.max(22,Math.min(32,W()/T().cols*0.75));
-  const fingers=()=>[...ptrs.values()].filter(p=>p.live&&p.tr===view);
-  const alive=()=>game.enemies.filter(e=>e.state==='alive'&&!e.mine);
-  // where a target is at bar position nb (a drag moves along its track; long ones go there and back)
-  function tpos(e,nb){
-    if(e.mode!=='drag')return fpx(e.fx,e.fy0);
-    const u=clamp((nb-e.t0)/(e.D*BEAT),0,1),v=e.back?(u<0.5?u*2:2-u*2):u,s=v*v*(3-2*v);
-    return fpx(e.fx,e.fy0+(e.fy1-e.fy0)*s);
+  const gameBot=()=>cssH-GBASE;
+  const stepsPerSec=()=>{const t=T();return barSteps(t)/(barS()/sr);};
+  function spawn(s){
+    const R=Math.random,S=SHIPS[s.type],x0=HW+20+R()*(W()-40),top=TOP+16,y0=top+R()*(gameBot()-top)*0.45;
+    // time to the station: never less than three times what one finger needs to shoot it down, plus 2.5 s
+    const dur=Math.max(S.base*(0.85+0.3*R()),3*S.hp/stepsPerSec()+2.5)*(1-0.35*(y0-top)/(gameBot()-top));
+    const path=s.type==='mother'?'loop':s.type==='saucer'?(R()<0.7?'wind':'loop'):s.type==='crab'?(R()<0.6?'straight':'wind'):(R()<0.6?'diag':'straight');
+    game.enemies.push({type:s.type,S,hp:S.hp,born:performance.now(),dur:dur*1000,x0,y0,x1:HW+20+R()*(W()-40),path,
+      vx:(R()<0.5?-1:1)*W()*(0.6+0.8*R()),A:20+R()*W()/4,f:1+R()*1.5,ph:R()*6.3,loops:1+Math.floor(R()*2),r:24+R()*20,flash:0});
   }
-  // Rows for n new targets: above everything held or showing (fingers hide what is below them), or, on an
-  // empty field, mostly low. Drags prefer tall rows. Returns [{ri, top (the highest y allowed)}].
-  function pickRows(n,drag,R){
-    const R0=RAD();let ceil=fieldH();
-    for(const e of alive())ceil=Math.min(ceil,tpos(e,nowBar())[1],e.mode==='drag'?Math.min(...[e.fy0,e.fy1].map(f=>fpx(0,f)[1])):Infinity);
-    for(const p of fingers())ceil=Math.min(ceil,p.y);
-    const lim=ceil-R0*1.6,empty=ceil>=fieldH();
-    let cand=lay.map((r,ri)=>({ri,top:Math.min(r.b1,lim)})).filter(c=>c.top-lay[c.ri].b0>Math.min(R0*1.6,(lay[c.ri].b1-lay[c.ri].b0)*0.6));
-    if(!cand.length)cand=lay.map((r,ri)=>({ri,top:r.b1}));
-    const w=c=>{const r=lay[c.ri],h=c.top-r.b0;return (empty?1+2*c.ri/Math.max(1,lay.length-1):1)*(drag?Math.max(0.3,h/100):1);};
-    const out=[],left=cand.slice();
-    for(let i=0;i<n;i++){
-      const pool=left.length&&R()<0.85?left:cand;const k=wpick(pool.map(w),R),c=pool[k];out.push(c);
-      const j=left.indexOf(c);if(j>=0)left.splice(j,1);
-    }
+  // a ship's place at time now (bouncing off the sides)
+  function shipAt(e,now){
+    const u=clamp((now-e.born)/e.dur,0,1),lo=HW+shipW(e.S)/2,hi=cssW-shipW(e.S)/2,refl=x=>{const w=hi-lo;let v=((x-lo)%(2*w)+2*w)%(2*w);return lo+(v>w?2*w-v:v);};
+    let x,y=e.y0+(gameBot()-e.y0)*u;
+    if(e.path==='straight')x=e.x0+(e.x1-e.x0)*u;
+    else if(e.path==='diag')x=refl(e.x0+e.vx*u);
+    else if(e.path==='wind')x=refl(e.x0+e.A*Math.sin(2*Math.PI*e.f*u+e.ph));
+    else{const th=2*Math.PI*e.loops*u+e.ph,k=Math.min(1,u*8,(1-u)*8);x=refl(e.x0+(e.x1-e.x0)*u+e.r*Math.cos(th)*k);y+=e.r*Math.sin(th)*k;}
+    return [x,y,u];
+  }
+  // the turret: five barrels; each held finger gets one (left to right), which aims through it
+  const GUNX=()=>cssW/2,GUNY=()=>cssH-GBASE+10;
+  function barrels(){
+    const fs=fingers().slice().sort((a,b)=>a.x-b.x).slice(0,5),n=fs.length,out=[];
+    for(let i=0;i<5;i++){const px=GUNX()+(i-2)*13,py=GUNY()-4,f=n?fs[i-Math.floor((5-n)/2)]:null;
+      const a=f&&f.y<py-4?Math.atan2(f.y-py,f.x-px):-Math.PI/2+(i-2)*0.32;out.push({px,py,a,f});}
     return out;
   }
-  function spawn(s){
-    const R=Math.random,t=T(),nb=nowBar();
-    if(s.mine){
-      // a mine sits where nothing is held or due: a free column, away from fingers
-      const used=new Set(alive().map(e=>Math.round(e.fx*t.cols-0.5)));
-      for(let tries=0;tries<20;tries++){const col=Math.floor(R()*t.cols),r=lay[Math.floor(R()*lay.length)];if(!r||used.has(col))continue;
-        const fy=(r.b0+(0.25+0.5*R())*(r.b1-r.b0)-TOP)/(fieldH()-TOP),[x,y]=fpx((col+0.5)/t.cols,fy);
-        if(fingers().some(p=>Math.hypot(p.x-x,p.y-y)<90))continue;
-        game.enemies.push({mine:true,state:'alive',t0:s.t0,D:s.D,fx:(col+0.5)/t.cols,fy0:fy});return;}
-      return;
-    }
-    const forced=s.D>4,rows=pickRows(s.n,forced||s.D>2,R),grp={id:++idCtr,members:[]};
-    const cols=new Set(alive().map(e=>Math.round(e.fx*t.cols-0.5)));
-    for(const c of rows){
-      const r=lay[c.ri];
-      let p=r.ks.reduce((a,k)=>a+PDRAG[FAV[k]||'any'],0)/r.ks.length;if(s.D>2)p+=(1-p)*0.5;
-      const mode=forced||R()<p?'drag':'hold';
-      let col=Math.floor(R()*t.cols);for(let tries=0;tries<12&&[...cols].some(q=>Math.abs(q-col)<2);tries++)col=Math.floor(R()*t.cols);cols.add(col);
-      const toF=y=>(y-TOP)/(fieldH()-TOP),lo=r.b0+(r.b1-r.b0)*0.12,hi=Math.max(lo+1,Math.min(r.b1-(r.b1-r.b0)*0.12,c.top));
-      const e={state:'alive',grp,mode,t0:s.t0,D:s.D,fx:(col+0.5)/t.cols,on:0,ri:c.ri};
-      if(mode==='drag'){
-        // a single drag crosses the row; three at once move at least half of it; long ones go there and back
-        const span=(hi-lo)*(s.n===1?1:0.5+0.4*R()),a=lo+R()*(hi-lo-span),up=R()<0.5;
-        e.fy0=toF(up?a+span:a);e.fy1=toF(up?a:a+span);e.back=s.D>=6&&R()<0.6;
-      }else e.fy0=toF(lo+(0.2+0.6*R())*(hi-lo));
-      grp.members.push(e);game.enemies.push(e);
-    }
-  }
-  function burst(x,y,col){game.parts.push({x,y,col,t:performance.now()});}
+  const fingers=()=>[...ptrs.values()].filter(p=>p.live&&p.tr===view);
+  const rowHueAt=p=>{const r=lay[p.ri];return r?r.hue:200;};
+  function boom(x,y,col,n){for(let i=0;i<n;i++){const a=Math.random()*6.3,v=60+Math.random()*220;game.parts.push({x,y,vx:Math.cos(a)*v,vy:Math.sin(a)*v,col,t:performance.now(),life:350+Math.random()*350});}}
   function gameTick(){
-    const g0=game,i=info(0);if(!g0)return;
-    if(!st.playing){if(g0.startBar!=null&&!intent)endGame(true,'Round stopped');return;}
+    const g0=game;if(!g0)return;const now=performance.now(),dt=Math.min(0.05,(now-g0.lastT)/1000);g0.lastT=now;
+    if(st.playing)g0.seen=true;else{if(g0.seen&&!intent)endGame(true);return;}
     const nb=nowBar();
-    if(g0.startBar==null){const f=nb%1;g0.startBar=nb<0.3?1:Math.floor(nb)+(f<0.5?1:2);g0.plan=makePlan(g0.startBar);g0.lastNb=nb;}
-    const dt=Math.max(0,Math.min(0.1,nb-g0.lastNb));g0.lastNb=nb;
-    // capture each round bar once the engine has moved past it (its last step has been written by then)
-    const bn=i.barN==null?-1:i.barN;
-    while(g0.capNext<GBARS&&bn>=g0.startBar+g0.capNext+1){const t=T();clips.push(clipOf(t,t.seq));selClip=clips[clips.length-1];g0.capNext++;g0.captured++;flashCapture();paintIcons();}
-    if(g0.capNext>=GBARS){endGame(false);return;}
-    while(g0.next<g0.plan.length&&g0.plan[g0.next].t0-APPR<=nb)spawn(g0.plan[g0.next++]);
-    const R0=RAD(),now=performance.now();
-    for(const e of g0.enemies){if(e.state!=='alive')continue;
-      const end=e.t0+e.D*BEAT,[x,y]=tpos(e,nb);
-      if(e.mine){
-        for(const p of fingers())if(!p.mined&&Math.hypot(p.x-x,p.y-y)<R0*0.8){p.mined=true;e.state='boom';e.dead=now;burst(x,y,'#ff5050');push(T());break;}
-        if(e.state==='alive'&&nb>end)e.state='gone',e.dead=now;continue;}
-      // a touch a little early counts; the target is cleared when it was held (or followed) most of its time
-      if(nb>=e.t0-BEAT*0.25&&nb<end&&fingers().some(p=>Math.hypot(p.x-x,p.y-y)<R0*1.15))e.on+=dt;
-      if(nb>=end){if(e.on>=e.D*BEAT*0.6){e.state='dead';g0.hits++;burst(x,y,e.mode==='drag'?'#bff3ff':'#ffd1e6');}else{e.state='gone';g0.missed++;}e.dead=now;}
-    }
-    g0.enemies=g0.enemies.filter(e=>e.state==='alive'||now-e.dead<500);g0.parts=g0.parts.filter(p=>now-p.t<500);
+    while(g0.next<g0.plan.length&&g0.plan[g0.next].t0<=nb)spawn(g0.plan[g0.next++]);
+    // every 16th step, each finger's barrel fires
+    const sp=Math.floor(nb*barSteps(T()));
+    if(sp!==g0.lastStep){g0.lastStep=sp;if(nb>=g0.startBar)for(const b of barrels())if(b.f){const L=26;
+      g0.bolts.push({x:b.px+Math.cos(b.a)*L,y:b.py+Math.sin(b.a)*L,vx:Math.cos(b.a)*1500,vy:Math.sin(b.a)*1500,col:`hsl(${rowHueAt(b.f)} 90% 70%)`});}}
+    // bolts move in small steps and stop at the first ship they touch
+    for(const q of g0.bolts){const n=Math.ceil(Math.hypot(q.vx,q.vy)*dt/8);
+      for(let s=0;s<n&&!q.gone;s++){q.x+=q.vx*dt/n;q.y+=q.vy*dt/n;
+        for(const e of g0.enemies){if(e.dead)continue;const [x,y]=shipAt(e,now),w=shipW(e.S)/2+3,h=shipH(e.S)/2+3;
+          if(Math.abs(q.x-x)<w&&Math.abs(q.y-y)<h){q.gone=true;e.hp--;e.flash=now;
+            if(e.hp<=0){e.dead=now;g0.down++;boom(x,y,e.S.col,e.type==='mother'?40:18);}else boom(q.x,q.y,'#fff',2);break;}}}
+      if(q.x<0||q.x>cssW||q.y<TOP||q.y>cssH)q.gone=true;}
+    g0.bolts=g0.bolts.filter(q=>!q.gone);
+    for(const e of g0.enemies){if(e.dead)continue;const [x,y,u]=shipAt(e,now);if(u>=1){e.dead=now;e.through=true;g0.through++;g0.hitT=now;boom(x,gameBot(),'#ff5050',16);}}
+    g0.enemies=g0.enemies.filter(e=>!e.dead);
+    for(const p of g0.parts){p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=300*dt;}
+    g0.parts=g0.parts.filter(p=>now-p.t<p.life);
   }
-  const PINK='#ff5fa2',CYAN='#5fe0ff';
+  function sprite(rows,x,y,px,col){
+    const w=rows[0].length*px,h=rows.length*px,x0=Math.round(x-w/2),y0=Math.round(y-h/2);g.fillStyle=col;
+    for(let r=0;r<rows.length;r++)for(let c=0;c<rows[r].length;c++)if(rows[r][c]==='X')g.fillRect(x0+c*px,y0+r*px,Math.ceil(px),Math.ceil(px));
+  }
   function drawGame(fs){
-    const now=performance.now();
-    if(gameMsg&&now>gameMsg.until)gameMsg=null;
-    if(!gameOn){if(gameMsg)hud(gameMsg.text,gameMsg.sub,fs);return;}
+    if(!gameOn)return;
     gameTick();const g0=game;if(!g0)return;
-    const nb=g0.plan?nowBar():0,R=RAD();
-    if(g0.startBar==null||nb<g0.startBar){const left=g0.startBar==null?4:Math.max(1,Math.ceil((g0.startBar-nb)/BEAT));hud('GET READY  '+left,'16 bars · every bar becomes a clip',fs);}
-    else hud('BAR '+Math.min(GBARS,Math.floor(nb)-g0.startBar+1)+' / '+GBARS,g0.captured+' clips · '+g0.hits+' cleared',fs);
-    const pill=(x,y,text,col)=>{g.font=`700 ${fs+3}px ${FONT}`;const w=Math.max(30,g.measureText(text).width+16);let py=y-R-46;if(py<TOP+4)py=y+R+30;x=clamp(x,HW+w/2+2,cssW-w/2-2);
-      g.fillStyle='rgba(17,19,23,.88)';rr(x-w/2,py-12,w,24,12);g.fill();g.strokeStyle=col;g.lineWidth=1.5;rr(x-w/2,py-12,w,24,12);g.stroke();
-      g.fillStyle='#fff';g.textAlign='center';g.textBaseline='middle';g.fillText(text,x,py+0.5);};
-    // a gesture's touches are joined by a faint line
-    const grps=new Set(g0.enemies.filter(e=>e.state==='alive'&&e.grp&&e.grp.members.length>1).map(e=>e.grp));
-    for(const gp of grps){const P=gp.members.filter(e=>e.state==='alive').map(e=>tpos(e,nb));if(P.length<2)continue;
-      g.strokeStyle='rgba(255,255,255,.18)';g.lineWidth=1.5;g.setLineDash([3,5]);g.beginPath();P.forEach(([x,y],k)=>g[k?'lineTo':'moveTo'](x,y));g.stroke();g.setLineDash([]);}
-    for(const e of g0.enemies){
-      const fade=e.state==='alive'?clamp((nb-(e.t0-APPR))/(APPR*0.5),0.2,1):Math.max(0,1-(now-e.dead)/500);
-      g.globalAlpha=fade;const [x,y]=tpos(e,nb),end=e.t0+e.D*BEAT;
-      if(e.mine){const p=1+0.12*Math.sin(now/120),r=R*0.42*p;g.fillStyle=e.state==='boom'?'#ff5050':'#c0303a';g.beginPath();g.arc(x,y,r,0,7);g.fill();
-        g.strokeStyle='#ff8080';g.lineWidth=2;g.beginPath();for(let k=0;k<8;k++){const a=k*Math.PI/4;g.moveTo(x+r*Math.cos(a),y+r*Math.sin(a));g.lineTo(x+(r+6)*Math.cos(a),y+(r+6)*Math.sin(a));}g.stroke();g.globalAlpha=1;continue;}
-      const col=e.mode==='drag'?CYAN:PINK,frac=clamp(e.on/(e.D*BEAT),0,1),onIt=e.state==='alive'&&fingers().some(p=>Math.hypot(p.x-x,p.y-y)<R*1.15);
-      if(e.mode==='drag'){
-        // the track, with chevrons pointing the way
-        const [,ya]=fpx(e.fx,e.fy0),[,yb]=fpx(e.fx,e.fy1);g.strokeStyle='rgba(95,224,255,.28)';g.lineWidth=R*0.9;g.lineCap='round';g.beginPath();g.moveTo(x,ya);g.lineTo(x,yb);g.stroke();g.lineCap='butt';
-        const dir=Math.sign(yb-ya)||1;g.strokeStyle='rgba(95,224,255,.6)';g.lineWidth=2;for(let yy=ya+dir*14;dir*(yb-yy)>6;yy+=dir*18){g.beginPath();g.moveTo(x-5,yy-dir*4);g.lineTo(x,yy+dir*1);g.lineTo(x+5,yy-dir*4);g.stroke();}
-        if(e.back){g.fillStyle='rgba(95,224,255,.6)';g.font=`600 ${fs}px ${FONT}`;g.textAlign='center';g.textBaseline='middle';g.fillText('↕',x+R*0.9,(ya+yb)/2);}
-      }
-      // the core: swells as it is held (or followed), bursting at its end
-      const r=R*0.5*(1+0.7*frac);
-      g.fillStyle=onIt?'#fff':col;g.beginPath();g.arc(x,y,r,0,7);g.fill();
-      g.strokeStyle=col;g.lineWidth=3;if(frac>0){g.beginPath();g.arc(x,y,r+5,-Math.PI/2,-Math.PI/2+2*Math.PI*frac);g.stroke();}
-      // the closing ring: touch as it meets the core
-      if(e.state==='alive'&&nb<e.t0){const k=clamp((e.t0-nb)/APPR,0,1);g.strokeStyle=col;g.lineWidth=2;g.globalAlpha=fade*(1-k*0.5);g.beginPath();g.arc(x,y,r+4+k*R*1.8,0,7);g.stroke();g.globalAlpha=fade;}
-      if(e.state==='alive'&&nb>=e.t0-APPR)pill(x,y,String(Math.max(1,Math.ceil((end-Math.max(nb,e.t0))/BEAT-1e-6))),col);
-      g.globalAlpha=1;
-    }
-    for(const q of g0.parts){const k=(now-q.t)/500;g.globalAlpha=1-k;g.strokeStyle=q.col;g.lineWidth=3;g.beginPath();g.arc(q.x,q.y,R*(0.8+2*k),0,7);g.stroke();g.beginPath();g.arc(q.x,q.y,R*(0.4+1.2*k),0,7);g.stroke();}
-    g.globalAlpha=1;
-    // a silenced finger (it touched a mine) is shown red
-    for(const p of fingers())if(p.mined){g.strokeStyle='#ff5050';g.lineWidth=3;g.beginPath();g.arc(p.x,p.y,20,0,7);g.stroke();}
-  }
-  // the round's state, over the ORDER and SKIP strips (which rest during a round)
-  function hud(big,small,fs){
-    g.fillStyle='rgba(17,19,23,.94)';g.fillRect(0,0,cssW,RY-4);g.strokeStyle=PINK;g.lineWidth=1;rr(0.5,0.5,cssW-1,RY-5,7);g.stroke();
-    g.fillStyle='#ffd1e6';g.font=`700 ${fs+3}px ${FONT}`;g.textAlign='left';g.textBaseline='middle';g.fillText(big,12,(RY-4)/2-(small?7:0));
-    if(small){g.fillStyle='#c9a3b6';g.font=`400 ${fs}px ${FONT}`;g.fillText(small,12,(RY-4)/2+10);}
+    const now=performance.now(),nb=st.playing?nowBar():0,beat=Math.floor(nb*4);
+    // the field dims so the ships stand out; its rows still show where the effects are
+    g.fillStyle='rgba(8,9,12,.5)';g.fillRect(0,TOP,cssW,cssH-TOP);
+    for(const e of g0.enemies){const [x,y]=shipAt(e,now),S=e.S;
+      sprite(S.frames[beat&1],x,y,S.px,now-e.flash<70?'#fff':S.col);
+      if(S.hp>3&&e.hp<S.hp){const w=shipW(S);g.fillStyle='rgba(0,0,0,.6)';g.fillRect(x-w/2,y-shipH(S)/2-7,w,3);g.fillStyle=S.col;g.fillRect(x-w/2,y-shipH(S)/2-7,w*e.hp/S.hp,3);}}
+    for(const q of g0.bolts){g.fillStyle=q.col;const a=Math.atan2(q.vy,q.vx);g.save();g.translate(q.x,q.y);g.rotate(a);g.fillRect(-7,-1.5,14,3);g.restore();}
+    for(const p of g0.parts){g.globalAlpha=1-(now-p.t)/p.life;g.fillStyle=p.col;g.fillRect(Math.round(p.x)-2,Math.round(p.y)-2,4,4);}g.globalAlpha=1;
+    // the station: a pixel wall with a shield line that flashes red when a ship gets through
+    const by=gameBot(),hit=now-g0.hitT<350;
+    g.fillStyle='#14161b';g.fillRect(0,by,cssW,cssH-by);
+    g.fillStyle='#2a2f38';for(let x=0;x<cssW;x+=16)g.fillRect(x+1,by+8+((x/16)&1)*6,14,5);
+    g.fillStyle=hit?'#ff5050':'rgba(95,224,255,.8)';g.fillRect(0,by,cssW,hit?3:2);
+    // the turret: barrels first (each aims through its finger), then the dome over them
+    for(const b of barrels()){g.save();g.translate(b.px,b.py);g.rotate(b.a);g.fillStyle=b.f?'#ece7dc':'#6c7380';g.fillRect(0,-3,26,6);g.fillStyle=b.f?`hsl(${rowHueAt(b.f)} 90% 65%)`:'#3a3f4a';g.fillRect(20,-3,6,6);g.restore();}
+    sprite(['....XXXXXXX....','..XXXXXXXXXXX..','.XXXXXXXXXXXXX.','XXXXXXXXXXXXXXX','XXXXXXXXXXXXXXX'],GUNX(),GUNY()+6,4,'#8a8f99');
+    sprite(['XXX','XXX'],GUNX(),GUNY()+2,4,ACC);
+    // the round's state at the top; the count-in in the middle
+    g.fillStyle='#111317';g.fillRect(0,0,cssW,TOP);g.fillStyle='rgba(255,95,162,.5)';g.fillRect(0,TOP-1,cssW,1);
+    g.textAlign='left';g.textBaseline='middle';g.fillStyle='#ffd1e6';g.font=`700 ${fs+3}px ${FONT}`;
+    const bar=Math.floor(nb)-g0.startBar+1;
+    g.fillText(nb<g0.startBar?'GET READY':'BAR '+Math.min(GBARS,bar)+' / '+GBARS,12,TOP/2-7);
+    g.fillStyle='#c9a3b6';g.font=`400 ${fs}px ${FONT}`;g.fillText(g0.taken+' clips · '+g0.down+' down · '+g0.through+' through',12,TOP/2+9);
+    if(nb<g0.startBar){const left=st.playing?4-Math.min(3,beat):4;
+      g.textAlign='center';g.fillStyle='#ffd1e6';g.font=`700 ${Math.round(cssW/4)}px ${FONT}`;g.fillText(String(left),cssW/2,TOP+(gameBot()-TOP)*0.42);
+      const hy=TOP+(gameBot()-TOP)*0.42+cssW/7;g.font=`600 ${fs+2}px ${FONT}`;g.fillStyle='#c9a3b6';g.fillText('Touch anywhere to aim and fire',cssW/2,hy);g.fillText('Each bar becomes a clip',cssW/2,hy+18);}
   }
 
   // ---------- start ----------

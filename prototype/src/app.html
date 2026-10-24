@@ -377,6 +377,17 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
 .card.big .sess-scroll{flex:1;min-height:120px}
 .prow.sel .pb{border-color:#fff}
 .prow.gone .pb{background:#4a1d20;border-color:var(--rec);color:#ffb4b4}
+.c36{grid-column:3/7}
+/* v24: an armed clip (it starts at the next bar line) blinks; clip rows scroll with a finger */
+.take.armed .th{border-color:var(--accent);animation:armed .5s steps(2,jump-none) infinite}
+@keyframes armed{50%{border-color:transparent}}
+.take .th,.take .th canvas{touch-action:pan-y}
+#cliploop[aria-pressed="true"]{background:#3a3120;border-color:var(--accent);color:var(--accent)}
+/* v24: the game takes the whole screen */
+.app.gaming .side{display:none}
+.app.gaming{padding-block:0;gap:0}
+.gamex{position:absolute;right:8px;top:6px;width:36px;height:36px;padding:0;border-radius:18px;z-index:4;background:rgba(17,19,23,.8)}
+.gamex svg{width:16px;height:16px}
 .prow.gone{transition:opacity .25s;opacity:.55}
 .projtools{display:grid;grid-template-columns:36px repeat(3,minmax(0,1fr));gap:6px}
 .projtools button{height:34px;font-size:10px;letter-spacing:.06em}
@@ -406,7 +417,8 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
       </select>
       <button id="fieldbtn" class="ic c5 fieldonly" aria-label="Fields" title="Fields: switch, edit or roll a layout of effect cells"></button>
       <button id="gamebtn" class="ic c6 fieldonly" aria-pressed="false" aria-label="Game" title="Game: play a 16-bar round; every bar is saved as a clip"></button>
-      <button id="loadclip" class="tiny c26 clipsonly" hidden title="Load the selected clip into the sequencer to edit it">LOAD TO SEQUENCER</button>
+      <button id="cliploop" class="ic c2 clipsonly" hidden aria-pressed="false" aria-label="Loop the selected clip" title="Loop: only the selected clip plays, over and over"></button>
+      <button id="loadclip" class="tiny c36 clipsonly" hidden title="Load the selected clip into the sequencer to edit it">LOAD TO SEQUENCER</button>
       <button id="play" class="ic play c78" aria-pressed="false" aria-label="Play"></button>
       <input id="file" type="file" accept="audio/*" hidden><input id="projfile" type="file" accept=".json,.zip,application/json,application/zip" hidden>
     </div>
@@ -424,6 +436,7 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
   <div class="main" id="mainpane">
     <div class="gridwrap" id="gridwrap"><canvas id="grid" aria-label="Performance strips and effect grid"></canvas>
       <div class="fieldbar" id="fieldbar" hidden></div>
+      <button class="ic gamex" id="gamex" hidden aria-label="Leave the game" title="Leave the game"></button>
     </div>
     <section class="session" id="session" hidden aria-label="Clips">
       <div class="sess-scroll" id="sessScroll"><div class="takelist" id="takelist"></div></div>

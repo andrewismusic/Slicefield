@@ -1,6 +1,6 @@
 # Slicefield — handoff for the iOS app
 
-This guide and the `prototype/` folder are everything needed to build Slicefield as a native iPhone app. The prototype is a single-page web app (version 23) designed through about fifteen rounds of hands-on testing on a phone. Treat its behaviour as the specification: when this document and the code disagree, the code in `prototype/src/` is what was actually played and approved. Say so in the pull request if you change any behaviour on purpose.
+This guide and the `prototype/` folder are everything needed to build Slicefield as a native iPhone app. The prototype is a single-page web app (version 24) designed through about fifteen rounds of hands-on testing on a phone. Treat its behaviour as the specification: when this document and the code disagree, the code in `prototype/src/` is what was actually played and approved. Say so in the pull request if you change any behaviour on purpose.
 
 **For Claude Code:** read this whole file first, then `prototype/src/engine.js` (about 580 lines, the heart of it). Section 13 gives the build order. Section 14 lists decisions the owner (Andrew) hasn't made yet. Ask him about those instead of guessing. Section 18 covers using Slicefield as the sound engine inside a larger app, and sections 19–21 list what changed in versions 16, 17 and 18. **Version 18 replaced recording, clips and the song with capture and a Takes list, and the play-order and silence strips with fixed ORDER and SKIP patterns.** Where §5.4, §5.5, §8, §9, §10.4 or §20 disagree with §21, §21 wins.
 
@@ -34,6 +34,7 @@ This guide and the `prototype/` folder are everything needed to build Slicefield
 24. Changes in version 21
 25. Changes in version 22: fields, the game, and a leaner Clips page
 26. Changes in version 23: fields as rows, the waveform ruler, the game's second pass
+27. Changes in version 24: the game as a shooter, clips play down the list
 
 ---
 
@@ -588,7 +589,7 @@ When you are unsure how something should feel, open the prototype on a phone and
 Postponed by Andrew (v22): resampling a take into a new loop, Ableton Link and MIDI clock, background audio, the iPad layout, desktop/VST input, sharing projects, and the native app itself (until the game is further along).
 
 1. **Fields** (rows, §26.1). Still open: the maximum of 10 rows and 4 effects a row, the order of effects inside a row (as added now), whether the filter's dry middle should be wider again (it uses the same middle band as Pitch now), and the ruler's height (24 pt).
-2. **The game** (second pass, §26.5): scoring and currency (waiting on the larger platform), round length (16 bars), the gesture mix and timing, whether mines stay, and an in-world theme (§26.5 lists ideas).
+2. **The game** (shooter, §27.1): scoring and currency (waiting on the larger platform), round length (16 bars), the ship mix, speeds and hit counts, the fire rate (one bolt per finger per 16th), and whether ships getting through should cost anything.
 3. **Imported audio** is stretched to the bar by default now (§25.6); resampling is the other choice in Preferences. Still open: trimming or choosing which part of a long file becomes the bar.
 4. **Persistence and projects.** Named projects in a folder library (§24.6, now a sheet, §25.5).
 
@@ -642,6 +643,7 @@ Add scenarios as you go. Every bug fixed in either implementation should get one
 | `play` / `stop` | — | start from t = 0 (resets all tracks) / stop (clears song) |
 | `touches` | `tr, list:[{id, a, n, o, fx:[{k, raw}]|null}]` | the current held touches for a track (a, n in sixteenths; o = touch order). `fx` lists every cell under the finger (overlapping cells, §25.3); a single `{k, raw}` is still accepted. May trigger a grace re-decide |
 | `cfg` | `tr, cfg:{fx: EffectConfig}` | replace effect settings (the field's); bumps the version counter |
+| `take` | `tr, on` | from the next bar line, each bar's touched steps are handed over as a `take` event `{tr, bn, n, slots}` when the bar ends (§27.1); the sequence is not changed |
 | `field` | `tr, order:[effect keys]` | the field's signal order, top to bottom (§25.3). A sequence may carry its own `cfg` and `rank` (`{key: place}`, from `rankOf(order)`), which win while it plays |
 | `grid` | `tr, n, q` | grid 16/8, queued to the bar if `q` and playing |
 | `range` | `tr, s16, e16, q` | bar length, queued to the bar if `q` and playing |
@@ -1346,6 +1348,8 @@ The editor shows the rows stacked at their true heights.
 - Clips still keep their own copy (§25.3). Deleting a field from the library never changes projects or clips. Undo covers the library like before.
 
 ### 26.5 The game, second pass (still no scoring)
+**Superseded by §27.1** (the game is now a full-screen shooter that makes its clips from takes).
+
 Targets are now **gestures** that make good loops:
 
 | Gesture | Share | Length |
@@ -1375,3 +1379,32 @@ Targets are now **gestures** that make good loops:
 ### 26.7 Tests and scenarios
 - `engine.test.js` has 58 cases. New ones: pitch defaults to octaves and fifths; touches only (empty steps and the plain loop silent; touches and written steps play). Two older pitch tests now set chromatic explicitly.
 - Scenario `08-touches-only`: a sequence with two written steps under `fill: false`, a touch, an FX ONLY effect on empty steps, then `fill` back on.
+
+## 27. Changes in version 24: the game as a shooter, clips play down the list
+
+Agreed with Andrew after v23.
+
+### 27.1 The game is its own mode, and a shooter
+- **Full screen:** Game (crosshair) hides the header, the tools, the lane and the strips; the field fills the screen under a status bar (44 pt: bar n / 16, clips, ships down and through) with **×** to leave. A station with the turret takes the bottom 62 pt; the rows end above it.
+- **Its own sound settings, whatever the project's:** recording off, Replace, stepped, FX ONLY off, empty steps play the loop (`fill` on), and a blank sequence with ORDER and SKIP at their defaults (the plain loop). The sequence on the field is set aside, not changed; every setting comes back when the round ends.
+- **Count-in:** playback restarts from bar 0, which is the count-in: 4, 3, 2, 1 on its beats at the project's tempo. The round is bars 1–16.
+- **Clips come from takes, not from the sequence.** The engine's `take` (Appendix A) hands over each bar's touched steps as the bar ends: what recording into a blank sequence would have written, but in a scratch bar that starts empty every bar. Each of the 16 round bars becomes a clip (ORDER and SKIP at their defaults, SKIP mode, the field as it is), so every clip holds only that bar's gestures. A bar with no touches gives a blank clip. Native: two preallocated take bars, swapped at the bar line, handed over by the lock-free event queue.
+- **The end:** after the 16th clip, playback stops and a sheet says "16 new clips are on the Clips page", with ships down and through, **Open Clips** and **Stay here**. Leaving with × (or Stop) keeps the clips made so far and says so; leaving before any keeps quiet. One undo step takes the round's clips away.
+- **The shooter:**
+  - **Turret:** five barrels on the station. Each held finger (up to five, left to right) gets a barrel, which aims through the finger; every 16th step it fires a bolt along that line (in the colour of the finger's row). Bolts fly at 1500 pt/s and stop at the first ship they touch. Touches still play the field as always, so aiming is playing.
+  - **Ships** (8-bit sprites, two frames swapped on the beat): scout (green, 3 hits), saucer (cyan, 6), crab invader (pink, 10), mothership (orange, 24). A damaged ship with more than 3 hits shows a bar.
+  - **Paths:** they appear anywhere in the top 45% and head for the station: straight, diagonal (bouncing off the sides), winding, or looping. Each takes at least three times what one finger needs to shoot it down plus 2.5 s (and its type's base: 5, 7, 9, 14 s), less the further down it starts.
+  - **The plan:** 1–2 ships a bar at first, up to 5; saucers mostly from bar 3, crabs from bar 6, a mothership in bars 6, 10 and 14; arrivals weighted toward the end of the bar (as §26.5).
+  - A ship reaching the station "gets through": the shield line flashes red; it is counted, nothing more. No mines.
+- Code: `startGame`, `endGame`, `onTake`, `makePlan`, `spawn`, `shipAt`, `barrels`, `gameTick`, `drawGame` in `ui.js`; `take` in `engine.js` (`newTake`, the bar line in `boundary`, the write in `decide`).
+
+### 27.2 Clips page
+- **Clips play down the list** from the one tapped, then stop after the last. **LOOP** (row 2, left of LOAD TO SEQUENCER) plays only the selected clip, over and over; switching it while clips play takes effect at once (the clip playing carries on). There is no looping of the whole list.
+- **A tapped clip is armed** while another plays: its outline blinks until the next bar line, when it starts. The selection follows the clip playing, so LOOP, Load and the trash act on what you hear.
+- **No red outline on a held clip** any more: deleting several is hold the trash, tap clips (the "hold clips, tap the trash" way is gone).
+- **Scrolling:** a finger moving on a clip scrolls the list (the clip rows' canvases had `touch-action: none` from the page's canvas rule; it is `pan-y` now). A scroll cancels the tap, so nothing is played.
+- Engine: `songRows` takes an optional `once`, so LOOP can change it while the list plays (without it, turning LOOP on stopped playback after the bar: a bug, scenario 09).
+
+### 27.3 Tests and scenarios
+- `engine.test.js` has 60 cases. New: a take holds the bar's touched steps and leaves the sequence blank; the list plays once and stops, and LOOP turned on while it plays keeps going.
+- Scenario `09-take-song-loop`: two bars of takes (two-touch gestures), then a two-clip list played once, switched to one looping clip with `songRows … once:false`.

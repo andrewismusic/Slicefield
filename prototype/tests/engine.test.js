@@ -284,6 +284,18 @@ const blank=id=>({id,cols:16,n:16,ord:{perm:null},mute:{bits:null},slots:Array.f
  const heard=H.filter(h=>h.on).map(h=>h.ci);
  ok('touches only: empty steps are silent, touches and written steps play',fillOn>0.05&&off<1e-4&&plain<1e-4&&tch>0.05&&heard.length>0&&heard.every(c=>c===0),[fillOn,off,plain,tch,heard]);}
 
+// A take hands over each bar's touched steps when the bar ends (the game's clips), and leaves the sequence alone.
+{const e=mk();e.msg({type:'play'});const T=e.tracks[0],q=blank('g');e.msg({type:'launch',tr:0,clip:q});e.msg({type:'take',tr:0,on:true});
+ run(e,steps(e,16)+1);e.msg({type:'touches',tr:0,list:[{id:'a',a:5,n:1,o:1,fx:[{k:'crush',raw:0.4}]}]});run(e,steps(e,3));e.msg({type:'touches',tr:0,list:[]});
+ run(e,steps(e,30));const tk=e.ev.filter(m=>m.type==='take'),b1=tk.find(m=>m.bn===1)||{slots:[]},w=b1.slots.filter(s=>!s.empty);
+ ok('a take holds the bar’s touched steps; the sequence stays blank',tk.length>=2&&w.length>=2&&w.every(s=>s.fx[0].k==='crush'&&s.a===5)&&tk.find(m=>m.bn===2).slots.every(s=>s.empty)&&q.slots.every(s=>s.empty),[tk.map(m=>m.bn),w.length]);}
+
+// Clips play down the list once; switching to LOOP while they play (songRows with once:false) keeps the clip going.
+{const e=mk();const k=blank('L');e.msg({type:'song',rows:[{bars:1,clips:[k]},{bars:1,clips:[blank('M')]}],from:0,once:true});run(e,steps(e,20));
+ e.msg({type:'songRows',rows:[{bars:1,clips:[k]}],idx:0,once:false});run(e,steps(e,48));const looping=e.playing;
+ const e2=mk();e2.msg({type:'song',rows:[{bars:1,clips:[k]},{bars:1,clips:[blank('M')]}],from:0,once:true});run(e2,steps(e2,40));
+ ok('the list plays once and stops; LOOP turned on while it plays keeps going',looping&&!e2.playing,[looping,e2.playing]);}
+
 // Every effect renders without NaN.
 {const e=mk();e.msg({type:'play'});let nan=false,pk=0;
  for(const k of ['stutter','random','reverse','freeze','crush','pitch','env','filter','delay','reverb']){e.msg({type:'touches',tr:0,list:[{id:k,a:2,n:1,o:1,fx:{k,raw:0.7}}]});
