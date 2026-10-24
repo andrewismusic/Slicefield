@@ -11,7 +11,8 @@ const steps=(e,s)=>Math.round(e.len/16*s/128);
 let fails=0;const ok=(n,c,x)=>{if(!c)fails++;console.log((c?'PASS ':'FAIL ')+n+(x!==undefined&&!c?'  '+JSON.stringify(x):''));};
 
 // Effect values are resolved from the track's settings at playback, so a scale change re-maps locked steps.
-{const e=mk();e.msg({type:'play'});const T=e.tracks[0];
+const chromatic=e=>{const c=EF.defCfg('pitch');c.o.scale='chrom';c.o.mask=EF.maskOf(EF.SCALES.chrom);e.msg({type:'cfg',tr:0,cfg:{pitch:c}});};
+{const e=mk();chromatic(e);e.msg({type:'play'});const T=e.tracks[0];
  const clip={id:'c',cols:16,n:16,slots:Array.from({length:16},(_,i)=>({on:true,a:i,off:0,sid:'s'+i,slen:1,fx:[{k:'pitch',raw:0.5}]}))};
  e.msg({type:'launch',tr:0,clip});run(e,steps(e,2));
  const s1=EF.semiQ(T.cur.fx[0].v.semi,T.cur.fx[0].o);
@@ -257,7 +258,7 @@ const blank=id=>({id,cols:16,n:16,ord:{perm:null},mute:{bits:null},slots:Array.f
  ok('…and changing the order changes the sound',d>0.05,d);}
 
 // A sequence from the Clips list plays with the field it was captured on (its settings), then the track's own comes back.
-{const e=mk();const T=e.tracks[0];const c=EF.defCfg('pitch');c.o.scale='oct';c.o.mask=EF.maskOf(EF.SCALES.oct);
+{const e=mk();chromatic(e);const T=e.tracks[0];const c=EF.defCfg('pitch');c.o.scale='oct';c.o.mask=EF.maskOf(EF.SCALES.oct);
  const k={id:'fk',cols:16,n:16,ord:{perm:null},mute:{bits:null},cfg:{pitch:c},rank:EF.rankOf(['pitch']),
    slots:Array.from({length:16},(_,i)=>({on:true,a:i,off:0,sid:'f'+i,slen:1,fx:[{k:'pitch',raw:0.5}]}))};
  e.msg({type:'launch',tr:0,clip:k});e.msg({type:'play'});run(e,steps(e,2));const s1=EF.semiQ(T.cur.fx[0].v.semi,T.cur.fx[0].o);
@@ -268,6 +269,20 @@ const blank=id=>({id,cols:16,n:16,ord:{perm:null},mute:{bits:null},slots:Array.f
 {const S=eval(src('synth.js')+';synthFactory()'),N=72000,L=new Float32Array(N);for(let i=0;i<N;i++)L[i]=Math.sin(2*Math.PI*440*i/sr);
  const o=S.stretch2(L,L,93000,sr);let z=0;for(let i=1;i<o.L.length;i++)if(o.L[i-1]<0&&o.L[i]>=0)z++;
  ok('time-stretch keeps pitch (440 Hz in, about 440 out) at the new length',o.L.length===93000&&Math.abs(z/(93000/sr)-440)<3,z/(93000/sr));}
+
+// Pitch is quantised to octaves and fifths unless the settings say otherwise.
+{const c=EF.defCfg('pitch');ok('pitch defaults to octaves and fifths (+7, +12 up; −5, −12 down)',c.o.scale==='oct5'&&EF.scaleNotes(c.o.mask,1).join()==='7,12'&&EF.scaleNotes(c.o.mask,-1).join()==='-5,-12',[c.o.scale]);}
+
+// With the preference for touches only, empty steps (and the plain loop) are silent; a touch still plays,
+// and a recorded step plays; switching it back brings the loop through the empty steps again.
+{const lvl=(pref,touch,clip)=>{const e=mk(pref);e.msg({type:'play'});if(clip)e.msg({type:'launch',tr:0,clip});
+   if(touch)e.msg({type:'touches',tr:0,list:[{id:'t',a:2,n:1,o:1,fx:null}]});run(e,steps(e,1));let p=0;
+   for(let i=0;i<steps(e,8);i++){e.render(B,C,128);for(const v of B)p=Math.max(p,Math.abs(v));}return p;};
+ const k=blank('q');k.slots[0]={on:true,a:0,off:0,sid:'w',slen:1,fx:[]};
+ const fillOn=lvl(null,false,blank('q')),off=lvl({fill:false},false,blank('q')),plain=lvl({fill:false},false,null),tch=lvl({fill:false},true,blank('q'));
+ const e=mk({fill:false});e.msg({type:'play'});e.msg({type:'launch',tr:0,clip:k});const T=e.tracks[0],H=tap(T);run(e,steps(e,17));
+ const heard=H.filter(h=>h.on).map(h=>h.ci);
+ ok('touches only: empty steps are silent, touches and written steps play',fillOn>0.05&&off<1e-4&&plain<1e-4&&tch>0.05&&heard.length>0&&heard.every(c=>c===0),[fillOn,off,plain,tch,heard]);}
 
 // Every effect renders without NaN.
 {const e=mk();e.msg({type:'play'});let nan=false,pk=0;

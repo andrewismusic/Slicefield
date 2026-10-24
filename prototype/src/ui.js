@@ -25,49 +25,54 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     return c;
   }
   // ---------- fields ----------
-  // A field is a layout of effect cells plus the effects' settings: {id, name, cells:[{k, y, h}], cfg}.
-  // Cells are full-width bands on a grid FG units tall; they may overlap, and a touch where they do drives
-  // each of them by its place inside that cell. Top to bottom is the signal order (Delay and Reverb, being
-  // sends, always come after the step). 'center' is the loop row: high-pass above, dry in the middle,
-  // low-pass below. Each effect has at most one cell. Clips keep a copy of the field they were captured on.
-  const FG=48;
+  // A field is a stack of effect rows plus the effects' settings: {id, name, rows:[{fx:[k…], h}], cfg}.
+  // Rows are full-width bands on a grid FG units tall (their heights add up to FG). A row holds one to
+  // MAXFX effects; a touch in it drives every one of them by its height in the row. Top to bottom is the
+  // signal order (inside a row, the order listed; Delay and Reverb, being sends, always come after the
+  // step). Each effect is in at most one row. Fields are kept in a library shared by every project; a
+  // project keeps a copy of the field it uses, and each clip a copy of the field it was captured on.
+  const FG=48,MAXROWS=10,MAXFX=4,MINH=3;
   const PRESETS={
-    all:{name:'All effects',cells:[['stutter',0,3],['random',3,3],['pitch',6,10],['center',16,14],['reverse',30,3],['env',33,3],['freeze',36,3],['crush',39,3],['delay',42,3],['reverb',45,3]]},
-    dub:{name:'Dub',cells:[['stutter',0,6],['delay',6,12],['reverb',12,12],['center',24,16],['env',40,8]],set:{delay:{x:{fb:0.7}},reverb:{x:{size:0.7},o:{tails:'ring'}}}},
-    glitch:{name:'Glitch',cells:[['stutter',0,10],['random',8,8],['reverse',16,6],['crush',20,12],['center',32,16]]},
-    pitch:{name:'Pitch play',cells:[['pitch',0,18],['delay',14,8],['freeze',22,10],['center',32,16]]},
+    all:{name:'All effects',rows:[[['stutter'],4],[['random'],4],[['pitch'],8],[['filter'],8],[['reverse'],4],[['env'],4],[['freeze'],4],[['crush'],4],[['delay'],4],[['reverb'],4]]},
+    combos:{name:'Combos',rows:[[['stutter','crush'],12],[['pitch','delay'],12],[['freeze','reverb'],12],[['reverse','filter'],12]]},
+    dub:{name:'Dub',rows:[[['stutter'],8],[['delay','reverb'],14],[['filter'],16],[['env'],10]],set:{delay:{x:{fb:0.7}},reverb:{x:{size:0.7},o:{tails:'ring'}}}},
+    glitch:{name:'Glitch',rows:[[['stutter','random'],12],[['reverse'],8],[['crush'],12],[['filter'],16]]},
+    pitch:{name:'Pitch play',rows:[[['pitch','delay'],18],[['freeze'],12],[['filter'],18]]},
   };
   let fieldCtr=0;
   const newFieldId=()=>'f'+(++fieldCtr)+Math.random().toString(36).slice(2,5);
   function presetField(key){
     const P=PRESETS[key],cfg=defCfg();
     for(const k in P.set||{}){const q=P.set[k];Object.assign(cfg[k].x,q.x||{});Object.assign(cfg[k].o,q.o||{});}
-    return {id:newFieldId(),name:P.name,cells:P.cells.map(([k,y,h])=>({k,y,h})),cfg};
+    return {id:newFieldId(),name:P.name,rows:P.rows.map(([fx,h])=>({fx:fx.slice(),h})),cfg};
   }
   const cloneCfg=c=>{const o={};for(const k in c){const x=c[k];o[k]={cells:x.cells.slice(),lo:Object.assign({},x.lo),hi:Object.assign({},x.hi),x:Object.assign({},x.x),o:Object.assign({},x.o,x.o.mask?{mask:x.o.mask.slice()}:{}),hue:x.hue};}return o;};
-  const cloneField=f=>({id:f.id,name:f.name,cells:f.cells.map(c=>Object.assign({},c)),cfg:cloneCfg(f.cfg)});
-  const fxKey=k=>k==='center'?'filter':k;
-  // top to bottom (cells starting at the same place keep their order)
-  const sortedCells=f=>f.cells.map((c,i)=>({c,i})).sort((a,b)=>a.c.y-b.c.y||a.i-b.i).map(x=>x.c);
-  const fieldOrder=f=>sortedCells(f).map(c=>fxKey(c.k));
-  const fieldHas=(f,k)=>f.cells.some(c=>fxKey(c.k)===k);
-  const sameField=(a,b)=>!!a&&!!b&&JSON.stringify([a.cells,a.cfg])===JSON.stringify([b.cells,b.cfg]);
-  // A random field: the loop row (at least 12 units, so its dry middle is easy to find), 3 to 6 other
-  // effects, every cell at least 3 units (5 for pitch and freeze), the whole height covered, and up to two
-  // overlaps, never more than two cells deep.
+  const cloneField=f=>({id:f.id,name:f.name,rows:f.rows.map(r=>({fx:r.fx.slice(),h:r.h})),cfg:cloneCfg(f.cfg)});
+  const fieldOrder=f=>f.rows.flatMap(r=>r.fx);
+  const fieldHas=(f,k)=>f.rows.some(r=>r.fx.includes(k));
+  const sameField=(a,b)=>!!a&&!!b&&JSON.stringify([a.rows,a.cfg])===JSON.stringify([b.rows,b.cfg]);
+  const fxName=k=>FX[k].name;
+  const SHORT={stutter:'STUT',random:'RAND',pitch:'PITCH',reverse:'REV',env:'DECAY',freeze:'FRZ',crush:'CRUSH',delay:'DLY',reverb:'VERB',filter:'FILT'};
+  // a row's colour: the mix of its effects' hues (their mean direction on the colour wheel)
+  function rowHue(ks){
+    let x=0,y=0;for(const k of ks){const a=FX[k].hue*Math.PI/180;x+=Math.cos(a);y+=Math.sin(a);}
+    return ks.length===1?FX[ks[0]].hue:Math.round((Math.atan2(y,x)*180/Math.PI+360)%360);
+  }
+  // heights that add up to FG, none under the minimum, in proportion to w
+  function shareHeights(w){
+    const n=w.length,sum=w.reduce((a,b)=>a+b,0)||1,h=w.map(v=>Math.max(MINH,Math.round(v*FG/sum)));
+    let d=FG-h.reduce((a,b)=>a+b,0);
+    for(let q=0;d!==0&&q<500;q++){const i=d>0?h.indexOf(Math.min(...h)):h.indexOf(Math.max(...h));if(d<0&&h[i]<=MINH)break;h[i]+=Math.sign(d);d-=Math.sign(d);}
+    return h;
+  }
+  // A random field: 4 to 8 effects in 3 to 6 rows, one or two of them combining two or three effects.
   function randomField(){
-    const R=Math.random,pool=ALL_FX.slice().sort(()=>R()-0.5),n=3+Math.floor(R()*4),ks=pool.slice(0,n);
-    const list=ks.concat('center').sort(()=>R()-0.5),min=k=>k==='center'?12:k==='pitch'||k==='freeze'?5:3;
-    let left=FG-list.reduce((s,k)=>s+min(k),0);const h=list.map(min);
-    while(left>0){h[Math.floor(R()*h.length)]++;left--;}
-    let y=0;const cells=list.map((k,i)=>{const c={k,y,h:h[i]};y+=h[i];return c;});
-    // overlaps: a cell grows into its lower neighbour's top (only where nothing else reaches)
-    const deep=()=>{for(let u=0;u<FG;u++)if(cells.filter(c=>u>=c.y&&u<c.y+c.h).length>2)return true;return false;};
-    for(let o=0,tries=0;o<1+Math.floor(R()*2)&&tries<12;tries++){
-      const i=Math.floor(R()*(cells.length-1)),a=cells[i],b=cells[i+1],d=2+Math.floor(R()*Math.max(1,b.h/2-1));
-      a.h+=d;if(deep()||a.y+a.h>FG){a.h-=d;continue;}o++;}
+    const R=Math.random,pool=ALL_FX.concat('filter').sort(()=>R()-0.5),n=4+Math.floor(R()*5),ks=pool.slice(0,n);
+    const nr=Math.max(3,Math.min(6,n-1-Math.floor(R()*2))),rows=ks.slice(0,nr).map(k=>({fx:[k],h:0}));
+    for(const k of ks.slice(nr)){const cands=rows.filter(r=>r.fx.length<3);const r=cands[Math.floor(R()*cands.length)];r.fx.push(k);}
+    const h=shareHeights(rows.map(r=>(r.fx.some(k=>k==='pitch'||k==='freeze'||k==='filter')?1.6:1)*(0.7+0.6*R())));rows.forEach((r,i)=>{r.h=h[i];});
     const names=['Spiral','Drift','Shard','Bloom','Tangle','Rift','Echo','Static','Pulse','Haze'];
-    return {id:newFieldId(),name:names[Math.floor(R()*names.length)]+' '+(10+Math.floor(R()*90)),cells,cfg:defCfg()};
+    return {id:newFieldId(),name:names[Math.floor(R()*names.length)]+' '+(10+Math.floor(R()*90)),rows,cfg:defCfg()};
   }
   // One channel: a single track (the engine could run more side by side, the app uses one).
   // seq: the sequence on the main page (there always is one: a blank one plays the loop's slices in order).
@@ -82,7 +87,8 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   let view=0;
   // touchWin: touches play through SKIP.
   // fit: how imported audio is fitted to the bar ('stretch' keeps its pitch, 'resample' does not)
-  const PREF0={grace:40,touchWin:true,fit:'stretch'};
+  // fill: the loop plays through empty steps (off: only touches, and the steps they wrote, make sound)
+  const PREF0={grace:40,touchWin:true,fit:'stretch',fill:true};
   const prefs=Object.assign({},PREF0);
   // Strips: the stored value belongs to the sequence (or the plain loop). With the pin on, moving a strip
   // changes the stored value. With it off, the move is live only and the strip snaps back on release.
@@ -260,7 +266,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   }
   // the output latency the device reports (plus the backup engine's large blocks) widens the late-touch window
   const outLat=()=>actx?Math.round(((actx.outputLatency||0)+(actx.baseLatency||0))*1000+(usingFallback?2048/sr*1000:0)):0;
-  const prefMsg=()=>({type:'pref',pref:{silPat:tracks[0].loopSet.silPat||'mute',grace:prefs.grace,lat:outLat(),touchWin:prefs.touchWin}});
+  const prefMsg=()=>({type:'pref',pref:{silPat:tracks[0].loopSet.silPat||'mute',grace:prefs.grace,lat:outLat(),touchWin:prefs.touchWin,fill:prefs.fill}});
   // the engine works out every effect value from these settings, so edits reach recorded sequences too
   function sendCfg(t){const c={};for(const k in t.cfg){const x=t.cfg[k];c[k]={cells:x.cells.slice(),lo:Object.assign({},x.lo),hi:Object.assign({},x.hi),x:Object.assign({},x.x),o:Object.assign({},x.o,x.o.mask?{mask:x.o.mask.slice()}:{})};}tx({type:'cfg',tr:t.i,cfg:c});}
   function syncAll(){
@@ -306,7 +312,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   const toEngine=e=>({id:e.hid,a:e.a,n:e.n,o:e.order,fx:e.fxs.length?e.fxs.map(f=>({k:f.k,raw:f.raw})):null});
   function entriesOf(t){
     const out=[];
-    for(const p of ptrs.values())if(p.live&&p.fxs&&!p.mined&&p.tr===t.i)out.push({hid:p.hid,fxs:p.fxs,a:p.col*16/t.cols,n:16/t.cols,order:p.order,ts:p.ts,finger:true});
+    for(const p of ptrs.values())if(p.live&&p.fxs&&!p.mined&&p.tr===t.i)out.push({hid:p.hid,fxs:p.fxs,a:p.col*16/t.cols,n:16/t.cols,order:p.order,ts:p.ts,finger:true,ri:p.ri,rel:p.rel});
     return out;
   }
   function push(t){tx({type:'touches',tr:t.i,list:entriesOf(t).map(toEngine).sort((a,b)=>a.o-b.o)});}
@@ -320,29 +326,18 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     return {t,clip,n,slots,rows,pr:Math.ceil(n/rows)};
   }
   function hasCell(t,k){return t.cfg[k].cells.length>0;}
-  // lay: the field's cells on screen, top to bottom: {id, y, h, ci (index in field.cells), lane, lanes}.
-  // Overlapping cells form a group; each gets a lane (its slice of the handle column, and its column in
-  // the editor).
+  // lay: the field's rows on screen, top to bottom: {ri (index in field.rows), ks (its effects), hue, y, h,
+  // b0, b1}. b0/b1: the band a row answers touches in; y/h: where it is drawn (a small gap to its neighbours).
+  // Above the rows, under the ORDER and SKIP strips, the ruler shows the loop's waveform and its slices.
   // the field's height (the editor's bar takes the bottom while editing)
   const fieldH=()=>cssH-(fieldEdit?48:0);
+  const RY=STRIP+4+STRIP+6,RULER=24;
   function computeLayout(){
     laneRows=laneInfo().rows;
-    TOP=STRIP+4+STRIP+6;
+    TOP=RY+RULER+4;
     sizeLane();
-    const t=T(),f=t.field,area=Math.max(1,fieldH()-TOP);
-    const order=f.cells.map((c,ci)=>({c,ci})).sort((a,b)=>a.c.y-b.c.y||a.ci-b.ci);
-    // b0/b1: the band a cell answers touches in; y/h: where it is drawn (a small gap to its neighbours)
-    lay=order.map(({c,ci})=>{const b0=TOP+c.y/FG*area,b1=b0+c.h/FG*area,y=b0+1.5,h=Math.max(4,b1-b0-3),o={id:c.k,y,h,b0,b1,ci,lane:0,lanes:1};if(c.k==='center'){o.z1=y+h*0.36;o.z2=y+h*0.64;}return o;});
-    // overlap groups and lanes
-    let g0=0;
-    while(g0<lay.length){
-      let end=lay[g0].b1,g1=g0+1;
-      while(g1<lay.length&&lay[g1].b0<end-0.5){end=Math.max(end,lay[g1].b1);g1++;}
-      const ends=[];
-      for(let i=g0;i<g1;i++){const r=lay[i];let l=ends.findIndex(e=>e<=r.b0+0.5);if(l<0){l=ends.length;ends.push(0);}ends[l]=r.b1;r.lane=l;}
-      for(let i=g0;i<g1;i++)lay[i].lanes=ends.length;
-      g0=g1;
-    }
+    const t=T(),f=t.field,area=Math.max(1,fieldH()-TOP);let u=0;
+    lay=f.rows.map((row,ri)=>{const b0=TOP+u/FG*area,b1=TOP+(u+row.h)/FG*area;u+=row.h;return {ri,ks:row.fx,hue:rowHue(row.fx),y:b0+1.5,h:Math.max(4,b1-b0-3),b0,b1};});
   }
   function sizeLane(){
     const w=laneCv.clientWidth||cssW,h=laneRows*LROW+6;laneDpr=Math.min(3,window.devicePixelRatio||1);
@@ -369,31 +364,27 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   }
   new ResizeObserver(resize).observe(wrap);resize();
   const W=()=>cssW-HW;
-  const hueOf=(t,id)=>FX[fxKey(id)].hue;
   const cellBip=(t,k)=>EF.rowBip(t.cfg[k],k);
   const yOrder=()=>0,yMute=()=>yOrder()+STRIP+4;
-  // a cell's value at height y
+  // a row's values at height y: one per effect in it (the filter's dry middle gives none)
   function rawIn(t,r,y){
-    if(r.id==='center'){
-      if(y<r.z1)return {k:'filter',raw:Math.max(0.001,clamp((r.z1-y)/(r.z1-r.y),0,1))};
-      if(y>r.z2)return {k:'filter',raw:-Math.max(0.001,clamp((y-r.z2)/(r.y+r.h-r.z2),0,1))};
-      return null;   // the dry middle
+    const rel=clamp(1-(y-r.y)/r.h,0,1),out=[];
+    for(const k of r.ks){
+      if(cellBip(t,k)){const p=rel>BAND_HI?(rel-BAND_HI)/(1-BAND_HI):rel<BAND_LO?-(BAND_LO-rel)/BAND_LO:0;if(k==='filter'&&!p)continue;out.push({k,raw:clamp(p,-1,1)});}
+      else out.push({k,raw:rel});
     }
-    const rel=clamp(1-(y-r.y)/r.h,0,1);
-    if(cellBip(t,r.id)){const p=rel>BAND_HI?(rel-BAND_HI)/(1-BAND_HI):rel<BAND_LO?-(BAND_LO-rel)/BAND_LO:0;return {k:r.id,raw:clamp(p,-1,1)};}
-    return {k:r.id,raw:rel};
+    return out;
   }
-  const coversAt=y=>{const out=[];lay.forEach((r,ri)=>{if(y>=r.b0&&(y<r.b1||r.b1>=cssH-1&&y<=cssH))out.push(ri);});return out;};
+  const rowAt=y=>lay.findIndex(r=>y>=r.b0&&(y<r.b1||r.b1>=fieldH()-1&&y<=fieldH()));
   function hit(x,y){
     const t=T();
     if(y<yMute()-2)return {strip:'order',snapBox:x<SX-2};
-    if(y<TOP-3)return {strip:'mute',snapBox:x<SX-2};
-    let cv=coversAt(y);
-    if(x<HW){if(!cv.length)return {};const n=lay[cv[0]].lanes,l=Math.min(n-1,Math.floor(x/(HW/n)));const ri=cv.find(i=>lay[i].lane===l);
-      return ri==null?{}:{handle:true,ri,id:lay[ri].id};}
-    const col=Math.min(t.cols-1,Math.max(0,Math.floor((x-HW)/W()*t.cols)));
-    const fxs=[];for(const ri of cv){const v=rawIn(t,lay[ri],y);if(v)fxs.push(v);}
-    return {cell:true,col,cells:cv,fxs};
+    if(y<RY-3)return {strip:'mute',snapBox:x<SX-2};
+    if(y<TOP-2)return {ruler:true};
+    const ri=rowAt(y);if(ri<0)return {};
+    if(x<HW)return {handle:true,ri};
+    const col=Math.min(t.cols-1,Math.max(0,Math.floor((x-HW)/W()*t.cols))),r=lay[ri];
+    return {cell:true,col,cells:[ri],fxs:rawIn(t,r,y),rel:clamp(1-(y-r.y)/r.h,0,1)};
   }
   function rawToRel(t,id,raw){
     if(cellBip(t,id))return raw>0?BAND_HI+raw*(1-BAND_HI):raw<0?BAND_LO+raw*BAND_LO:0.5;
@@ -411,6 +402,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     if(ptr.order<0){ptr.order=++orderCtr;ptr.hid='h'+(++idCtr);}
     ensurePlaying();
     const changed=!ptr.fxs||fxSig(h.fxs)!==fxSig(ptr.fxs)||h.col!==ptr.col;
+    ptr.rel=h.rel;ptr.ri=h.cells[0];
     if(changed||h.fxs.some((f,i)=>Math.abs(f.raw-ptr.fxs[i].raw)>0.002)){ptr.fxs=h.fxs;ptr.col=h.col;ptr.cells=h.cells;ptr.ts=++tsCtr;pushFor(ptr);}
   }
   let lastStrip={which:null,t:0};
@@ -420,6 +412,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     initAudio();
     if(fieldEdit&&y>=TOP-3){editDown(e.pointerId,x,y);return;}
     if(h.strip&&(gameOn||gameMsg))return;   // the round's display covers the strips
+    if(h.ruler)return;
     if(h.strip){
       if(h.snapBox){
         pin[h.strip]=!pin[h.strip];
@@ -434,13 +427,12 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
       special.set(e.pointerId,{kind:'strip',which:h.strip,held:dbl,keep,x,v});await ready;
       setStrip(t,h.strip,v,keep);return;
     }
-    if(h.handle){special.set(e.pointerId,{kind:'handle',id:h.id,y0:y,y,moved:false});return;}
+    if(h.handle){special.set(e.pointerId,{kind:'handle',ri:h.ri,y0:y,y,moved:false});return;}
     if(laneHold&&h.cell){special.set(e.pointerId,{kind:'assign'});assignStep(h);return;}
     // FX ONLY with the trash held: tapping an effect row takes its effects off every step of the sequence
     if(trashHeld&&fxOnly&&h.cell){trashHeld.used=true;special.set(e.pointerId,{kind:'assign'});removeEffect(t,h.fxs.map(f=>f.k));return;}
     if(!h.cell)return;
     const ptr={x,y,tr:view,col:-1,fxs:null,cells:[],order:-1,ts:0,hid:null,live:false,mined:false};ptrs.set(e.pointerId,ptr);
-    if(gameOn)gameDown(ptr);
     checkBlocked();await ready;
     if(ptrs.get(e.pointerId)===ptr){ptr.live=true;update(ptr);}else ensurePlaying();
   });
@@ -466,7 +458,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     const sp=special.get(e.pointerId);
     if(sp){special.delete(e.pointerId);
       if(sp.kind==='strip')endLive(T(),sp.which);
-      if(sp.kind==='handle'){if(sp.moved)dropRow(sp.id,sp.y);else openSettings(sp.id);}
+      if(sp.kind==='handle'){if(sp.moved)dropRow(sp.ri,sp.y);else openRow(sp.ri);}
       return;}
     const ptr=ptrs.get(e.pointerId);if(!ptr)return;ptrs.delete(e.pointerId);
     if(ptr.live&&ptr.fxs)pushFor(ptr);
@@ -474,19 +466,12 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   canvas.addEventListener('pointerup',end);canvas.addEventListener('pointercancel',end);canvas.addEventListener('lostpointercapture',end);
   window.addEventListener('blur',()=>{for(const id of [...special.keys(),...ptrs.keys()])end({pointerId:id});});
   canvas.addEventListener('contextmenu',e=>e.preventDefault());
-  // Dragging a handle moves its cell, with any cells overlapping it, to another place in the order; the
-  // field is then stacked again top to bottom (each group keeps its shape). The order is the signal order.
-  function fieldGroups(f){
-    const cs=sortedCells(f),out=[];
-    for(const c of cs){const g=out[out.length-1];if(g&&c.y<g.end){g.cells.push(c);g.end=Math.max(g.end,c.y+c.h);}else out.push({cells:[c],top:c.y,end:c.y+c.h});}
-    return out;
-  }
-  function dropRow(id,y){
-    const t=T(),f=t.field,groups=fieldGroups(f),from=groups.findIndex(g=>g.cells.some(c=>c.k===id));if(from<0)return;
-    const area=cssH-TOP,uy=(y-TOP)/area*FG;let to=groups.findIndex(g=>uy<(g.top+g.end)/2);if(to<0)to=groups.length;
-    if(to===from||to===from+1)return;
-    checkpoint();const g=groups.splice(from,1)[0];groups.splice(to>from?to-1:to,0,g);
-    let u=0;for(const q of groups){const d=u-q.top;q.cells.forEach(c=>{c.y+=d;});u+=q.end-q.top;}
+  // Dragging a handle moves its row to another place in the order (the signal order).
+  const dropAt=y=>{let to=lay.findIndex(r=>y<(r.b0+r.b1)/2);return to<0?lay.length:to;};
+  function dropRow(ri,y){
+    const t=T(),f=t.field,to=dropAt(y);
+    if(to===ri||to===ri+1)return;
+    checkpoint();const r=f.rows.splice(ri,1)[0];f.rows.splice(to>ri?to-1:to,0,r);
     fieldEdited(t);
   }
 
@@ -996,7 +981,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     ptrs.clear();special.clear();laneHolds.clear();laneHold=null;trashHeld=null;diceHeld=null;clipHolds.clear();
     const keep=tracks[0].kind==='break'&&tracks[0].buf&&tracks[0].buf.L.length===loopLen(48000)?tracks[0]:null;
     if(gameOn)endGame(false);if(fieldEdit)setFieldEdit(false);
-    fields=[presetField('all')];tracks[0]=newTrack(0,'break',fields[0]);if(keep){tracks[0].buf=keep.buf;tracks[0].pk=keep.pk;}
+    tracks[0]=newTrack(0,'break',tracks[0].field);if(keep){tracks[0].buf=keep.buf;tracks[0].pk=keep.pk;}
     tracks[0].seq=blankClip(tracks[0]);
     view=0;clips=[];clipNum=0;selClip=null;songPlaying=false;songList=[];recOn=false;recBn=-1;
     bpm=124;swing=0;stepped=true;playMode='replace';fxOnly=false;
@@ -1016,33 +1001,37 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   }
 
   // ---------- fields: switching and editing ----------
-  // The Fields sheet lists the project's fields. Loading one keeps the loop and clears the sequence (Undo
-  // brings it back). Edit opens the editor on the field itself: drag a cell to move it, its top or bottom edge
-  // to resize it (cells may overlap), × to take it out, tap it for its settings.
+  // The Fields sheet lists the library (every project's fields). Loading one keeps the loop and clears the
+  // sequence (Undo brings it back). Edit opens the editor on the field itself: drag a row to move it, the
+  // line between two rows to share their height, × on an effect to take it out of its row, + to add one
+  // (up to MAXFX a row), tap a row for its settings. Changes to the field are kept in the library.
   let fieldSendRaf=0;
   const editing=new Map();
+  let editHits=[];
   function useField(t,f){if(!fields.includes(f))fields.push(f);t.field=f;sendField(t);computeLayout();}
   // after a layout or settings change: the engine follows (once per frame)
-  function fieldEdited(t){computeLayout();if(!fieldSendRaf)fieldSendRaf=requestAnimationFrame(()=>{fieldSendRaf=0;sendField(t);});}
-  // the field a clip was captured on, as one of the project's fields (added if it changed since)
-  function fieldFromClip(k){
-    const same=fields.find(f=>f.id===k.field.id);
-    if(same&&sameField(same,k.field))return same;
-    const nf=cloneField(k.field);if(same){nf.id=newFieldId();nf.name=k.field.name+' · clip '+k.num;}
+  function fieldEdited(t){computeLayout();if(fieldBar.fill)fieldBar.fill();if(!fieldSendRaf)fieldSendRaf=requestAnimationFrame(()=>{fieldSendRaf=0;sendField(t);});}
+  // a field from a clip or a project, as one of the library's (added, under a new id, if it differs)
+  function adoptField(f,from){
+    const same=fields.find(x=>x.id===f.id);
+    if(same&&sameField(same,f))return same;
+    const nf=cloneField(f);if(same){nf.id=newFieldId();nf.name=f.name+' · '+from;}
     fields.push(nf);return nf;
   }
+  const fieldFromClip=k=>adoptField(k.field,'clip '+k.num);
   function loadField(f){
     const t=T();if(f===t.field)return;checkpoint();
     useField(t,f);if(!seqEmpty(t))loadSeq(t,blankClip(t,t.seq),true);
     paintIcons();
   }
-  // a small picture of a field: its cells as coloured bands (overlaps see-through)
+  // a small picture of a field: its rows as coloured bands
   function fieldThumb(f,w,h){
     const cv=el('canvas'),d=Math.min(3,window.devicePixelRatio||1);cv.width=w*d;cv.height=h*d;cv.style.width=w+'px';cv.style.height=h+'px';
-    const c=cv.getContext('2d');c.scale(d,d);c.fillStyle='#15171c';c.fillRect(0,0,w,h);
-    for(const x of sortedCells(f)){c.globalAlpha=0.7;c.fillStyle=`hsl(${FX[fxKey(x.k)].hue} 55% ${x.k==='center'?38:48}%)`;c.fillRect(1,x.y/FG*h+0.5,w-2,Math.max(1,x.h/FG*h-1));}
+    const c=cv.getContext('2d');c.scale(d,d);c.fillStyle='#15171c';c.fillRect(0,0,w,h);let u=0;
+    for(const r of f.rows){c.fillStyle=`hsl(${rowHue(r.fx)} 50% ${r.fx.length>1?42:48}%)`;c.fillRect(1,u/FG*h+0.5,w-2,Math.max(1,r.h/FG*h-1));u+=r.h;}
     return cv;
   }
+  const rowLabel=ks=>ks.map(k=>fxName(k).toLowerCase()).join(' + ');
   fieldBtn.addEventListener('click',()=>openFields());
   function openFields(){
     openSheet('Fields',cardEl=>{
@@ -1051,9 +1040,9 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
         list.textContent='';
         for(const f of fields){
           const row=el('div',{className:'frow'+(f===t.field?' cur':'')}),b=el('button',{type:'button',className:'pb'});
-          const n=f.cells.length;b.append(fieldThumb(f,30,36),el('span',{},[el('b',{textContent:f.name}),el('small',{textContent:(f===t.field?'on the field · ':'')+n+(n>1?' cells':' cell')+' · '+sortedCells(f).map(c=>c.k==='center'?'loop':FX[c.k].name.toLowerCase()).join(', ')})]));
+          const n=f.rows.length;b.append(fieldThumb(f,30,36),el('span',{},[el('b',{textContent:f.name}),el('small',{textContent:(f===t.field?'on the field · ':'')+n+(n>1?' rows':' row')+' · '+f.rows.map(r=>rowLabel(r.fx)).join(', ')})]));
           b.addEventListener('click',()=>{loadField(f);closeSheet();});
-          const del=el('button',{type:'button',className:'ic',title:'Delete this field (clips keep their own copy)',disabled:fields.length<2||f===t.field});del.innerHTML=ICON.trash;
+          const del=el('button',{type:'button',className:'ic',title:'Delete this field (projects and clips keep their own copy)',disabled:fields.length<2||f===t.field});del.innerHTML=ICON.trash;
           del.addEventListener('click',()=>{checkpoint();fields=fields.filter(x=>x!==f);paint();});
           row.append(b,del);list.appendChild(row);
         }
@@ -1064,87 +1053,107 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
       const edit=el('button',{type:'button',textContent:'Edit layout'});edit.addEventListener('click',()=>{closeSheet();setFieldEdit(true);});
       const dup=el('button',{type:'button',textContent:'Duplicate'});dup.addEventListener('click',()=>{checkpoint();const f=cloneField(t.field);f.id=newFieldId();f.name=t.field.name+' 2';fields.push(f);t.field=f;sendField(t);computeLayout();paint();name.value=f.name;});
       cardEl.appendChild(el('div',{},[el('h3',{},['This field']),el('div',{className:'btnrow'},[name,edit,dup])]));
-      cardEl.appendChild(el('div',{},[el('h3',{},['Fields in this project']),list,el('p',{},['Loading a field keeps the loop and clears the sequence (Undo brings it back). Clips keep the field they were captured on; Load puts it back.'])]));
+      cardEl.appendChild(el('div',{},[el('h3',{},['Your fields']),list,el('p',{},['Kept on this device for every project. Loading a field keeps the loop and clears the sequence (Undo brings it back). Projects keep the field they use, and clips the field they were captured on; Load puts it back.'])]));
       const rnd=el('button',{type:'button',textContent:'Random field'});rnd.addEventListener('click',()=>{const f=randomField();fields.push(f);loadField(f);closeSheet();});
       const pre=el('select');pre.appendChild(el('option',{value:'',textContent:'New from a preset…'}));for(const k in PRESETS)pre.appendChild(el('option',{value:k,textContent:PRESETS[k].name}));
       pre.addEventListener('change',()=>{if(!pre.value)return;const f=presetField(pre.value);fields.push(f);loadField(f);closeSheet();});
-      cardEl.appendChild(el('div',{},[el('h3',{},['New field']),el('div',{className:'btnrow'},[rnd,pre]),el('p',{},['Top to bottom is the signal order: each step’s effects run in the order of their cells (Delay and Reverb, which ring on after the step, always come last). Where cells overlap, a touch drives all of them, each by its place in its own cell.'])]));
+      cardEl.appendChild(el('div',{},[el('h3',{},['New field']),el('div',{className:'btnrow'},[rnd,pre]),el('p',{},['Top to bottom is the signal order (Delay and Reverb, which ring on after the step, always come last). A row can hold up to '+MAXFX+' effects: a touch in it plays all of them, each by the touch’s height in the row.'])]));
     });
   }
+  const unusedFx=f=>['filter'].concat(ALL_FX).filter(k=>!fieldHas(f,k));
   // the editor's bar, over the bottom of the field
   function setFieldEdit(on){
-    fieldEdit=on;fieldBar.hidden=!on;for(const id of [...editing.keys()])editing.delete(id);
+    fieldEdit=on;fieldBar.hidden=!on;for(const id of [...editing.keys()])editing.delete(id);fieldBar.fill=null;
     if(on){
       for(const id of [...special.keys(),...ptrs.keys()])end({pointerId:id,type:'pointercancel'});
       fieldBar.textContent='';const t=T();
-      const add=el('select',{title:'Add an effect'});
-      const fill=()=>{add.textContent='';add.appendChild(el('option',{value:'',textContent:'+ Add…'}));
-        for(const k of ['center'].concat(ALL_FX))if(!t.field.cells.some(c=>c.k===k))add.appendChild(el('option',{value:k,textContent:k==='center'?'Loop / filter':FX[k].name}));
-        add.disabled=add.options.length<2;};
-      add.addEventListener('change',()=>{if(add.value){addCell(t,add.value);fill();}});fill();fieldBar.fill=fill;
-      const even=el('button',{type:'button',textContent:'Even out',title:'Stack every cell top to bottom with no overlaps or gaps, keeping their sizes in proportion'});
-      even.addEventListener('click',()=>{checkpoint();evenOut(t.field);fieldEdited(t);});
+      const add=el('select',{title:'Add a row'}),hint=el('span',{className:'hint'});
+      const fill=()=>{add.textContent='';add.appendChild(el('option',{value:'',textContent:'+ Row…'}));
+        for(const k of unusedFx(t.field))add.appendChild(el('option',{value:k,textContent:fxName(k)}));
+        add.disabled=add.options.length<2||t.field.rows.length>=MAXROWS;hint.textContent=t.field.rows.length+' / '+MAXROWS+' rows';};
+      add.addEventListener('change',()=>{if(add.value)addRow(t,add.value);});fill();fieldBar.fill=fill;
+      const even=el('button',{type:'button',textContent:'Even out',title:'Give every row the same height'});
+      even.addEventListener('click',()=>{checkpoint();const h=shareHeights(t.field.rows.map(()=>1));t.field.rows.forEach((r,i)=>{r.h=h[i];});fieldEdited(t);});
       const done=el('button',{type:'button',className:'play',textContent:'Done'});done.addEventListener('click',()=>setFieldEdit(false));
-      fieldBar.append(add,even,el('span',{className:'hint'}),done);
+      fieldBar.append(add,even,hint,done);
     }
     computeLayout();paintIcons();
   }
-  // a new cell goes in the largest free space, or takes the lower half of the tallest cell
-  function addCell(t,k){
-    checkpoint();const f=t.field,cover=new Array(FG).fill(0);f.cells.forEach(c=>{for(let u=c.y;u<c.y+c.h&&u<FG;u++)cover[u]++;});
-    let best=null;for(let u=0;u<FG;){if(cover[u]){u++;continue;}let v=u;while(v<FG&&!cover[v])v++;if(!best||v-u>best.h)best={y:u,h:v-u};u=v;}
-    if(best&&best.h>=2)f.cells.push({k,y:best.y,h:best.h});
-    else{const big=f.cells.reduce((a,b)=>b.h>a.h?b:a),h=Math.floor(big.h/2);big.h-=h;f.cells.push({k,y:big.y+big.h,h});}
+  // a new row goes at the bottom, taking half of the tallest row's height
+  function addRow(t,k){
+    const f=t.field;if(f.rows.length>=MAXROWS)return;checkpoint();
+    const big=f.rows.reduce((a,b)=>b.h>a.h?b:a),h=Math.max(MINH,Math.floor(big.h/2));if(big.h-h<MINH)return;big.h-=h;
+    f.rows.push({fx:[k],h});fieldEdited(t);
+  }
+  function addToRow(t,ri){
+    const left=unusedFx(t.field);if(!left.length)return;
+    openSheet('Add to this row',cardEl=>{
+      const box=el('div',{className:'btnrow'});
+      for(const k of left){const b=el('button',{type:'button',textContent:fxName(k)});b.style.borderColor=`hsl(${FX[k].hue} 60% 50%)`;
+        b.addEventListener('click',()=>{const r=t.field.rows[ri];if(r&&r.fx.length<MAXFX&&!fieldHas(t.field,k)){checkpoint();r.fx.push(k);fieldEdited(t);}closeSheet();});box.appendChild(b);}
+      cardEl.appendChild(el('div',{},[box,el('p',{},['A touch in the row plays all of its effects, in the order shown.'])]));
+    });
+  }
+  function removeFx(t,ri,k){
+    const f=t.field,r=f.rows[ri];if(!r)return;
+    if(r.fx.length>1){checkpoint();r.fx=r.fx.filter(x=>x!==k);}
+    else{if(f.rows.length<2)return;checkpoint();const nb=f.rows[ri+1]||f.rows[ri-1];nb.h+=r.h;f.rows.splice(ri,1);}
     fieldEdited(t);
   }
-  function evenOut(f){
-    const cs=sortedCells(f),sum=cs.reduce((a,c)=>a+c.h,0);let y=0;
-    cs.forEach((c,i)=>{const h=i===cs.length-1?FG-y:Math.max(2,Math.round(c.h*FG/sum));c.y=y;c.h=Math.max(1,Math.min(h,FG-y-(cs.length-1-i)*2));y+=c.h;});
-  }
-  // the editor shows overlapping cells side by side (one column per lane), each at its true height
-  function editRect(r){const cw=(cssW-HW)/r.lanes;return {x:HW+r.lane*cw+2,w:cw-4,y:r.b0+1,h:r.b1-r.b0-2};}
+  function editRect(r){return {x:HW+2,w:cssW-HW-4,y:r.b0+1,h:r.b1-r.b0-2};}
   function editDown(id,x,y){
-    const t=T();let ri=-1;
-    lay.forEach((r,i)=>{const q=editRect(r);if(x>=q.x&&x<q.x+q.w&&y>=q.y&&y<q.y+q.h)ri=i;});
-    if(ri<0)return;const r=lay[ri],q=editRect(r),c=t.field.cells[r.ci];
-    if(x>q.x+q.w-24&&y<q.y+22&&t.field.cells.length>1){checkpoint();t.field.cells.splice(r.ci,1);fieldEdited(t);if(fieldBar.fill)fieldBar.fill();return;}
-    const ez=Math.min(14,q.h/3),mode=y<q.y+ez?'top':y>q.y+q.h-ez?'bot':'move';
-    editing.set(id,{c,k:c.k,mode,y0:y,c0:{y:c.y,h:c.h},moved:false,cp:false});
+    const t=T();
+    for(const q of editHits)if(x>=q.x-3&&x<q.x+q.w+3&&y>=q.y-3&&y<q.y+q.h+3){q.act();return;}
+    // the line between two rows
+    for(let ri=0;ri<lay.length-1;ri++)if(Math.abs(y-lay[ri].b1)<10){const f=t.field;editing.set(id,{mode:'edge',ri,y0:y,h0a:f.rows[ri].h,h0b:f.rows[ri+1].h,moved:false,cp:false});return;}
+    const ri=rowAt(y);if(ri<0)return;
+    editing.set(id,{mode:'move',ri,y0:y,moved:false,cp:false});
   }
   function editMove(id,x,y){
     const e=editing.get(id),t=T();if(!e)return;
-    const du=Math.round((y-e.y0)/Math.max(1,fieldH()-TOP)*FG),c=e.c,c0=e.c0;if(!du&&!e.moved)return;
-    if(Math.abs(y-e.y0)>6)e.moved=true;
-    let ny=c.y,nh=c.h;
-    if(e.mode==='move'){ny=clamp(c0.y+du,0,FG-c0.h);nh=c0.h;}
-    else if(e.mode==='top'){ny=clamp(c0.y+du,0,c0.y+c0.h-2);nh=c0.y+c0.h-ny;}
-    else{nh=clamp(c0.h+du,2,FG-c0.y);}
-    if(ny===c.y&&nh===c.h)return;
+    if(Math.abs(y-e.y0)>6)e.moved=true;if(!e.moved)return;
+    const f=t.field;
+    if(e.mode==='edge'){
+      const du=Math.round((y-e.y0)/Math.max(1,fieldH()-TOP)*FG),ha=clamp(e.h0a+du,MINH,e.h0a+e.h0b-MINH);
+      if(ha===f.rows[e.ri].h)return;if(!e.cp){e.cp=true;checkpoint();}
+      f.rows[e.ri].h=ha;f.rows[e.ri+1].h=e.h0a+e.h0b-ha;fieldEdited(t);return;
+    }
+    // moving: the row changes places as the finger passes the middle of a neighbour
+    const to=dropAt(y);if(to===e.ri||to===e.ri+1)return;
     if(!e.cp){e.cp=true;checkpoint();}
-    c.y=ny;c.h=nh;fieldEdited(t);
+    const r=f.rows.splice(e.ri,1)[0],ni=to>e.ri?to-1:to;f.rows.splice(ni,0,r);e.ri=ni;fieldEdited(t);
   }
-  function editUp(id,tap){const e=editing.get(id);editing.delete(id);if(e&&tap&&!e.moved)openSettings(e.k);}
+  function editUp(id,tap){const e=editing.get(id);editing.delete(id);if(e&&tap&&!e.moved&&e.mode==='move')openRow(e.ri);}
   function drawEdit(fs){
-    const t=T();
-    // the grid's units, faintly
-    g.fillStyle='rgba(255,255,255,.035)';for(let u=0;u<=FG;u+=4){const y=TOP+u/FG*(fieldH()-TOP);g.fillRect(HW,y,cssW-HW,1);}
-    g.fillStyle='#ece7dc';g.font=`600 ${fs}px ${FONT}`;g.textAlign='left';g.textBaseline='middle';g.fillText('EDITING · '+t.field.name.toUpperCase(),8,STRIP/2);
-    g.fillStyle='#8a8f99';g.font=`400 ${fs}px ${FONT}`;g.fillText('Top to bottom = signal order · drag, resize, tap',8,STRIP+4+STRIP/2);
-    lay.forEach(r=>{
-      const q=editRect(r),hue=hueOf(t,r.id),held=[...editing.values()].some(e=>e.k===r.id);
-      g.fillStyle=`hsla(${hue} 45% ${r.id==='center'?26:30}% / .9)`;rr(q.x,q.y,q.w,q.h,6);g.fill();
-      g.strokeStyle=held?'#fff':`hsl(${hue} 70% 60%)`;g.lineWidth=held?2:1.2;rr(q.x,q.y,q.w,q.h,6);g.stroke();
-      // grips at the top and bottom edges
-      g.fillStyle=`hsla(${hue} 80% 80% / .7)`;const gw=Math.min(28,q.w/3);g.fillRect(q.x+q.w/2-gw/2,q.y+3,gw,2);g.fillRect(q.x+q.w/2-gw/2,q.y+q.h-5,gw,2);
-      g.fillStyle='#fff';g.font=`600 ${fs}px ${FONT}`;g.textAlign='left';g.textBaseline='middle';
-      const nm=r.id==='center'?'LOOP':FX[r.id].name.toUpperCase(),cy=q.h>34?q.y+14:q.y+q.h/2;
-      g.save();g.beginPath();g.rect(q.x,q.y,q.w-24,q.h);g.clip();g.fillText(nm,q.x+8,cy);g.restore();
-      const c=t.field.cells[r.ci];g.fillStyle='rgba(255,255,255,.6)';g.font=`400 ${fs-1}px ${FONT}`;if(q.h>34)g.fillText(c.h+' / '+FG,q.x+8,cy+14);
-      if(t.field.cells.length>1){g.strokeStyle='rgba(255,255,255,.75)';g.lineWidth=1.5;const bx=q.x+q.w-15,by=q.y+10;g.beginPath();g.moveTo(bx-4,by-4);g.lineTo(bx+4,by+4);g.moveTo(bx+4,by-4);g.lineTo(bx-4,by+4);g.stroke();}
+    const t=T(),f=t.field;editHits=[];
+    g.fillStyle='#ece7dc';g.font=`600 ${fs}px ${FONT}`;g.textAlign='left';g.textBaseline='middle';g.fillText('EDITING · '+f.name.toUpperCase(),8,STRIP/2);
+    g.fillStyle='#8a8f99';g.font=`400 ${fs}px ${FONT}`;g.fillText('Top to bottom = signal order',8,STRIP+4+STRIP/2);
+    const left=unusedFx(f).length;
+    lay.forEach((r,ri)=>{
+      const q=editRect(r),hue=r.hue,held=[...editing.values()].some(e=>e.ri===ri&&e.mode==='move');
+      g.fillStyle=`hsla(${hue} 40% 26% / .95)`;rr(q.x,q.y,q.w,q.h,6);g.fill();
+      g.strokeStyle=held?'#fff':`hsl(${hue} 60% 55%)`;g.lineWidth=held?2:1.2;rr(q.x,q.y,q.w,q.h,6);g.stroke();
+      // the handle column: the row's place in the signal order
+      g.fillStyle='#6c7380';g.font=`600 ${fs}px ${FONT}`;g.textAlign='center';g.textBaseline='middle';g.fillText(String(ri+1),HW/2-1,r.b0+Math.min(12,q.h/2+1));
+      // chips: each effect (× takes it out), then + while the row has room
+      const ch=Math.min(24,q.h-6),cy=q.h>40?q.y+5:q.y+(q.h-ch)/2;let cx=q.x+6;
+      g.font=`600 ${fs}px ${FONT}`;g.textBaseline='middle';
+      const lastOne=f.rows.length<2&&r.ks.length<2;
+      for(const k of r.ks){
+        const nm=fxName(k).toUpperCase(),w=g.measureText(nm).width+(lastOne?16:34);
+        g.fillStyle=`hsl(${FX[k].hue} 45% 38%)`;rr(cx,cy,w,ch,ch/2);g.fill();
+        g.fillStyle='#fff';g.textAlign='left';g.fillText(nm,cx+8,cy+ch/2+0.5);
+        if(!lastOne){const bx=cx+w-12,by=cy+ch/2;g.strokeStyle='rgba(255,255,255,.8)';g.lineWidth=1.5;g.beginPath();g.moveTo(bx-3.5,by-3.5);g.lineTo(bx+3.5,by+3.5);g.moveTo(bx+3.5,by-3.5);g.lineTo(bx-3.5,by+3.5);g.stroke();
+          editHits.push({x:cx+w-24,y:cy,w:24,h:ch,act:()=>removeFx(t,ri,k)});}
+        cx+=w+5;
+      }
+      if(r.ks.length<MAXFX&&left){g.strokeStyle='rgba(255,255,255,.55)';g.lineWidth=1.2;rr(cx,cy,ch+4,ch,ch/2);g.stroke();
+        const px=cx+(ch+4)/2,py=cy+ch/2;g.beginPath();g.moveTo(px-4,py);g.lineTo(px+4,py);g.moveTo(px,py-4);g.lineTo(px,py+4);g.stroke();
+        editHits.push({x:cx,y:cy,w:ch+4,h:ch,act:()=>addToRow(t,ri)});}
+      g.fillStyle='rgba(255,255,255,.55)';g.font=`400 ${fs-1}px ${FONT}`;g.textAlign='right';if(q.h>40)g.fillText(f.rows[ri].h+' / '+FG,q.x+q.w-8,q.y+q.h-10);
+      // the line to the next row: drag it to share their height
+      if(ri<lay.length-1){const ly=r.b1,gw=Math.min(36,q.w/4);g.fillStyle=`hsla(${hue} 80% 80% / .8)`;g.fillRect(HW+q.w/2-gw/2,ly-1.5,gw,3);}
     });
-    // the handle column: each cell's place in the signal order
-    sortedCells(t.field).forEach((c,i)=>{const r=lay.find(x=>x.ci===t.field.cells.indexOf(c));if(!r)return;
-      g.fillStyle='#6c7380';g.font=`600 ${fs}px ${FONT}`;g.textAlign='center';g.fillText(String(i+1),HW/2-2+(r.lanes>1?(r.lane-(r.lanes-1)/2)*10:0),r.b0+10);});
   }
 
   // ---------- sheets ----------
@@ -1229,15 +1238,23 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     box.appendChild(el('h3',{},['Scale · root C']));box.appendChild(sel);box.appendChild(kb);
     paint();return box;
   }
-  function openSettings(rowId){
-    const t=T(),k=rowId==='center'?'filter':rowId,d=FX[k],c=t.cfg[k];
+  // a row's settings: its first effect's, with a tab for each of the others
+  function openRow(ri){const r=lay[ri];if(r)openSettings(r.ks[0],r.ks);}
+  function openSettings(k,ks){
+    const t=T(),d=FX[k],c=t.cfg[k];
     const dot=el('i');dot.style.cssText=`width:12px;height:12px;border-radius:50%;background:hsl(${c.hue} 70% 58%)`;
     let raf=0,cols=[];
     // every change reaches the engine straight away, so a playing sequence follows the new settings
     let cp=false;   // the first change is an undo step
     const changed=()=>{if(!cp){cp=true;checkpoint();}cols.forEach(x=>x.paint());if(!raf)raf=requestAnimationFrame(()=>{raf=0;sendCfg(t);});};
     sheetOnClose=()=>{sendCfg(t);push(t);};
-    openSheet([dot,rowId==='center'?'Filter':d.name],cardEl=>{
+    openSheet([dot,d.name],cardEl=>{
+      if(ks&&ks.length>1){
+        const tabs=el('div',{className:'btnrow'});
+        for(const q of ks){const b=el('button',{type:'button',textContent:fxName(q)});b.style.borderColor=`hsl(${FX[q].hue} 60% ${q===k?60:35}%)`;if(q===k)b.classList.add('on');
+          b.addEventListener('click',()=>{if(q!==k)openSettings(q,ks);});tabs.appendChild(b);}
+        cardEl.appendChild(el('div',{},[tabs]));
+      }
       if(d.opts)for(const on in d.opts){
         const od=d.opts[on];
         if(on==='scale'){cardEl.appendChild(scaleEditor(c,k+'-scale',changed));continue;}
@@ -1245,6 +1262,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
       }
       const names=Object.keys(d.params);
       if(names.length){cols=names.map(n=>vcol(t,k,n,changed));cardEl.appendChild(el('div',{className:'vrow'},cols.map(x=>x.col)));}
+      else cardEl.appendChild(el('p',{},[d.name+' has no settings: a touch in its row turns it on.']));
     });
   }
   prefsBtn.addEventListener('click',()=>openSheet('Preferences',cardEl=>{
@@ -1286,6 +1304,8 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     // SKIP or GAP belongs to the sequence (or the plain loop), so it is saved with clips
     cardEl.appendChild(el('div',{},[el('h3',{},['Second slider · this sequence']),radios('p-silp',[['mute','SKIP: its steps go quiet; the sequence keeps moving'],['insert','GAP: a quiet step is inserted; the sequence waits, so every step still plays']],silOf(T()),v=>{
       const t=T();checkpoint();ctxSet(t).silPat=v;if(t.seq)seqEdited(t);else sendPref();}),el('p',{},['Kept with the sequence, and with clips captured from it.'])]));
+    cardEl.appendChild(el('div',{},[el('h3',{},['Empty steps']),radios('p-fill',[['1','The loop plays through them (its own slice for each step)'],['0','Silent: only touches, and the steps they wrote, make sound']],prefs.fill?'1':'0',v=>{prefs.fill=v==='1';sendPref();}),
+      el('p',{},['Applies everywhere: the field, clips and export.'])]));
     const tw=el('input',{type:'checkbox',checked:prefs.touchWin});tw.addEventListener('change',()=>{prefs.touchWin=tw.checked;sendPref();});
     cardEl.appendChild(el('div',{},[el('label',{},[tw,'Touches play through SKIP and GAP']),el('p',{},['Off: the pattern silences touched steps too.'])]));
     const ol=outLat();
@@ -1421,28 +1441,41 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   const plainClip=c=>{const o=Object.assign({},c,{slots:c.slots.map(copySlot)});delete o.ord;delete o.mute;return o;};
   function projectState(){
     const t=T();
-    return {app:'slicefield',version:22,bpm,swing,stepped,playMode,fxOnly,
-      prefs:{grace:prefs.grace,touchWin:prefs.touchWin,fit:prefs.fit},pin:Object.assign({},pin),
-      fields:fields.map(cloneField),field:t.field.id,
+    return {app:'slicefield',version:23,bpm,swing,stepped,playMode,fxOnly,
+      prefs:{grace:prefs.grace,touchWin:prefs.touchWin,fit:prefs.fit,fill:prefs.fill},pin:Object.assign({},pin),
+      field:cloneField(t.field),
       track:{kind:t.kind,cols:t.colsQ||t.cols,len16:t.len16,loopSet:Object.assign({},t.loopSet),seq:t.seq?plainClip(t.seq):null},
       clips:clips.map(plainClip),sel:clips.indexOf(selClip),clipNum,
       files:[...files.values()].map(f=>({id:f.id,name:f.name,L:b64(f.L),R:b64(f.R)}))};
   }
   // settings saved before an effect changed get that effect's defaults (and effects added since get theirs)
   function fixCfg(q){const c=defCfg();for(const k in q||{}){const x=q[k];if(FX[k]&&x&&x.x&&Object.keys(FX[k].params).every(n=>n in x.x))c[k]=Object.assign({},x,{hue:FX[k].hue});}return c;}
+  // A field as saved. Before v23 fields were cells that could overlap partly: each group of overlapping
+  // cells becomes one row holding all of their effects ('center', the loop row, is the filter).
   function fixField(f){
-    const cells=(f.cells||[]).filter(c=>c&&(c.k==='center'||FX[c.k])).map(c=>({k:c.k,y:clamp(Math.round(c.y),0,FG-1),h:clamp(Math.round(c.h),1,FG)}));
-    return {id:f.id||newFieldId(),name:f.name||'Field',cells:cells.length?cells:presetField('all').cells,cfg:fixCfg(f.cfg)};
+    let rows;
+    if(Array.isArray(f.rows))rows=f.rows.map(r=>({fx:(r.fx||[]).map(k=>k==='center'?'filter':k).filter(k=>FX[k]),h:Math.max(1,Math.round(r.h)||1)}));
+    else{
+      const cs=(f.cells||[]).filter(c=>c&&(c.k==='center'||FX[c.k])).map(c=>({k:c.k==='center'?'filter':c.k,y:+c.y||0,h:Math.max(1,+c.h||1)})).sort((a,b)=>a.y-b.y);
+      rows=[];let end=-1;
+      for(const c of cs){const r=rows[rows.length-1];if(r&&c.y<end){r.fx.push(c.k);end=Math.max(end,c.y+c.h);r.h=end-r.y;}else{rows.push({fx:[c.k],y:c.y,h:c.h});end=c.y+c.h;}}
+    }
+    // each effect once, at most MAXFX a row (the rest get rows of their own), at most MAXROWS rows
+    const seen=new Set(),out=[];
+    for(const r of rows){const ks=r.fx.filter(k=>!seen.has(k)&&seen.add(k));for(let i=0;i<ks.length;i+=MAXFX)out.push({fx:ks.slice(i,i+MAXFX),h:r.h});}
+    const keep=out.filter(r=>r.fx.length).slice(0,MAXROWS);
+    if(!keep.length)return Object.assign(presetField('all'),{id:f.id||newFieldId(),name:f.name||'Field',cfg:fixCfg(f.cfg)});
+    const h=shareHeights(keep.map(r=>r.h));keep.forEach((r,i)=>{r.h=h[i];});
+    return {id:f.id||newFieldId(),name:f.name||'Field',rows:keep,cfg:fixCfg(f.cfg)};
   }
-  // before v22 a project had one row order and the effects shown: that becomes its one field
-  function fieldFromRows(rows,cfg,shown){
-    const ks=(rows||[]).filter(r=>(r==='center'||FX[r])&&(r==='center'||!shown||shown.includes(r)));
-    for(const r of PRESETS.all.cells.map(c=>c[0]))if(!ks.includes(r)&&(r==='center'||!shown||shown.includes(r)))ks.push(r);
-    const w=ks.map(k=>k==='center'?14:k==='pitch'?10:3),sum=w.reduce((a,b)=>a+b,0);let y=0;
-    const cells=ks.map((k,i)=>{const h=i===ks.length-1?FG-y:Math.max(1,Math.round(w[i]*FG/sum));const c={k,y,h};y+=h;return c;});
-    return {id:newFieldId(),name:'Field 1',cells,cfg:fixCfg(cfg)};
+  // before v22 a project had one row order and the effects shown: that becomes its field
+  function fieldFromRows(order,cfg,shown){
+    const ks=(order||[]).map(r=>r==='center'?'filter':r).filter(k=>FX[k]&&(k==='filter'||!shown||shown.includes(k)));
+    for(const k of fieldOrder(presetField('all')))if(!ks.includes(k)&&(k==='filter'||!shown||shown.includes(k)))ks.push(k);
+    const h=shareHeights(ks.map(k=>k==='filter'||k==='pitch'?2:1));
+    return {id:newFieldId(),name:'Field 1',rows:ks.slice(0,MAXROWS).map((k,i)=>({fx:[k],h:h[i]})),cfg:fixCfg(cfg)};
   }
-  async function openProject(p){
+  async function openProject(p,name){
     if(!p||p.app!=='slicefield'||!p.track)throw new Error('not a Slicefield project');
     initAudio();await ready;
     if(gameOn)endGame(false);if(fieldEdit)setFieldEdit(false);
@@ -1454,17 +1487,21 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     for(const id of files.keys())fileOption('f:'+id);loopCache.clear();
     bpm=clamp(p.bpm||124,60,200);swing=clamp(p.swing||0,0,0.5);stepped=p.stepped!==false;playMode=p.playMode==='combine'?'combine':'replace';fxOnly=!!p.fxOnly;
     // projects from before v22 resampled imported audio
-    if(p.prefs){prefs.grace=p.prefs.grace!=null?p.prefs.grace:40;prefs.touchWin=p.prefs.touchWin!==false;prefs.fit=p.prefs.fit||'resample';}
+    if(p.prefs){prefs.grace=p.prefs.grace!=null?p.prefs.grace:40;prefs.touchWin=p.prefs.touchWin!==false;prefs.fit=p.prefs.fit||'resample';prefs.fill=p.prefs.fill!==false;}
     if(p.pin)Object.assign(pin,p.pin);liveV.order=liveV.mute=null;
     const t=T(),q=p.track;
-    fields=p.fields&&p.fields.length?p.fields.map(fixField):[q.cfg||q.rows?fieldFromRows(q.rows,q.cfg,p.prefs&&p.prefs.shown):presetField('all')];
-    t.field=fields.find(f=>f.id===p.field)||fields[0];
+    // the project's field joins the library (v22 projects kept a list of fields: all of them join it)
+    await fieldsReady;const from=name||'project';
+    if(p.field&&typeof p.field==='object')t.field=adoptField(fixField(p.field),from);
+    else if(p.fields&&p.fields.length){const fs=p.fields.map(f=>adoptField(fixField(f),from));t.field=fs[p.fields.findIndex(f=>f.id===p.field)]||fs[0];}
+    else if(q.cfg||q.rows)t.field=adoptField(fieldFromRows(q.rows,q.cfg,p.prefs&&p.prefs.shown),from);
     t.kind=q.kind&&(!q.kind.startsWith('f:')||files.has(q.kind.slice(2)))?q.kind:'break';
     t.cols=q.cols===8?8:16;t.colsQ=0;t.len16=clamp(q.len16||16,1,16);
     t.loopSet=Object.assign({orderV:1,muteV:1,silPat:'mute'},q.loopSet||{});
     t.seq=q.seq?clipForm(Object.assign({},q.seq)):blankClip(t);
     // clips from before v22 played with the project's settings: they get the project's field
-    clips=(p.clips||[]).map(k=>Object.assign({silPat:'mute',loop:t.kind},k,{field:k.field?fixField(k.field):cloneField(t.field)}));clipNum=p.clipNum||clips.length;
+    clips=(p.clips||[]).map(k=>Object.assign({silPat:'mute',loop:t.kind},k,{field:k.field?fixField(k.field):cloneField(t.field)}));
+    sendField(t);clipNum=p.clipNum||clips.length;
     selClip=clips[p.sel]||clips[clips.length-1]||null;
     undoS.length=0;redoS.length=0;
     bpmEl.querySelector('b').textContent=String(bpm);swingEl.querySelector('b').textContent=String(Math.round(50+swing*50));
@@ -1515,6 +1552,8 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
         await one(()=>col.doc('p_'+meta.id).set(Object.assign({kind:'project',chunks:n},meta)));
         const was=old.exists?old.data().chunks||0:0;for(let i=n;i<was;i++)await one(()=>col.doc('p_'+meta.id+'_'+i).delete());},
       async meta(meta){await one(()=>col.doc('p_'+meta.id).update(meta));},
+      async fieldLib(){const d=await one(()=>col.doc('fields').get());return d.exists?JSON.parse(d.data().json||'null'):null;},
+      async setFieldLib(v){await one(()=>col.doc('fields').set({kind:'fields',json:JSON.stringify(v)}));},
       async remove(id){const m=await one(()=>col.doc('p_'+id).get());const n=m.exists?m.data().chunks||0:0;
         await one(()=>col.doc('p_'+id).delete());for(let i=0;i<n;i++)await one(()=>col.doc('p_'+id+'_'+i).delete());},
     };
@@ -1531,6 +1570,8 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
       async load(id){const s=await run('readonly',st=>st.get('d_'+id));if(!s)throw new Error('missing');return JSON.parse(s.json);},
       async save(meta,json){await run('readwrite',st=>{st.put({kind:'data',json},'d_'+meta.id);st.put(Object.assign({kind:'project'},meta),'p_'+meta.id);});},
       async meta(meta){const m=await run('readonly',st=>st.get('p_'+meta.id));if(m)await run('readwrite',st=>st.put(Object.assign(m,meta),'p_'+meta.id));},
+      async fieldLib(){const d=await run('readonly',st=>st.get('fields'));return d?JSON.parse(d.json):null;},
+      async setFieldLib(v){await run('readwrite',st=>st.put({kind:'fields',json:JSON.stringify(v)},'fields'));},
       async remove(id){await run('readwrite',st=>{st.delete('p_'+id);st.delete('d_'+id);});},
     };
   }
@@ -1543,6 +1584,30 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     })();
     return libP;
   }
+
+  // ---------- field library ----------
+  // The fields are kept apart from projects, in the same library, as one record: the list and the field last
+  // on the field (a new session starts on it). The library is read once at start; any change to the list or
+  // to a field in it is written back a moment later (checked every 1.5 s, and when the page is hidden).
+  let fieldsSig='';
+  const fieldLibState=()=>({list:fields.map(cloneField),last:T().field.id});
+  const fieldsReady=(async()=>{
+    try{
+      const L=await library(),v=L&&await L.fieldLib();
+      if(v&&Array.isArray(v.list)&&v.list.length){
+        const lib=v.list.map(fixField),t=T(),pristine=t.field===fields[0]&&fields.length===1&&sameField(t.field,Object.assign(presetField('all'),{id:t.field.id}))&&seqEmpty(t);
+        if(pristine){fields=lib;useField(t,lib.find(f=>f.id===v.last)||lib[0]);}
+        else{const cur=t.field;fields=lib;t.field=adoptField(cur,'this session');sendField(t);computeLayout();}
+      }
+    }catch(_){}
+    fieldsSig=JSON.stringify(fieldLibState());
+  })();
+  async function keepFields(){
+    const v=fieldLibState(),sig=JSON.stringify(v);if(sig===fieldsSig)return;fieldsSig=sig;
+    try{const L=await library();if(L)await L.setFieldLib(v);}catch(_){}
+  }
+  setInterval(()=>{fieldsReady.then(keepFields);},1500);
+  document.addEventListener('visibilitychange',()=>{if(document.hidden)fieldsReady.then(keepFields);});
 
   // ---------- projects sheet ----------
   // The project open now (id null until it is first saved), the folder being looked at, and what the library
@@ -1585,7 +1650,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     if(m.id===cur.id)return;
     if(!(await keepCurrent()))return;
     const L=await library();
-    try{const p=await L.load(m.id);await openProject(p);cur={id:m.id,name:m.name,folder:m.folder||''};savedSig=projSig();say('Opened '+m.name);}
+    try{const p=await L.load(m.id);await openProject(p,m.name);cur={id:m.id,name:m.name,folder:m.folder||''};savedSig=projSig();say('Opened '+m.name);}
     catch(e){say('Could not open '+m.name+': '+(e&&(e.code||e.message)));}
     renderProjects();
   }
@@ -1755,8 +1820,10 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   const stepHue=(t,s)=>{const k=s.fx&&s.fx.length?s.fx[0].k:null;return k?(t.cfg[k]||{}).hue:null;};
   function laneCell(t,s,x,y,w,h,lit,dim,fs,cont,pos){
     if(s&&s.empty){
+      // with the preference for touches only, an empty step is silent: no slice number
+      const heard=s.on!==false&&prefs.fill;
       g.globalAlpha=s.on===false?0.4:1;g.strokeStyle='#3a3f4a';g.lineWidth=1;g.strokeRect(x+1.5,y+0.5,w-3,h-1);
-      if(s.on!==false){const step=16/t.cols;g.fillStyle='rgba(236,231,220,.32)';g.font=`400 ${Math.min(fs,w<20?8:9)}px ${FONT}`;
+      if(heard){const step=16/t.cols;g.fillStyle='rgba(236,231,220,.32)';g.font=`400 ${Math.min(fs,w<20?8:9)}px ${FONT}`;
         g.textAlign='center';g.textBaseline='middle';g.fillText(String(Math.floor(pos/step)+1),x+w/2,y+h/2+0.5);}
       g.globalAlpha=1;
       if(lit){g.strokeStyle=lit==='rec'?'#ff6b6b':lit==='hold'?'#fff':ACC;g.lineWidth=lit==='hold'?2:1.5;g.strokeRect(x+1,y-1,w-2,h+2);}
@@ -1881,66 +1948,69 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     const step=16/cols,curSlice=st.playing&&i.src&&!i.rest?Math.floor(i.a/step):-1;
     if(fieldEdit){drawEdit(fs);return;}
     const E=entriesOf(t);
-    // marks: each held touch once per effect it drives (raw: its value in that cell); dry ones as 'dry'
-    const marks=[];for(const e of E){const base={a:e.a,n:e.n,ts:e.ts,hid:e.hid,finger:e.finger};if(!e.fxs.length)marks.push(Object.assign({fx:'dry',raw:0},base));
-      for(const f of e.fxs)marks.push(Object.assign({fx:f.k,raw:f.raw},base));}
+    // marks: each held touch, in its row (rel: its height there; fxs: the values it plays)
+    const marks=[];for(const e of E)marks.push({a:e.a,n:e.n,ts:e.ts,hid:e.hid,finger:e.finger,ri:e.ri,rel:e.rel,fxs:e.fxs});
     const nowHid=i.src==='touch'&&i.sid?i.sid.slice(1,i.sid.indexOf('#')):null;
     const touch=new Set();for(const p of ptrs.values())if(p.live&&p.tr===view&&p.cells)for(const ri of p.cells)touch.add(ri+':'+(fxOnly?0:p.col));
     // FX ONLY: slices come from the sequence, so each row is one undivided strip: a touch anywhere in it
     // plays that row's effect. dc/dw: the columns drawn and their width; span: where a held cell is drawn.
     const dc=fxOnly?1:cols,dw=W()/dc,span=m=>fxOnly?[HW+gap/2,W()-gap]:[cellX(t,m.a)+gap/2,m.n/16*W()-gap];
     lay.forEach((r,ri)=>{
-      const hue=hueOf(t,r.id),hw=HW/r.lanes,hx=r.lane*hw;
-      // the handle: overlapping cells share the column, one lane each
-      g.fillStyle='#1a1d23';rr(hx,r.y,hw-3,r.h,5);g.fill();
-      g.fillStyle=`hsl(${hue} 60% 55%)`;g.fillRect(hx+3,r.y+4,3,r.h-8);
-      if(hw>20){g.fillStyle='#6c7380';for(let q=0;q<3;q++)g.fillRect(hx+11,r.y+r.h/2-5+q*4,hw-21,1.5);}
-      // where cells overlap, each is drawn see-through (so the overlap shows both colours) and outlined
-      const ov=r.lanes>1;if(ov)g.globalAlpha=0.66;
-      if(r.id==='center'){drawCenter(t,i,r,ri,curSlice,marks,touch,cw,gap,fs,nowHid,dc,dw,span);g.globalAlpha=1;if(ov)outlineCell(r,hue);return;}
-      const k=r.id,c=t.cfg[k],d=FX[k],cn=c.cells.filter(n=>d.params[n]),P=cn.length?d.params[cn[0]]:null,pn=cn[0];
-      const rm=marks.filter(m=>m.fx===k);
+      const hue=r.hue,ks=r.ks,single=ks.length===1,k=ks[0],c=t.cfg[k],d=FX[k];
+      // the handle
+      g.fillStyle='#1a1d23';rr(0,r.y,HW-3,r.h,5);g.fill();
+      g.fillStyle=`hsl(${hue} 60% 55%)`;g.fillRect(3,r.y+4,3,r.h-8);
+      g.fillStyle='#6c7380';for(let q=0;q<3;q++)g.fillRect(11,r.y+r.h/2-5+q*4,HW-21,1.5);
+      const rm=marks.filter(m=>m.ri===ri),playing=st.playing&&i.fx&&ks.some(q=>i.fx.includes(q))&&curSlice>=0;
       for(let col=0;col<dc;col++){
-        let l=13,s=16;if(!fxOnly&&col===curSlice&&!i.fx.length)l+=3;
-        g.fillStyle=`hsl(${hue} ${s}% ${l}%)`;rr(HW+col*dw+gap/2,r.y,dw-gap,r.h,5);g.fill();
+        let l=13;if(!fxOnly&&col===curSlice&&!i.fx.length)l+=3;
+        g.fillStyle=`hsl(${hue} 16% ${l}%)`;rr(HW+col*dw+gap/2,r.y,dw-gap,r.h,5);g.fill();
       }
       for(const m of rm){const now=nowHid===m.hid,[x0,ww]=span(m);g.fillStyle=`hsl(${hue} ${now?62:42}% ${now?32:21}%)`;rr(x0,r.y,ww,r.h,5);g.fill();}
-      if(st.playing&&i.fx&&i.fx.includes(k)&&curSlice>=0){const c0=fxOnly?0:curSlice;g.strokeStyle=`hsl(${hue} 80% 68%)`;g.lineWidth=1.5;rr(HW+c0*dw+gap/2+0.75,r.y+0.75,dw-gap-1.5,r.h-1.5,5);g.stroke();}
+      if(playing){const c0=fxOnly?0:curSlice;g.strokeStyle=`hsl(${hue} 80% 68%)`;g.lineWidth=1.5;rr(HW+c0*dw+gap/2+0.75,r.y+0.75,dw-gap-1.5,r.h-1.5,5);g.stroke();}
       for(let col=0;col<dc;col++)if(touch.has(ri+':'+col)){g.fillStyle=`hsl(${hue} 70% 46%)`;rr(HW+col*dw+gap/2,r.y,dw-gap,r.h,5);g.fill();}
-      if(cellBip(t,k)){
+      // a row with a centred effect: the band in the middle changes nothing (for the filter alone: dry)
+      const bip=ks.some(q=>cellBip(t,q));
+      if(bip){
         const yb1=r.y+r.h*(1-BAND_HI),yb2=r.y+r.h*(1-BAND_LO);
-        g.fillStyle='rgba(0,0,0,.28)';g.fillRect(HW,yb1,W(),yb2-yb1);
-        g.setLineDash([2,4]);g.strokeStyle=`hsl(${hue} 30% 55%)`;g.lineWidth=1;
+        g.fillStyle='rgba(0,0,0,.22)';g.fillRect(HW,yb1,W(),yb2-yb1);
+        g.setLineDash([2,4]);g.strokeStyle=`hsl(${hue} 30% 45%)`;g.lineWidth=1;
         g.beginPath();g.moveTo(HW,yb1);g.lineTo(cssW,yb1);g.moveTo(HW,yb2);g.lineTo(cssW,yb2);g.stroke();g.setLineDash([]);
-        if(d.tall){g.textBaseline='middle';g.font=`400 ${fs}px ${FONT}`;g.textAlign='center';g.fillStyle=`hsl(${hue} 20% 58%)`;
-          g.fillText('NO CHANGE',HW+W()/2,(yb1+yb2)/2);}
-        if(c.o&&c.o.mask&&P&&P.bip){
-          g.fillStyle=`hsl(${hue} 30% ${rm.length?60:42}%)`;
+        if(single&&r.h>=56){g.textBaseline='middle';g.font=`400 ${fs}px ${FONT}`;g.textAlign='center';g.fillStyle=`hsl(${hue} 20% 50%)`;
+          g.fillText(k==='filter'?'DRY':'NO CHANGE',HW+W()/2,(yb1+yb2)/2);}
+      }
+      // a single effect's steps (notes, note values) as ticks at the right edge
+      const cn=c.cells.filter(n=>d.params[n]),P=cn.length?d.params[cn[0]]:null,pn=cn[0];
+      if(single&&P){
+        if(cellBip(t,k)&&c.o&&c.o.mask&&P.bip){
+          const yb1=r.y+r.h*(1-BAND_HI),yb2=r.y+r.h*(1-BAND_LO);g.fillStyle=`hsl(${hue} 30% ${rm.length?60:42}%)`;
           const nu=EF.scaleNotes(c.o.mask,1).length,nd=EF.scaleNotes(c.o.mask,-1).length;
           for(let q=1;q<nu;q++){const raw=q/nu/c.hi[pn];if(raw<1)g.fillRect(cssW-6,yb1-(yb1-r.y)*raw-0.5,4,1);}
           for(let q=1;q<nd;q++){const raw=q/nd/(-c.lo[pn]);if(raw<1)g.fillRect(cssW-6,yb2+(r.y+r.h-yb2)*raw-0.5,4,1);}
+        }else if(P.steps){
+          const n=P.steps(c.o),lo=c.lo[pn],hi=c.hi[pn];
+          if(n&&hi!==lo){g.fillStyle=`hsl(${hue} 30% ${rm.length?55:34}%)`;for(let q=1;q<n;q++){const rel=(q/n-lo)/(hi-lo);if(rel>0&&rel<1){const yy=r.y+r.h*(1-rel);g.fillRect(cssW-6,yy-0.5,4,1);}}}
         }
-      }else if(P&&P.steps){
-        const n=P.steps(c.o),lo=c.lo[pn],hi=c.hi[pn];
-        if(n&&hi!==lo){g.fillStyle=`hsl(${hue} 30% ${rm.length?55:34}%)`;for(let q=1;q<n;q++){const rel=(q/n-lo)/(hi-lo);if(rel>0&&rel<1){const yy=r.y+r.h*(1-rel);g.fillRect(cssW-6,yy-0.5,4,1);}}}
       }
-      const lines=rm.map(m=>{const [x0,ww]=span(m);return {x0:x0+3,x1:x0+ww-3,raw:m.raw};});
-      // a held finger hides its own cell, so its value is also shown as a faint guide across the row
-      if(P)for(const m of rm)if(m.finger){const yy=r.y+r.h*(1-rawToRel(t,k,m.raw));g.setLineDash([3,3]);g.strokeStyle=`hsla(${hue} 85% 72% / .55)`;g.lineWidth=1;g.beginPath();g.moveTo(HW,yy);g.lineTo(cssW,yy);g.stroke();g.setLineDash([]);}
-      if(P)for(const L of lines){const yy=r.y+r.h*(1-rawToRel(t,k,L.raw));g.strokeStyle=`hsl(${hue} 85% 72%)`;g.lineWidth=1.5;g.beginPath();g.moveTo(L.x0,yy);g.lineTo(L.x1,yy);g.stroke();}
+      // each held finger: a line at its height in its cell, and a faint guide across the row
+      for(const m of rm){const yy=r.y+r.h*(1-m.rel),[x0,ww]=span(m);
+        g.setLineDash([3,3]);g.strokeStyle=`hsla(${hue} 85% 72% / .5)`;g.lineWidth=1;g.beginPath();g.moveTo(HW,yy);g.lineTo(cssW,yy);g.stroke();g.setLineDash([]);
+        g.strokeStyle=`hsl(${hue} 85% 72%)`;g.lineWidth=1.5;g.beginPath();g.moveTo(x0+3,yy);g.lineTo(x0+ww-3,yy);g.stroke();}
       const latest=(rm.length?rm.reduce((x,y)=>y.ts>x.ts?y:x):null);
-      g.textBaseline='middle';const ty=d.tall||cellBip(t,k)?r.y+Math.min(12,r.h*(1-BAND_HI)/2+1):r.h>46?r.y+12:r.y+r.h/2;
-      g.font=`600 ${fs}px ${FONT}`;g.textAlign='left';g.fillStyle=latest?`hsl(${hue} 90% 84%)`:`hsl(${hue} 50% 64%)`;
-      g.fillText(d.name.toUpperCase(),HW+8,ty);
-      g.font=`400 ${fs}px ${FONT}`;g.textAlign='right';g.fillStyle=latest?'#fff':`hsl(${hue} 14% 52%)`;
+      g.textBaseline='middle';const ty=bip?r.y+Math.min(12,r.h*(1-BAND_HI)/2+1):r.h>46?r.y+12:r.y+r.h/2;
+      // the value(s) playing, or a single effect's range, at the right; the row's name at the left
+      g.font=`400 ${fs}px ${FONT}`;
       let lab='';
-      if(P){if(latest){const v=resolve(t,k,latest.raw);lab=cn.map(n=>d.params[n].lab(v[n],c.o)).join(' · ');}
-        else lab=P.bip?P.lab(c.lo[pn],c.o)+' ↓  ↑ '+P.lab(c.hi[pn],c.o):P.lab(c.lo[pn],c.o)+' → '+P.lab(c.hi[pn],c.o);}
-      g.fillText(lab,cssW-12,ty);
-      g.globalAlpha=1;if(ov)outlineCell(r,hue);
+      if(latest)lab=ks.map(q=>{const f=latest.fxs.find(x=>x.k===q);if(!f)return q==='filter'?'dry':'';const D=FX[q],C=t.cfg[q],ns=C.cells.filter(n=>D.params[n]);if(!ns.length)return single?'on':'';const v=resolve(t,q,f.raw);return ns.map(n=>D.params[n].lab(v[n],C.o)).join(' · ');}).filter(Boolean).join(' · ');
+      else if(single&&P)lab=P.bip?P.lab(c.lo[pn],c.o)+' ↓  ↑ '+P.lab(c.hi[pn],c.o):P.lab(c.lo[pn],c.o)+' → '+P.lab(c.hi[pn],c.o);
+      const lw=lab?g.measureText(lab).width:0;g.font=`600 ${fs}px ${FONT}`;
+      const title=rowTitle(ks,W()-24-(lab?Math.min(W()/2,lw+12):0)),tw=g.measureText(title).width;
+      g.textAlign='left';g.fillStyle=latest?`hsl(${hue} 90% 84%)`:`hsl(${hue} 50% 64%)`;g.fillText(title,HW+8,ty);
+      g.font=`400 ${fs}px ${FONT}`;g.textAlign='right';g.fillStyle=latest?'#fff':`hsl(${hue} 14% 52%)`;
+      if(lab&&lw<W()-tw-28)g.fillText(lab,cssW-12,ty);
     });
-    drawOverlaps(fs);
-    const y0=lay.length?lay[0].y:TOP;
+    drawRuler(t,i,curSlice,cw,fs);
+    const y0=RY;
     // columns past this track's bar length still play their slices, but sit outside the bar
     const xe=cellX(t,t.len16);if(!fxOnly&&xe<cssW-1){g.fillStyle='rgba(10,11,14,.42)';g.fillRect(xe,y0,cssW-xe,cssH-y0);}
     // the current step when it is silenced
@@ -1951,84 +2021,59 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     for(const p of ptrs.values())if(p.tr===view){g.strokeStyle='rgba(255,255,255,.85)';g.lineWidth=2;g.beginPath();g.arc(p.x,p.y,17,0,Math.PI*2);g.stroke();}
     // a grabbed effect row is outlined; while dragging, a copy follows the finger and a line shows where it lands
     for(const sp of special.values())if(sp.kind==='handle'){
-      const r=lay.find(x=>x.id===sp.id);if(!r)continue;
+      const r=lay[sp.ri];if(!r)continue;
       g.strokeStyle=ACC;g.lineWidth=2;rr(1,r.y+1,cssW-2,r.h-2,6);g.stroke();
       g.fillStyle=ACCA(.10);g.fillRect(0,r.y,cssW,r.h);
       if(sp.moved){
         const gh=Math.min(r.h,40);g.globalAlpha=0.9;g.fillStyle='#2a2619';rr(4,sp.y-gh/2,cssW-8,gh,6);g.fill();g.strokeStyle=ACC;g.lineWidth=1.5;rr(4,sp.y-gh/2,cssW-8,gh,6);g.stroke();
-        g.fillStyle=ACC;g.font=`600 ${fs}px ${FONT}`;g.textAlign='left';g.textBaseline='middle';g.fillText((sp.id==='center'?'LOOP':FX[sp.id].name.toUpperCase()),HW+8,sp.y);g.globalAlpha=1;
-        // the line between the groups (cells overlapping move together) where it will land
-        const gs=fieldGroups(T().field),area=cssH-TOP,uy=(sp.y-TOP)/area*FG;let to=gs.findIndex(q=>uy<(q.top+q.end)/2);
-        const yy=to<0?TOP+gs[gs.length-1].end/FG*area:TOP+gs[to].top/FG*area;
+        g.fillStyle=ACC;g.font=`600 ${fs}px ${FONT}`;g.textAlign='left';g.textBaseline='middle';g.fillText(rowTitle(r.ks,W()-16),HW+8,sp.y);g.globalAlpha=1;
+        // the line between the rows where it will land
+        const to=dropAt(sp.y),yy=to>=lay.length?lay[lay.length-1].b1:lay[to].b0;
         g.fillStyle=ACC;g.fillRect(0,yy-1.5,cssW,3);
       }
     }
     // a track that is muted, or silenced by another track's solo, is dimmed
   }
-  // where two cells overlap: stripes of both colours, and both names (a touch there drives both)
-  function drawOverlaps(fs){
-    for(let a=0;a<lay.length;a++)for(let b=a+1;b<lay.length;b++){
-      const A=lay[a],B=lay[b],y0=Math.max(A.y,B.y),y1=Math.min(A.y+A.h,B.y+B.h);if(y1-y0<4)continue;
-      g.save();g.beginPath();g.rect(HW,y0,W(),y1-y0);g.clip();g.lineWidth=5;
-      for(let x=HW-(y1-y0),q=0;x<cssW;x+=10,q++){g.strokeStyle=`hsla(${hueOf(T(),q%2?B.id:A.id)} 70% 55% / .16)`;g.beginPath();g.moveTo(x,y1);g.lineTo(x+(y1-y0),y0);g.stroke();}
-      g.restore();
-      const nm=r=>r.id==='center'?'FILTER':FX[r.id].name.toUpperCase();
-      g.font=`600 ${fs-1}px ${FONT}`;g.textAlign='center';g.textBaseline='middle';g.fillStyle='rgba(255,255,255,.75)';
-      g.fillText(nm(A)+' + '+nm(B),HW+W()/2,(y0+y1)/2);
-    }
-  }
-  function outlineCell(r,hue){g.strokeStyle=`hsla(${hue} 80% 65% / .8)`;g.lineWidth=1;g.setLineDash([4,3]);rr(HW+1,r.y+0.5,W()-2,r.h-1,5);g.stroke();g.setLineDash([]);}
-  function drawCenter(t,i,r,ri,curSlice,marks,touch,cw,gap,fs,nowHid,dc,dw,span){
-    const cols=t.cols,bot=r.y+r.h,fm=marks.filter(m=>m.fx==='filter'),dm=marks.filter(m=>m.fx==='dry'),fh=t.cfg.filter.hue;
-    for(let col=0;col<dc;col++){g.fillStyle=!fxOnly&&col===curSlice?'#252931':'#1a1d23';rr(HW+col*dw+gap/2,r.y,dw-gap,r.h,6);g.fill();}
-    for(const m of dm){const now=nowHid===m.hid,[x0,ww]=span(m);g.fillStyle=now?'#3a3527':'#2a2822';rr(x0,r.y,ww,r.h,6);g.fill();}
-    for(let col=0;col<dc;col++)if(touch.has(ri+':'+col)){g.fillStyle='#343a46';rr(HW+col*dw+gap/2,r.y,dw-gap,r.h,6);g.fill();}
-    const fz=(x0,x1,raw,now)=>{const hp=raw>0;g.fillStyle=hp?`hsla(${fh} 85% 60% / ${now?0.36:0.2})`:`hsla(${(fh+160)%360} 85% 60% / ${now?0.36:0.2})`;
-      if(hp)g.fillRect(x0,r.y,x1-x0,r.z1-r.y);else g.fillRect(x0,r.z2,x1-x0,bot-r.z2);};
-    for(const s of fm){const [x0,ww]=span(s);fz(x0,x0+ww,s.raw,nowHid===s.hid);}
-    const pk=t.pk;
+  // The ruler: the loop's waveform across the slices, their numbers, and the playhead. The slice playing
+  // (touched or from the sequence) is drawn bright.
+  function drawRuler(t,i,curSlice,cw,fs){
+    const y=RY,h=RULER,cols=t.cols,pk=t.pk;
+    g.fillStyle='#15171c';rr(HW,y,W(),h,5);g.fill();
+    if(!fxOnly&&curSlice>=0){g.fillStyle='#232832';g.fillRect(HW+curSlice*cw,y,cw,h);}
     if(pk){
-      const mid=r.y+r.h/2,amp=r.h*0.46,B=pk.length/2,c0=HW+curSlice*cw,c1=c0+cw;
+      const mid=y+h/2,amp=h*0.44,B=pk.length/2,c0=fxOnly?-1:HW+curSlice*cw,c1=c0+cw;
       for(const pass of [0,1]){
         g.beginPath();
         for(let x=HW;x<cssW;x+=1){const inSl=x>=c0&&x<c1;if(pass===0&&inSl||pass===1&&!inSl)continue;
           const k=Math.min(B-1,Math.floor((x-HW)/W()*B));g.moveTo(x+0.5,mid-pk[k*2+1]*amp);g.lineTo(x+0.5,mid-pk[k*2]*amp+0.5);}
-        g.strokeStyle=pass?'#ece7dc':'#6c7380';g.lineWidth=1;g.stroke();
+        g.strokeStyle=pass?'#ece7dc':'#5d636e';g.lineWidth=1;g.stroke();
       }
     }
-    // a line at each held or latched filter value, like the other rows
-    if(hasCell(t,'filter')){
-      const fl=fm.map(m=>{const [x0,ww]=span(m);return {x0:x0+3,x1:x0+ww-3,raw:m.raw};});
-      for(const m of fm)if(m.finger){const hp=m.raw>0,yy=hp?r.z1-(r.z1-r.y)*m.raw:r.z2+(bot-r.z2)*(-m.raw);g.setLineDash([3,3]);g.strokeStyle=hp?`hsla(${fh} 90% 72% / .55)`:`hsla(${(fh+160)%360} 90% 72% / .55)`;g.lineWidth=1;g.beginPath();g.moveTo(HW,yy);g.lineTo(cssW,yy);g.stroke();g.setLineDash([]);}
-      for(const L of fl){const hp=L.raw>0,yy=hp?r.z1-(r.z1-r.y)*L.raw:r.z2+(bot-r.z2)*(-L.raw);
-        g.strokeStyle=hp?`hsl(${fh} 90% 72%)`:`hsl(${(fh+160)%360} 90% 72%)`;g.lineWidth=1.5;g.beginPath();g.moveTo(L.x0,yy);g.lineTo(L.x1,yy);g.stroke();}
-    }
-    g.setLineDash([2,4]);g.strokeStyle='#8a8f99';g.lineWidth=1;g.beginPath();g.moveTo(HW,r.z1);g.lineTo(cssW,r.z1);g.moveTo(HW,r.z2);g.lineTo(cssW,r.z2);g.stroke();g.setLineDash([]);
-    const latest=(fm.length?fm.reduce((x,y)=>y.ts>x.ts?y:x):null),P=FX.filter.params.cut;
-    g.textBaseline='middle';g.font=`600 ${fs}px ${FONT}`;g.textAlign='left';
-    const yHp=(r.y+r.z1)/2,yLp=(r.z2+bot)/2;
-    g.fillStyle=latest&&latest.raw>0?`hsl(${fh} 90% 80%)`:`hsl(${fh} 40% 58%)`;g.fillText('HIGH-PASS ↑',HW+8,yHp);
-    g.fillStyle=latest&&latest.raw<0?`hsl(${(fh+160)%360} 90% 80%)`:`hsl(${(fh+160)%360} 40% 60%)`;g.fillText('LOW-PASS ↓',HW+8,yLp);
-    g.textAlign='right';g.font=`400 ${fs}px ${FONT}`;
-    const lv=latest?P.lab(resolve(t,'filter',latest.raw).cut):'';
-    g.fillStyle='#fff';if(latest&&latest.raw>0)g.fillText(lv,cssW-12,yHp);if(latest&&latest.raw<0)g.fillText(lv,cssW-12,yLp);
-    g.textAlign='left';g.fillStyle='#8a8f99';g.font=`500 ${fs}px ${FONT}`;g.textBaseline='top';
+    g.fillStyle='rgba(255,255,255,.07)';for(let c=1;c<cols;c++)g.fillRect(HW+c*cw-0.5,y+2,1,h-4);
+    g.textAlign='left';g.fillStyle='#8a8f99';g.font=`500 ${fs-1}px ${FONT}`;g.textBaseline='top';
     const every=cols>8&&cw<30?2:1;
-    if(!fxOnly)for(let col=0;col<cols;col+=every)g.fillText(String(col+1),HW+col*cw+gap/2+4,r.z1+4);
-    if(st.playing&&i.src&&!i.rest){const x=HW+(i.pos/16)*W();g.fillStyle=ACC;g.fillRect(x-0.75,r.z1,1.5,r.z2-r.z1);}
+    if(!fxOnly)for(let col=0;col<cols;col+=every)g.fillText(String(col+1),HW+col*cw+3,y+2);
+    if(st.playing&&i.src&&!i.rest){const x=HW+(i.pos/16)*W();g.fillStyle=ACC;g.fillRect(x-0.75,y,1.5,h);}
   }
+  const rowTitle=(ks,maxW)=>{const long=ks.map(k=>fxName(k).toUpperCase()).join(' + ');return g.measureText(long).width<=maxW?long:ks.map(k=>SHORT[k]).join('+');};
 
-  // ---------- game (first pass: no scoring) ----------
-  // A round is 16 bars after a one-bar count-in. Targets appear over the field on the beat; hitting one is
-  // just touching the cell under it, so everything you do is played and, with Record on for the round,
-  // written into the sequence. At the end of every round bar the sequence is captured, so a round always
-  // leaves 16 clips, whatever happens.
-  //   drone: tap it.  armoured: hold it for its beats (letting go early resets it).  serpent: hold its head
-  //   and follow it to the end of its path.  linked: hold all of its nodes at once.  mine: don't touch it
-  //   (a finger that does is silenced until it lifts).
-  // Difficulty is the tempo. The game only reads touches; the engine is driven as by any fingers.
+  // ---------- game (second pass: no scoring) ----------
+  // A round is 16 bars after a one-bar count-in. Targets come in gestures that make good loops: one, two or
+  // three touches at once (mostly in different rows), each held or dragged slowly up or down its row, for
+  // half a bar to two bars (a single drag: a beat to two bars). Hitting a target is just touching the field
+  // under it, so everything you do is played and, with Record on for the round, written into the sequence.
+  // At the end of every round bar the sequence is captured, so a round always leaves 16 clips.
+  //   A ring closes on each target as its moment comes (most of them late in the bar). A held target swells
+  //   until it bursts at its end; a dragged one is a marker moving slowly along its track. The beats left
+  //   are shown above the finger, where the hand can't hide them. Hold or follow it for most of its time
+  //   to clear it. New targets appear above the ones already held (a held finger hides what is below it),
+  //   and on an empty field they start low. Mines (later in the round): a finger that touches one is
+  //   silenced until it lifts.
+  // Holds and drags follow the effects: Stutter, Filter and Crush are mostly dragged; Reverse, Freeze,
+  // Delay and Reverb mostly held; the rest either. Past two beats a target is more likely dragged, and past
+  // a bar it always is. The game only reads touches; the engine is driven as by any fingers.
   let gameOn=false,game=null,gameMsg=null;
-  const GBARS=16,BEAT=0.25,LEAD=0.125;
+  const GBARS=16,BEAT=0.25,APPR=0.25,MAXF=5;
   const nowSamples=()=>st.playing?st.t+(performance.now()-st.recv)*sr/1000:st.t;
   const barS=()=>{const t=T();return Math.max(1,barSteps(t)*st.len/t.cols);};
   const nowBar=()=>nowSamples()/barS();
@@ -2043,55 +2088,92 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     if(!gameOn)return;const g0=game;gameOn=false;game=null;
     recOn=false;recBn=-1;sendRec();
     for(const p of ptrs.values())if(p.mined){p.mined=false;}push(T());
-    gameMsg={text:text||(g0.captured+' clips saved'),sub:g0.hits+' hit · '+g0.missed+' got away'+(g0.captured<GBARS?'':' · see them on the Clips page'),until:performance.now()+5000};
+    gameMsg={text:text||(g0.captured+' clips saved'),sub:g0.hits+' cleared · '+g0.missed+' missed'+(g0.captured<GBARS?'':' · see them on the Clips page'),until:performance.now()+5000};
     paintIcons();
   }
-  // the plan: what appears when (in bars from the start of playback), harder as the round goes on
+  const FAV={stutter:'drag',filter:'drag',crush:'drag',reverse:'hold',freeze:'hold',delay:'hold',reverb:'hold',random:'any',pitch:'any',env:'any'};
+  const PDRAG={drag:0.75,hold:0.2,any:0.5};
+  // where in the bar a gesture starts (in beats): weighted toward the second half, and most of all its end
+  const STARTS=[0,0.5,1,1.5,2,2.5,3,3.5],SW=[1,0.4,0.8,0.5,2,1.5,3,4];
+  function wpick(ws,R){let s=0;for(const w of ws)s+=w;let x=R()*s;for(let i=0;i<ws.length;i++){x-=ws[i];if(x<0)return i;}return ws.length-1;}
+  // the plan: gestures {t0 (in bars from the start of playback), D (beats), n (touches)}, at most MAXF
+  // fingers at once; the next gesture may begin while one is still held
   function makePlan(b0){
-    const R=Math.random,out=[];
-    for(let b=0;b<GBARS;b++){
-      const bar=b0+b,lv=b/GBARS,beats=[0,1,2,3].concat(b>=6?[0.5,1.5,2.5,3.5]:[]).sort(()=>R()-0.5);
-      const nd=2+Math.floor(lv*3);for(let i=0;i<nd&&i<beats.length;i++)out.push({type:'drone',t0:bar+beats[i]*BEAT});
-      if(b>=4&&R()<0.7)out.push({type:'armour',t0:bar+Math.floor(R()*2)*BEAT,H:1+Math.floor(R()*Math.min(4,1+lv*4))});
-      if(b>=8&&b%2===0)out.push({type:'serpent',t0:bar+(1+Math.floor(R()*2))*BEAT,D:2+Math.floor(R()*3)});
-      if(b>=8&&b%2===1)out.push({type:'linked',t0:bar+Math.floor(R()*3)*BEAT,n:b>=12?3:2});
-      if(b>=12){const nm=1+Math.floor(R()*2);for(let i=0;i<nm;i++)out.push({type:'mine',t0:bar+Math.floor(R()*4)*BEAT});}
+    const R=Math.random,out=[],end=b0+GBARS;let c=b0;
+    const busy=x=>out.reduce((s,e)=>s+(x>=e.t0-0.01&&x<e.t0+e.D*BEAT?e.n:0),0);
+    for(let guard=0;c<end-0.2&&guard<200;guard++){
+      const lv=(c-b0)/GBARS,r=R();
+      const n=lv<0.12?(r<0.6?1:2):r<0.55?3:r<0.85?1:2;
+      let D=n===1?[1,2,3,4,6,8][wpick([1,1.5,1.5,2,1.5,1.5],R)]:[2,3,4,6,8][wpick([2,1.5,2,1.5,1],R)];
+      // a start at or after the cursor, in the cursor's bar or the next
+      let bar=Math.floor(c+1e-9),t0=null;
+      for(let tries=0;tries<12&&t0==null;tries++){const s=bar+STARTS[wpick(SW,R)]*BEAT;if(s>=c-1e-9&&busy(s)+n<=MAXF)t0=s;else if(tries%3===2)bar++;}
+      if(t0==null||t0>=end-0.1){c=bar+1;continue;}
+      D=Math.min(D,Math.floor((end-t0)/BEAT+1e-9));if(D<(n===1?1:2)){c=end;continue;}
+      out.push({t0,D,n});
+      // the next one: often while this one is still held, otherwise after it
+      c=t0+D*BEAT*(R()<0.5?0.5+0.3*R():1)+(n===3?BEAT:0);
     }
+    // mines, from bar 8: one in some bars, for a bar and a half
+    for(let b=8;b<GBARS;b++)if(R()<0.3)out.push({t0:b0+b+Math.floor(R()*4)*BEAT,D:6,n:1,mine:true});
     return out.sort((a,b)=>a.t0-b.t0);
   }
-  // a place on the field: a column, and a height inside one of the field's cells (not too near a finger)
-  function gameSpot(avoid){
-    const t=T(),cw=W()/t.cols,R=Math.random;
-    for(let tries=0;tries<20;tries++){
-      const r=lay[Math.floor(R()*lay.length)];if(!r)break;
-      const x=HW+(Math.floor(R()*t.cols)+0.5)*cw,y=r.b0+(0.15+0.7*R())*(r.b1-r.b0);
-      if(avoid&&[...ptrs.values()].some(p=>Math.hypot(p.x-x,p.y-y)<70))continue;
-      return {fx:(x-HW)/W(),fy:(y-TOP)/Math.max(1,cssH-TOP)};
-    }
-    return {fx:0.5,fy:0.5};
-  }
-  const gpx=q=>[HW+q.fx*W(),TOP+q.fy*(cssH-TOP)];
-  function spawn(s){
-    const e=Object.assign({state:'alive',born:performance.now(),prog:0},s);
-    if(s.type==='serpent'){const t=T(),cols=t.cols;let c=Math.floor(Math.random()*cols),q=gameSpot();e.path=[q];
-      for(let i=0;i<3+Math.floor(Math.random()*3);i++){c=clamp(c+(Math.random()<0.5?-1:1)*(1+Math.floor(Math.random()*2)),0,cols-1);
-        const n=gameSpot();e.path.push({fx:(c+0.5)/cols,fy:clamp(q.fy+(n.fy-q.fy)*0.5,0.02,0.98)});q=e.path[e.path.length-1];}
-      e.trk=0;e.broken=false;e.was=false;}
-    else if(s.type==='linked'){e.nodes=[];for(let i=0;i<s.n;i++)e.nodes.push(gameSpot());e.hold=0;}
-    else Object.assign(e,gameSpot(s.type==='mine'));
-    game.enemies.push(e);
-  }
-  const RAD=()=>Math.max(22,Math.min(34,W()/T().cols*0.7));
+  const fpx=(fx,fy)=>[HW+fx*W(),TOP+fy*(fieldH()-TOP)];
+  const RAD=()=>Math.max(22,Math.min(32,W()/T().cols*0.75));
   const fingers=()=>[...ptrs.values()].filter(p=>p.live&&p.tr===view);
-  const near=(x,y)=>fingers().some(p=>Math.hypot(p.x-x,p.y-y)<RAD());
-  function burst(x,y,col){game.parts.push({x,y,col,t:performance.now()});}
-  function kill(e,x,y){e.state='dead';e.dead=performance.now();game.hits++;burst(x,y,'#ffd1e6');}
-  function miss(e){e.state='gone';e.dead=performance.now();game.missed++;}
-  // a finger coming down: drones are tapped
-  function gameDown(ptr){
-    if(!game||!game.plan)return;const nb=nowBar();
-    for(const e of game.enemies)if(e.state==='alive'&&e.type==='drone'&&nb>=e.t0-0.06){const [x,y]=gpx(e);if(Math.hypot(ptr.x-x,ptr.y-y)<RAD()){kill(e,x,y);break;}}
+  const alive=()=>game.enemies.filter(e=>e.state==='alive'&&!e.mine);
+  // where a target is at bar position nb (a drag moves along its track; long ones go there and back)
+  function tpos(e,nb){
+    if(e.mode!=='drag')return fpx(e.fx,e.fy0);
+    const u=clamp((nb-e.t0)/(e.D*BEAT),0,1),v=e.back?(u<0.5?u*2:2-u*2):u,s=v*v*(3-2*v);
+    return fpx(e.fx,e.fy0+(e.fy1-e.fy0)*s);
   }
+  // Rows for n new targets: above everything held or showing (fingers hide what is below them), or, on an
+  // empty field, mostly low. Drags prefer tall rows. Returns [{ri, top (the highest y allowed)}].
+  function pickRows(n,drag,R){
+    const R0=RAD();let ceil=fieldH();
+    for(const e of alive())ceil=Math.min(ceil,tpos(e,nowBar())[1],e.mode==='drag'?Math.min(...[e.fy0,e.fy1].map(f=>fpx(0,f)[1])):Infinity);
+    for(const p of fingers())ceil=Math.min(ceil,p.y);
+    const lim=ceil-R0*1.6,empty=ceil>=fieldH();
+    let cand=lay.map((r,ri)=>({ri,top:Math.min(r.b1,lim)})).filter(c=>c.top-lay[c.ri].b0>Math.min(R0*1.6,(lay[c.ri].b1-lay[c.ri].b0)*0.6));
+    if(!cand.length)cand=lay.map((r,ri)=>({ri,top:r.b1}));
+    const w=c=>{const r=lay[c.ri],h=c.top-r.b0;return (empty?1+2*c.ri/Math.max(1,lay.length-1):1)*(drag?Math.max(0.3,h/100):1);};
+    const out=[],left=cand.slice();
+    for(let i=0;i<n;i++){
+      const pool=left.length&&R()<0.85?left:cand;const k=wpick(pool.map(w),R),c=pool[k];out.push(c);
+      const j=left.indexOf(c);if(j>=0)left.splice(j,1);
+    }
+    return out;
+  }
+  function spawn(s){
+    const R=Math.random,t=T(),nb=nowBar();
+    if(s.mine){
+      // a mine sits where nothing is held or due: a free column, away from fingers
+      const used=new Set(alive().map(e=>Math.round(e.fx*t.cols-0.5)));
+      for(let tries=0;tries<20;tries++){const col=Math.floor(R()*t.cols),r=lay[Math.floor(R()*lay.length)];if(!r||used.has(col))continue;
+        const fy=(r.b0+(0.25+0.5*R())*(r.b1-r.b0)-TOP)/(fieldH()-TOP),[x,y]=fpx((col+0.5)/t.cols,fy);
+        if(fingers().some(p=>Math.hypot(p.x-x,p.y-y)<90))continue;
+        game.enemies.push({mine:true,state:'alive',t0:s.t0,D:s.D,fx:(col+0.5)/t.cols,fy0:fy});return;}
+      return;
+    }
+    const forced=s.D>4,rows=pickRows(s.n,forced||s.D>2,R),grp={id:++idCtr,members:[]};
+    const cols=new Set(alive().map(e=>Math.round(e.fx*t.cols-0.5)));
+    for(const c of rows){
+      const r=lay[c.ri];
+      let p=r.ks.reduce((a,k)=>a+PDRAG[FAV[k]||'any'],0)/r.ks.length;if(s.D>2)p+=(1-p)*0.5;
+      const mode=forced||R()<p?'drag':'hold';
+      let col=Math.floor(R()*t.cols);for(let tries=0;tries<12&&[...cols].some(q=>Math.abs(q-col)<2);tries++)col=Math.floor(R()*t.cols);cols.add(col);
+      const toF=y=>(y-TOP)/(fieldH()-TOP),lo=r.b0+(r.b1-r.b0)*0.12,hi=Math.max(lo+1,Math.min(r.b1-(r.b1-r.b0)*0.12,c.top));
+      const e={state:'alive',grp,mode,t0:s.t0,D:s.D,fx:(col+0.5)/t.cols,on:0,ri:c.ri};
+      if(mode==='drag'){
+        // a single drag crosses the row; three at once move at least half of it; long ones go there and back
+        const span=(hi-lo)*(s.n===1?1:0.5+0.4*R()),a=lo+R()*(hi-lo-span),up=R()<0.5;
+        e.fy0=toF(up?a+span:a);e.fy1=toF(up?a:a+span);e.back=s.D>=6&&R()<0.6;
+      }else e.fy0=toF(lo+(0.2+0.6*R())*(hi-lo));
+      grp.members.push(e);game.enemies.push(e);
+    }
+  }
+  function burst(x,y,col){game.parts.push({x,y,col,t:performance.now()});}
   function gameTick(){
     const g0=game,i=info(0);if(!g0)return;
     if(!st.playing){if(g0.startBar!=null&&!intent)endGame(true,'Round stopped');return;}
@@ -2102,24 +2184,20 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     const bn=i.barN==null?-1:i.barN;
     while(g0.capNext<GBARS&&bn>=g0.startBar+g0.capNext+1){const t=T();clips.push(clipOf(t,t.seq));selClip=clips[clips.length-1];g0.capNext++;g0.captured++;flashCapture();paintIcons();}
     if(g0.capNext>=GBARS){endGame(false);return;}
-    while(g0.next<g0.plan.length&&g0.plan[g0.next].t0-LEAD<=nb)spawn(g0.plan[g0.next++]);
+    while(g0.next<g0.plan.length&&g0.plan[g0.next].t0-APPR<=nb)spawn(g0.plan[g0.next++]);
+    const R0=RAD(),now=performance.now();
     for(const e of g0.enemies){if(e.state!=='alive')continue;
-      if(e.type==='drone'){if(nb>e.t0+1.25*BEAT)miss(e);}
-      else if(e.type==='armour'){const [x,y]=gpx(e);if(nb>=e.t0-LEAD&&near(x,y)){e.prog+=dt/BEAT;if(e.prog>=e.H)kill(e,x,y);}else e.prog=0;if(e.state==='alive'&&nb>e.t0+(e.H+2)*BEAT)miss(e);}
-      else if(e.type==='serpent'){const u=(nb-e.t0)/(e.D*BEAT),[x,y]=serpHead(e,u);
-        if(u>0&&u<1){const on=near(x,y);if(on)e.trk+=dt;else if(e.was)e.broken=true;e.was=on;}
-        if(u>=1){if(e.trk/(e.D*BEAT)>=0.6)kill(e,x,y);else miss(e);}}
-      else if(e.type==='linked'){const all=e.nodes.every(q=>{const [x,y]=gpx(q);return near(x,y);});
-        if(all&&nb>=e.t0-LEAD){e.hold+=dt/BEAT;if(e.hold>=0.5){const [x,y]=gpx(e.nodes[0]);kill(e,x,y);e.nodes.slice(1).forEach(q=>burst(...gpx(q),'#ffd1e6'));}}else e.hold=0;
-        if(e.state==='alive'&&nb>e.t0+3*BEAT)miss(e);}
-      else if(e.type==='mine'){const [x,y]=gpx(e);
-        for(const p of fingers())if(!p.mined&&Math.hypot(p.x-x,p.y-y)<RAD()*0.8){p.mined=true;e.state='boom';e.dead=performance.now();burst(x,y,'#ff5050');push(T());break;}
-        if(e.state==='alive'&&nb>e.t0+2)e.state='gone',e.dead=performance.now();}
+      const end=e.t0+e.D*BEAT,[x,y]=tpos(e,nb);
+      if(e.mine){
+        for(const p of fingers())if(!p.mined&&Math.hypot(p.x-x,p.y-y)<R0*0.8){p.mined=true;e.state='boom';e.dead=now;burst(x,y,'#ff5050');push(T());break;}
+        if(e.state==='alive'&&nb>end)e.state='gone',e.dead=now;continue;}
+      // a touch a little early counts; the target is cleared when it was held (or followed) most of its time
+      if(nb>=e.t0-BEAT*0.25&&nb<end&&fingers().some(p=>Math.hypot(p.x-x,p.y-y)<R0*1.15))e.on+=dt;
+      if(nb>=end){if(e.on>=e.D*BEAT*0.6){e.state='dead';g0.hits++;burst(x,y,e.mode==='drag'?'#bff3ff':'#ffd1e6');}else{e.state='gone';g0.missed++;}e.dead=now;}
     }
-    const now=performance.now();g0.enemies=g0.enemies.filter(e=>e.state==='alive'||now-e.dead<500);g0.parts=g0.parts.filter(p=>now-p.t<500);
+    g0.enemies=g0.enemies.filter(e=>e.state==='alive'||now-e.dead<500);g0.parts=g0.parts.filter(p=>now-p.t<500);
   }
-  function serpHead(e,u){const P=e.path,n=P.length-1,v=clamp(u,0,1)*n,j=Math.min(n-1,Math.floor(v)),f=v-j,[x1,y1]=gpx(P[j]),[x2,y2]=gpx(P[j+1]);return [x1+(x2-x1)*f,y1+(y2-y1)*f];}
-  const PINK='#ff5fa2';
+  const PINK='#ff5fa2',CYAN='#5fe0ff';
   function drawGame(fs){
     const now=performance.now();
     if(gameMsg&&now>gameMsg.until)gameMsg=null;
@@ -2127,37 +2205,45 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     gameTick();const g0=game;if(!g0)return;
     const nb=g0.plan?nowBar():0,R=RAD();
     if(g0.startBar==null||nb<g0.startBar){const left=g0.startBar==null?4:Math.max(1,Math.ceil((g0.startBar-nb)/BEAT));hud('GET READY  '+left,'16 bars · every bar becomes a clip',fs);}
-    else hud('BAR '+Math.min(GBARS,Math.floor(nb)-g0.startBar+1)+' / '+GBARS,g0.captured+' clips · '+g0.hits+' hit',fs);
+    else hud('BAR '+Math.min(GBARS,Math.floor(nb)-g0.startBar+1)+' / '+GBARS,g0.captured+' clips · '+g0.hits+' cleared',fs);
+    const pill=(x,y,text,col)=>{g.font=`700 ${fs+3}px ${FONT}`;const w=Math.max(30,g.measureText(text).width+16);let py=y-R-46;if(py<TOP+4)py=y+R+30;x=clamp(x,HW+w/2+2,cssW-w/2-2);
+      g.fillStyle='rgba(17,19,23,.88)';rr(x-w/2,py-12,w,24,12);g.fill();g.strokeStyle=col;g.lineWidth=1.5;rr(x-w/2,py-12,w,24,12);g.stroke();
+      g.fillStyle='#fff';g.textAlign='center';g.textBaseline='middle';g.fillText(text,x,py+0.5);};
+    // a gesture's touches are joined by a faint line
+    const grps=new Set(g0.enemies.filter(e=>e.state==='alive'&&e.grp&&e.grp.members.length>1).map(e=>e.grp));
+    for(const gp of grps){const P=gp.members.filter(e=>e.state==='alive').map(e=>tpos(e,nb));if(P.length<2)continue;
+      g.strokeStyle='rgba(255,255,255,.18)';g.lineWidth=1.5;g.setLineDash([3,5]);g.beginPath();P.forEach(([x,y],k)=>g[k?'lineTo':'moveTo'](x,y));g.stroke();g.setLineDash([]);}
     for(const e of g0.enemies){
-      const fade=e.state==='alive'?clamp((nb-(e.t0-LEAD))/LEAD,0.15,1):Math.max(0,1-(now-e.dead)/500);
-      g.globalAlpha=fade;
-      if(e.type==='drone'){const [x,y]=gpx(e),r=R*0.5,a=now/400;g.save();g.translate(x,y);g.rotate(a);
-        g.fillStyle='rgba(255,95,162,.25)';g.beginPath();g.arc(0,0,R*0.9,0,7);g.fill();
-        g.fillStyle=e.state==='dead'?'#fff':PINK;g.beginPath();g.moveTo(0,-r);g.lineTo(r,0);g.lineTo(0,r);g.lineTo(-r,0);g.closePath();g.fill();g.restore();}
-      else if(e.type==='armour'){const [x,y]=gpx(e),r=R*0.75;g.strokeStyle=PINK;g.lineWidth=3;g.beginPath();for(let k=0;k<6;k++){const a=k*Math.PI/3+Math.PI/6;g[k?'lineTo':'moveTo'](x+r*Math.cos(a),y+r*Math.sin(a));}g.closePath();g.stroke();
-        g.fillStyle='rgba(255,95,162,.18)';g.fill();
-        if(e.prog>0){g.strokeStyle='#fff';g.lineWidth=4;g.beginPath();g.arc(x,y,r+6,-Math.PI/2,-Math.PI/2+2*Math.PI*Math.min(1,e.prog/e.H));g.stroke();}
-        g.fillStyle='#fff';g.font=`700 ${fs+2}px ${FONT}`;g.textAlign='center';g.textBaseline='middle';g.fillText(String(Math.max(1,Math.ceil(e.H-e.prog))),x,y+0.5);}
-      else if(e.type==='serpent'){const u=(nb-e.t0)/(e.D*BEAT);
-        g.strokeStyle='rgba(255,95,162,.35)';g.lineWidth=2;g.setLineDash([4,5]);g.beginPath();e.path.forEach((q,k)=>{const [x,y]=gpx(q);g[k?'lineTo':'moveTo'](x,y);});g.stroke();g.setLineDash([]);
-        for(let k=5;k>=0;k--){const [x,y]=serpHead(e,u-k*0.05);g.fillStyle=k?`rgba(255,95,162,${0.5-k*0.07})`:(e.broken?'#a05a7a':PINK);g.beginPath();g.arc(x,y,k?R*0.35:R*0.55,0,7);g.fill();}
-        const [hx,hy]=serpHead(e,u);if(u<0){g.strokeStyle='#fff';g.lineWidth=1.5;g.beginPath();g.arc(hx,hy,R*0.8,0,7);g.stroke();}}
-      else if(e.type==='linked'){const P=e.nodes.map(gpx);g.strokeStyle=PINK;g.lineWidth=2;g.beginPath();P.forEach(([x,y],k)=>g[k?'lineTo':'moveTo'](x,y));if(P.length>2)g.closePath();g.stroke();
-        for(const [x,y] of P){const on=near(x,y);g.fillStyle=on?'#fff':PINK;g.beginPath();g.arc(x,y,R*0.45,0,7);g.fill();g.strokeStyle='rgba(255,95,162,.5)';g.lineWidth=1.5;g.beginPath();g.arc(x,y,R*0.8,0,7);g.stroke();}}
-      else if(e.type==='mine'){const [x,y]=gpx(e),p=1+0.12*Math.sin(now/120),r=R*0.42*p;g.fillStyle=e.state==='boom'?'#ff5050':'#c0303a';g.beginPath();g.arc(x,y,r,0,7);g.fill();
-        g.strokeStyle='#ff8080';g.lineWidth=2;g.beginPath();for(let k=0;k<8;k++){const a=k*Math.PI/4;g.moveTo(x+r*Math.cos(a),y+r*Math.sin(a));g.lineTo(x+(r+6)*Math.cos(a),y+(r+6)*Math.sin(a));}g.stroke();}
+      const fade=e.state==='alive'?clamp((nb-(e.t0-APPR))/(APPR*0.5),0.2,1):Math.max(0,1-(now-e.dead)/500);
+      g.globalAlpha=fade;const [x,y]=tpos(e,nb),end=e.t0+e.D*BEAT;
+      if(e.mine){const p=1+0.12*Math.sin(now/120),r=R*0.42*p;g.fillStyle=e.state==='boom'?'#ff5050':'#c0303a';g.beginPath();g.arc(x,y,r,0,7);g.fill();
+        g.strokeStyle='#ff8080';g.lineWidth=2;g.beginPath();for(let k=0;k<8;k++){const a=k*Math.PI/4;g.moveTo(x+r*Math.cos(a),y+r*Math.sin(a));g.lineTo(x+(r+6)*Math.cos(a),y+(r+6)*Math.sin(a));}g.stroke();g.globalAlpha=1;continue;}
+      const col=e.mode==='drag'?CYAN:PINK,frac=clamp(e.on/(e.D*BEAT),0,1),onIt=e.state==='alive'&&fingers().some(p=>Math.hypot(p.x-x,p.y-y)<R*1.15);
+      if(e.mode==='drag'){
+        // the track, with chevrons pointing the way
+        const [,ya]=fpx(e.fx,e.fy0),[,yb]=fpx(e.fx,e.fy1);g.strokeStyle='rgba(95,224,255,.28)';g.lineWidth=R*0.9;g.lineCap='round';g.beginPath();g.moveTo(x,ya);g.lineTo(x,yb);g.stroke();g.lineCap='butt';
+        const dir=Math.sign(yb-ya)||1;g.strokeStyle='rgba(95,224,255,.6)';g.lineWidth=2;for(let yy=ya+dir*14;dir*(yb-yy)>6;yy+=dir*18){g.beginPath();g.moveTo(x-5,yy-dir*4);g.lineTo(x,yy+dir*1);g.lineTo(x+5,yy-dir*4);g.stroke();}
+        if(e.back){g.fillStyle='rgba(95,224,255,.6)';g.font=`600 ${fs}px ${FONT}`;g.textAlign='center';g.textBaseline='middle';g.fillText('↕',x+R*0.9,(ya+yb)/2);}
+      }
+      // the core: swells as it is held (or followed), bursting at its end
+      const r=R*0.5*(1+0.7*frac);
+      g.fillStyle=onIt?'#fff':col;g.beginPath();g.arc(x,y,r,0,7);g.fill();
+      g.strokeStyle=col;g.lineWidth=3;if(frac>0){g.beginPath();g.arc(x,y,r+5,-Math.PI/2,-Math.PI/2+2*Math.PI*frac);g.stroke();}
+      // the closing ring: touch as it meets the core
+      if(e.state==='alive'&&nb<e.t0){const k=clamp((e.t0-nb)/APPR,0,1);g.strokeStyle=col;g.lineWidth=2;g.globalAlpha=fade*(1-k*0.5);g.beginPath();g.arc(x,y,r+4+k*R*1.8,0,7);g.stroke();g.globalAlpha=fade;}
+      if(e.state==='alive'&&nb>=e.t0-APPR)pill(x,y,String(Math.max(1,Math.ceil((end-Math.max(nb,e.t0))/BEAT-1e-6))),col);
       g.globalAlpha=1;
     }
-    for(const q of g0.parts){const k=(now-q.t)/500;g.globalAlpha=1-k;g.strokeStyle=q.col;g.lineWidth=3;g.beginPath();g.arc(q.x,q.y,R*(0.6+1.6*k),0,7);g.stroke();}
+    for(const q of g0.parts){const k=(now-q.t)/500;g.globalAlpha=1-k;g.strokeStyle=q.col;g.lineWidth=3;g.beginPath();g.arc(q.x,q.y,R*(0.8+2*k),0,7);g.stroke();g.beginPath();g.arc(q.x,q.y,R*(0.4+1.2*k),0,7);g.stroke();}
     g.globalAlpha=1;
     // a silenced finger (it touched a mine) is shown red
     for(const p of fingers())if(p.mined){g.strokeStyle='#ff5050';g.lineWidth=3;g.beginPath();g.arc(p.x,p.y,20,0,7);g.stroke();}
   }
   // the round's state, over the ORDER and SKIP strips (which rest during a round)
   function hud(big,small,fs){
-    g.fillStyle='rgba(17,19,23,.94)';g.fillRect(0,0,cssW,TOP-4);g.strokeStyle=PINK;g.lineWidth=1;rr(0.5,0.5,cssW-1,TOP-5,7);g.stroke();
-    g.fillStyle='#ffd1e6';g.font=`700 ${fs+3}px ${FONT}`;g.textAlign='left';g.textBaseline='middle';g.fillText(big,12,(TOP-4)/2-(small?7:0));
-    if(small){g.fillStyle='#c9a3b6';g.font=`400 ${fs}px ${FONT}`;g.fillText(small,12,(TOP-4)/2+10);}
+    g.fillStyle='rgba(17,19,23,.94)';g.fillRect(0,0,cssW,RY-4);g.strokeStyle=PINK;g.lineWidth=1;rr(0.5,0.5,cssW-1,RY-5,7);g.stroke();
+    g.fillStyle='#ffd1e6';g.font=`700 ${fs+3}px ${FONT}`;g.textAlign='left';g.textBaseline='middle';g.fillText(big,12,(RY-4)/2-(small?7:0));
+    if(small){g.fillStyle='#c9a3b6';g.font=`400 ${fs}px ${FONT}`;g.fillText(small,12,(RY-4)/2+10);}
   }
 
   // ---------- start ----------

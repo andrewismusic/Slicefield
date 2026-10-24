@@ -1,6 +1,6 @@
 # Slicefield — handoff for the iOS app
 
-This guide and the `prototype/` folder are everything needed to build Slicefield as a native iPhone app. The prototype is a single-page web app (version 22) designed through about fifteen rounds of hands-on testing on a phone. Treat its behaviour as the specification: when this document and the code disagree, the code in `prototype/src/` is what was actually played and approved. Say so in the pull request if you change any behaviour on purpose.
+This guide and the `prototype/` folder are everything needed to build Slicefield as a native iPhone app. The prototype is a single-page web app (version 23) designed through about fifteen rounds of hands-on testing on a phone. Treat its behaviour as the specification: when this document and the code disagree, the code in `prototype/src/` is what was actually played and approved. Say so in the pull request if you change any behaviour on purpose.
 
 **For Claude Code:** read this whole file first, then `prototype/src/engine.js` (about 580 lines, the heart of it). Section 13 gives the build order. Section 14 lists decisions the owner (Andrew) hasn't made yet. Ask him about those instead of guessing. Section 18 covers using Slicefield as the sound engine inside a larger app, and sections 19–21 list what changed in versions 16, 17 and 18. **Version 18 replaced recording, clips and the song with capture and a Takes list, and the play-order and silence strips with fixed ORDER and SKIP patterns.** Where §5.4, §5.5, §8, §9, §10.4 or §20 disagree with §21, §21 wins.
 
@@ -33,6 +33,7 @@ This guide and the `prototype/` folder are everything needed to build Slicefield
 23. Changes in version 20
 24. Changes in version 21
 25. Changes in version 22: fields, the game, and a leaner Clips page
+26. Changes in version 23: fields as rows, the waveform ruler, the game's second pass
 
 ---
 
@@ -586,8 +587,8 @@ When you are unsure how something should feel, open the prototype on a phone and
 
 Postponed by Andrew (v22): resampling a take into a new loop, Ableton Link and MIDI clock, background audio, the iPad layout, desktop/VST input, sharing projects, and the native app itself (until the game is further along).
 
-1. **Fields** (built, §25.3). Still open: cells limited to part of the width (true rectangles), more than one cell for the same effect, and whether random fields need other rules.
-2. **The game** (first pass, §25.4): scoring and currency (waiting on the larger platform), round length (16 bars now), the enemy mix and timing, and what a mine should cost.
+1. **Fields** (rows, §26.1). Still open: the maximum of 10 rows and 4 effects a row, the order of effects inside a row (as added now), whether the filter's dry middle should be wider again (it uses the same middle band as Pitch now), and the ruler's height (24 pt).
+2. **The game** (second pass, §26.5): scoring and currency (waiting on the larger platform), round length (16 bars), the gesture mix and timing, whether mines stay, and an in-world theme (§26.5 lists ideas).
 3. **Imported audio** is stretched to the bar by default now (§25.6); resampling is the other choice in Preferences. Still open: trimming or choosing which part of a long file becomes the bar.
 4. **Persistence and projects.** Named projects in a folder library (§24.6, now a sheet, §25.5).
 
@@ -652,7 +653,7 @@ Add scenarios as you go. Every bug fixed in either implementation should get one
 | `grab` | `bars` | post back the last whole bars of output (`grabbed {L, R, sr}`) |
 | `tmute` / `tvol` | `tr, on` / `tr, v` | track mute / gain (the app doesn't send these; for multi-track hosts) |
 | `swing` / `stepped` | `s` / `on` | |
-| `pref` | `{silPat: mute|insert, grace, lat, touchWin}` | SKIP or GAP; late-touch window = `grace + lat` ms (`lat`: reported output latency); touches play through SKIP when `touchWin` |
+| `pref` | `{silPat: mute|insert, grace, lat, touchWin, fill}` | SKIP or GAP; late-touch window = `grace + lat` ms (`lat`: reported output latency); touches play through SKIP when `touchWin`; `fill: false` makes empty steps (and the plain loop) silent (§26.3) |
 | `view` | `tr` | which track's history to report |
 | `launch` | `tr, clip|null, now` | set the sequence (null = raw loop): stopped, at once (it **never** starts playback); playing, at the next bar, or at once with `now` (the clip position picks up from the loop's, `cpos = lp`); ends song |
 | `rec` | `tr, on, id` | Record: while on, touched steps are written into the playing sequence whose id matches (§22.1) |
@@ -1249,6 +1250,8 @@ Rows 1 and 2 are the same on both pages; row 3 (and the lane) are only on the fi
 - **LOAD TO SEQUENCER** also puts back the clip's field (§25.3).
 
 ### 25.3 Fields
+**Superseded by §26.1:** fields are now rows of 1–4 effects (no partial overlaps), kept in a library shared by every project, and the loop row is gone (the waveform is in the ruler, the filter is an ordinary row).
+
 A **field** is a layout of effect cells plus the effects' settings: `{id, name, cells:[{k, y, h}], cfg}`. A project holds a list of fields; the field page shows one.
 
 - **Cells** are full-width bands on a grid **48 units** tall (`FG`). `k` is an effect key, or `center` for the loop row (high-pass above, dry middle, low-pass below). Each effect has at most one cell. Cells may **overlap**.
@@ -1268,6 +1271,8 @@ A **field** is a layout of effect cells plus the effects' settings: `{id, name, 
 - **Projects:** a project now stores `fields` and `field` (the one on the field); each clip stores its `field`. A project from before v22 becomes one field built from its row order, the effects it showed and its settings, and its clips get a copy of it.
 
 ### 25.4 The game (first pass, no scoring)
+**Superseded by §26.5** (targets are now gestures: holds and slow drags, alone or three at once).
+
 **Game** (crosshair, row 2) starts a round; tapping it again stops the round. Stop does too.
 
 - **Round:** a one-bar count-in (the rest of the current bar if more than half of it is left, else the next one; bar 0 if playback was stopped), then **16 bars**. Record is on for the whole round, and at the end of each round bar the sequence is **captured as a clip**, so a round always leaves 16 clips (bar n's clip is the sequence as it stood at the end of bar n, so what you heard in that bar). Capture happens when the engine's `barN` passes the bar, by which time its last step's `clipStep` has arrived. Capture, Record and Fields are disabled during a round.
@@ -1305,3 +1310,68 @@ A **field** is a layout of effect cells plus the effects' settings: `{id, name, 
   - time-stretch keeps pitch at the new length
 - Scenario `07-fields-overlap-order`: steps with two effects each played in two signal orders, recording a two-effect touch (Stutter + Pitch), a settings change, and a clip carrying its own `rank`. The parity renderer needed no new shorthands.
 
+
+## 26. Changes in version 23: fields as rows, the waveform ruler, the game's second pass
+
+Agreed with Andrew after v22. Partly overlapping cells made the field too busy, so overlap is now always full: a row holds several effects.
+
+### 26.1 Fields are rows
+A **field** is `{id, name, rows:[{fx:[k…], h}], cfg}`: a stack of full-width rows whose heights (`h`, in units of the 48-unit grid `FG`) add up to 48.
+
+- **A row holds 1–4 effects** (`MAXFX`). A touch in it drives every one of them, each by the touch's height in the row with its own mapping (§7.1): unipolar effects bottom→top, centred ones (Pitch, Freeze, Filter) from the middle band out. In the Filter's middle band the touch gives no filter (dry), but the row's other effects still play.
+- **At most 10 rows** (`MAXROWS`, one per effect); each effect is in at most one row; a row is at least 3 units tall (`MINH`).
+- **Signal order:** top to bottom, and inside a row in the order its effects are listed (the order they were added). Delay and Reverb, as sends, still come last (§25.3). `field {order}` is unchanged: the rows' effects flattened.
+- **On the field** a row is one solid colour: the **mix of its effects' hues** (their mean direction on the colour wheel; one effect keeps its own). Its title is the effects' names joined with " + " ("STUTTER + CRUSH"), or short names ("STUT+CRUSH") when it doesn't fit. The value at the right shows every effect's value for the latest touch, when it fits. Step ticks (notes, note values) are only drawn on single-effect rows. A row with a centred effect shows the middle band; "NO CHANGE" (or "DRY" for the Filter) is written in it only on a single-effect row at least 56 pt tall. There are no overlap stripes or combined labels.
+- **The loop row is gone.** `center` is now plain `filter` (a row like any other); its high-pass/low-pass halves are Filter's centred mapping. Projects and clips saved with `center` are converted.
+- **Handles:** a tap opens the row's settings (the first effect's, with a button per effect to switch); dragging moves the row in the order.
+- **Presets:** All effects (one row each), **Combos** (Stutter + Crush, Pitch + Delay, Freeze + Reverb, Reverse + Filter), Dub (Delay + Reverb share a row), Glitch (Stutter + Random), Pitch play (Pitch + Delay).
+- **Random field:** 4–8 effects (the Filter is one of the choices) in 3–6 rows; the extra effects join random rows of fewer than 3; heights are shared at random, with rows holding Pitch, Freeze or Filter given more.
+- **Fields from before v23** (cells): each group of overlapping cells becomes one row holding all of their effects, as tall as the group; gaps go to the rows; a row over 4 effects is split; heights are scaled to add up to 48.
+
+### 26.2 The editor
+The editor shows the rows stacked at their true heights.
+
+- Each row has a **chip per effect** (× takes it out; the last effect of a row removes the row and gives its height to a neighbour) and a **+** chip while it has room, which opens a list of the effects not in the field.
+- **Drag a row** to move it: it changes places as the finger passes the middle of a neighbour. **Drag the line between two rows** to share their height (each keeps at least 3 units). **Tap a row** for its settings.
+- The bar: **+ Row…** (an effect not in the field; the new row goes at the bottom with half the tallest row's height), **Even out** (equal heights), the row count ("5 / 10 rows") and **Done**.
+
+### 26.3 The ruler, and empty steps
+- **The waveform has its own strip, the ruler**, 24 pt tall between SKIP and the rows, with the slice numbers and lines and the playhead. The slice playing is drawn bright. It replaces the waveform and slice numbers that were in the loop row, so the waveform is no longer tied to the Filter. It is not touchable.
+- **Preferences → Empty steps:** the loop plays through them (as before), or **silent**: only touches, and the steps they wrote, make sound (`pref.fill = false`, saved with the project). In the engine an empty step (and, without a sequence, the plain loop's step) becomes a rest; an effect touched onto an empty step in FX ONLY still makes it heard (§25.7). The lane drops the slice numbers from empty steps while they are silent. Applies to the field, clips and export alike.
+- **Pitch is quantised to octaves and fifths by default** (`scale: 'oct5'`: up +7, +12; down −5, −12). Saved settings keep their own scale.
+
+### 26.4 Fields kept apart from projects
+- **The fields are a library on the device** (inside claude.ai, the artifact's private database; else IndexedDB), shared by every project: one record `fields` holding `{list, last}`. It is read once at start (a new session starts on the field last used), and written back a moment after any change to the list or a field in it.
+- **A project saves a copy of the field it uses** (`field`, the whole field; v23). Opening one adds its field to the library; if the library has a different field with the same id, the project's copy is added as "<name> · <project>". A v22 project's list of fields all join the library.
+- Clips still keep their own copy (§25.3). Deleting a field from the library never changes projects or clips. Undo covers the library like before.
+
+### 26.5 The game, second pass (still no scoring)
+Targets are now **gestures** that make good loops:
+
+| Gesture | Share | Length |
+|---|---|---|
+| three touches at once, mostly in different rows | about half (from bar 3) | half a bar to two bars |
+| two touches at once | about a sixth | half a bar to two bars |
+| one touch, often a vertical drag across its row | about a third | a beat to two bars |
+
+- **Each touch is held or dragged.** A held target is a disc that **swells as it is held until it bursts** at its end. A dragged one is a **marker moving slowly up or down a track** inside its row (chevrons show the way; a single drag crosses the row, three at once travel at least half of it; at six beats or more it may go there and back, marked ↕). Holds and drags can be mixed in one gesture; its touches are joined by a dashed line.
+- **Which:** by the row's effects. Stutter, Filter and Crush favour dragging (75%), Reverse, Freeze, Delay and Reverb holding (20% drag), Random, Pitch and Decay either (50%); a row with several effects averages them. Past two beats the chance of a drag rises (halfway to certain), and past a bar it always is a drag.
+- **When:** each gesture starts on an eighth, weighted toward the second half of the bar and most of all its end (weights 1, .4, .8, .5, 2, 1.5, 3, 4 for eighths 1–8). The next gesture often starts while one is still held (at most 5 fingers at once). About 12 gestures a round.
+- **Seeing them:** a **ring closes on each target** over the beat before it starts (touch as it meets the disc); the **beats left are shown in a pill above the target**, clear of the finger (below it if there's no room, kept on screen). New targets appear **above everything already held or showing**, since a held finger and hand hide what is below; on an empty field they start low.
+- **Clearing:** hold or follow a target for at least 60% of its time (from a little before its start) to clear it. The end shows "16 clips saved", cleared and missed (counted, not scored).
+- **Mines** from bar 9: in about a third of the bars, for a bar and a half, in a column no target is using; a finger that touches one is silenced until it lifts.
+- Code: `makePlan` (the gestures), `pickRows` and `spawn` (placement), `gameTick`, `drawGame` in `ui.js`.
+
+**Ideas for making it feel like a game** (not built; for Andrew to choose):
+- *Rhythm-game timing* (osu!, Cytus, Deemo): already used for the closing rings. Next: a "perfect" flash when a touch lands within an eighth of the ring closing, and combo streaks.
+- *Defend something* (Missile Command, tower defence): targets are threats drifting toward the loop (the ruler) at the top or a core at the bottom; a held target is a shield, a drag a beam that sweeps; letting one through costs a life or glitches the audio.
+- *Slicing* (Fruit Ninja): long drags as cuts through incoming objects.
+- *Bosses:* every fourth bar a large target that needs three fingers held while it moves.
+- *In-world art:* creatures or ships in place of discs, with the effect's colour; a held target "charging" and exploding into particles in time with the beat.
+
+### 26.6 Fixes
+- The Fields sheet's thumbnails were absolutely positioned (the page's `canvas` rule) and drew as coloured bands in the top-left of the screen.
+
+### 26.7 Tests and scenarios
+- `engine.test.js` has 58 cases. New ones: pitch defaults to octaves and fifths; touches only (empty steps and the plain loop silent; touches and written steps play). Two older pitch tests now set chromatic explicitly.
+- Scenario `08-touches-only`: a sequence with two written steps under `fill: false`, a touch, an FX ONLY effect on empty steps, then `fill` back on.

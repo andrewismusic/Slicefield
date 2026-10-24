@@ -34,7 +34,7 @@ function engineFactory(){
       params:{chance:{name:'Chance',def:1,lab:pct},
               spread:{name:'Spread',def:1,lab:v=>v>=0.999?'any':'±'+(1+Math.round(v*14))}}},
     pitch:{name:'Pitch',hue:318,cells:['semi'],tall:true,
-      opts:{scale:{name:'Scale',def:'chrom',choices:SCALE_CHOICES}},
+      opts:{scale:{name:'Scale',def:'oct5',choices:SCALE_CHOICES}},
       params:{semi:{name:'Pitch',def:0,bip:true,lab:semiLab}}},
     reverse:{name:'Reverse',hue:166,cells:[],params:{}},
     env:{name:'Decay',hue:90,cells:['dec'],
@@ -310,8 +310,9 @@ function engineFactory(){
       }
       else if(this.songSilent){base={src:'rest',sid:'R'+(++this.sidC),a:this.tlS*sl,dur:1,slen:sl,fx:[],off:0,on:false};}
       else if(slot&&slot.empty){
-        // an empty step plays the loop's own slice for its position (switched off, it is silent)
-        const pos=this.s+(cIdx%this.n),bg=slot.on===false;
+        // an empty step plays the loop's own slice for its position (switched off, or with the preference
+        // for touches only, it is silent)
+        const pos=this.s+(cIdx%this.n),bg=slot.on===false||pref.fill===false;
         base={src:bg?'rest':'loop',sid:'E'+(++this.sidC),a:pos*sl,dur:1,slen:sl,fx:[],off:0,on:!bg,empty:true};
       }
       else if(slot){
@@ -321,6 +322,7 @@ function engineFactory(){
         }
         else base={src:'clip',sid:slot.sid,a:slot.a*u,dur:1,slen:(slot.slen||1)*sl,fx:slot.fx||[],off:slot.off||0,on:slot.on!==false,clip:true};
       }
+      else if(pref.fill===false)base={src:'rest',sid:'L'+(++this.sidC),a:this.tlS*sl,dur:1,slen:sl,fx:[],off:0,on:false,empty:true};
       else base={src:'loop',sid:'L'+(++this.sidC),a:this.tlS*sl,dur:1,slen:sl,fx:[],off:0,on:true};
       // FX only + Replace: the step keeps its slice and takes the next touch's effect in place of its own
       if(base&&fxOnly&&!combine&&loopT.length&&(base.src!=='rest'||base.empty)){
@@ -583,7 +585,7 @@ function engineFactory(){
     // nTracks: the app uses one; more are kept possible for hosts that run several side by side
     constructor(sr,nTracks){
       this.sr=sr;this.len=0;this.u=0;this.t=0;this.playing=false;this.g=0;this.swing=0;this.stepped=false;
-      this.pref={silPat:'mute',grace:40,lat:0,touchWin:true};this.mode='replace';this.fxOnly=false;this.fd=Math.round(0.0015*sr);
+      this.pref={silPat:'mute',grace:40,lat:0,touchWin:true,fill:true};this.mode='replace';this.fxOnly=false;this.fd=Math.round(0.0015*sr);
       this.tracks=Array.from({length:nTracks||1},(_,i)=>new Track(this,i));this.view=0;this.song=null;
       this.bufs=new Map();
       this.sc=0;this.post=null;this.vol=1;this.mixL=null;this.mixR=null;this.peak=0;
