@@ -1,6 +1,6 @@
 # Slicefield — handoff for the iOS app
 
-This guide and the `prototype/` folder are everything needed to build Slicefield as a native iPhone app. The prototype is a single-page web app (version 24) designed through about fifteen rounds of hands-on testing on a phone. Treat its behaviour as the specification: when this document and the code disagree, the code in `prototype/src/` is what was actually played and approved. Say so in the pull request if you change any behaviour on purpose.
+This guide and the `prototype/` folder are everything needed to build Slicefield as a native iPhone app. The prototype is a single-page web app (version 25) designed through about fifteen rounds of hands-on testing on a phone. Treat its behaviour as the specification: when this document and the code disagree, the code in `prototype/src/` is what was actually played and approved. Say so in the pull request if you change any behaviour on purpose.
 
 **For Claude Code:** read this whole file first, then `prototype/src/engine.js` (about 580 lines, the heart of it). Section 13 gives the build order. Section 14 lists decisions the owner (Andrew) hasn't made yet. Ask him about those instead of guessing. Section 18 covers using Slicefield as the sound engine inside a larger app, and sections 19–21 list what changed in versions 16, 17 and 18. **Version 18 replaced recording, clips and the song with capture and a Takes list, and the play-order and silence strips with fixed ORDER and SKIP patterns.** Where §5.4, §5.5, §8, §9, §10.4 or §20 disagree with §21, §21 wins.
 
@@ -35,6 +35,7 @@ This guide and the `prototype/` folder are everything needed to build Slicefield
 25. Changes in version 22: fields, the game, and a leaner Clips page
 26. Changes in version 23: fields as rows, the waveform ruler, the game's second pass
 27. Changes in version 24: the game as a shooter, clips play down the list
+28. Changes in version 25: zooming into the game, a calmer round, stuns
 
 ---
 
@@ -589,7 +590,7 @@ When you are unsure how something should feel, open the prototype on a phone and
 Postponed by Andrew (v22): resampling a take into a new loop, Ableton Link and MIDI clock, background audio, the iPad layout, desktop/VST input, sharing projects, and the native app itself (until the game is further along).
 
 1. **Fields** (rows, §26.1). Still open: the maximum of 10 rows and 4 effects a row, the order of effects inside a row (as added now), whether the filter's dry middle should be wider again (it uses the same middle band as Pitch now), and the ruler's height (24 pt).
-2. **The game** (shooter, §27.1): scoring and currency (waiting on the larger platform), round length (16 bars), the ship mix, speeds and hit counts, the fire rate (one bolt per finger per 16th), and whether ships getting through should cost anything.
+2. **The game** (shooter, §28): scoring and currency (waiting on the larger platform), round length (16 bars), the ship mix, speeds and hit counts, the fire rate (one bolt per finger per 16th), your settings or the game's own (§28.2), the visual style (the ship-style page, §28.5), and whether bolts should burst at the finger instead of flying on (§28.4).
 3. **Imported audio** is stretched to the bar by default now (§25.6); resampling is the other choice in Preferences. Still open: trimming or choosing which part of a long file becomes the bar.
 4. **Persistence and projects.** Named projects in a folder library (§24.6, now a sheet, §25.5).
 
@@ -1385,6 +1386,8 @@ Targets are now **gestures** that make good loops:
 Agreed with Andrew after v23.
 
 ### 27.1 The game is its own mode, and a shooter
+**Partly superseded by §28** (the zoom, the timing, your own settings, the tuning and the stun).
+
 - **Full screen:** Game (crosshair) hides the header, the tools, the lane and the strips; the field fills the screen under a status bar (44 pt: bar n / 16, clips, ships down and through) with **×** to leave. A station with the turret takes the bottom 62 pt; the rows end above it.
 - **Its own sound settings, whatever the project's:** recording off, Replace, stepped, FX ONLY off, empty steps play the loop (`fill` on), and a blank sequence with ORDER and SKIP at their defaults (the plain loop). The sequence on the field is set aside, not changed; every setting comes back when the round ends.
 - **Count-in:** playback restarts from bar 0, which is the count-in: 4, 3, 2, 1 on its beats at the project's tempo. The round is bars 1–16.
@@ -1408,3 +1411,30 @@ Agreed with Andrew after v23.
 ### 27.3 Tests and scenarios
 - `engine.test.js` has 60 cases. New: a take holds the bar's touched steps and leaves the sequence blank; the list plays once and stops, and LOOP turned on while it plays keeps going.
 - Scenario `09-take-song-loop`: two bars of takes (two-touch gestures), then a two-clip list played once, switched to one looping clip with `songRows … once:false`.
+
+## 28. Changes in version 25: zooming into the game, a calmer round, stuns
+
+Agreed with Andrew after v24. Aims: fewer fingers on the glass (more of the plain loop in the clips), and less pull toward the bottom rows.
+
+### 28.1 The zoom
+- Going into the game is a 700 ms eased zoom (cubic in-out), not a cut: the header, tools and lane slide up out of the frame (a negative top margin on the side column, its height measured at the start), the ORDER/SKIP strips and the ruler slide up with them inside the canvas, the rows grow to fill the space, the status bar comes down from the top and the station with its turret rises from the bottom. Leaving plays it backwards. One value, `gameZ` (0…1), drives all of it: `TOP` and the field's height interpolate between the two layouts, and the canvas is resized in the same frame (setting a canvas's size clears it, so it's now only set when it changes; before, the resize observer cleared it a frame late and the field flashed blank).
+- × appears once the zoom has finished. The handle column is part of the field in the game (it used to start a row drag, which reordered the field mid-round).
+- Native: animate the same parameter (a display link), laying the field out from it each frame.
+
+### 28.2 Timing and settings
+- **If the loop is playing it carries on.** After the zoom, the count-in is the next bar (or the one after, if the next starts within 0.5 s), with GET READY and "The count-in starts on the next bar" until then; the plain loop takes over at the next bar line. If nothing was playing, playback starts as the zoom ends and bar 0 is the count-in.
+- **Playback carries on after the round** (and after ×), back on the sequence from the next bar line.
+- **Your settings stay:** Replace/Combine, FX ONLY and stepped/smooth are yours during a round. **Preferences → Game** keeps v24's behaviour as an option: "Play with the game's own: Replace, stepped, FX ONLY off" (`prefs.gameOwn`, saved with the project). Either way a round doesn't record into the sequence and the plain loop plays through empty steps.
+
+### 28.3 A calmer round
+- **Fewer hits:** scout 1, saucer 2, crab 3, mothership 6 (were 3, 6, 10, 24).
+- **Fewer ships, and rests:** most bars bring one ship, some two (more later), a few three; the fourth bar of each four is usually empty (70%), and any bar may be (12%); a mothership alone in bars 7 and 13. About 20 ships a round (was about 50).
+- **Higher:** ships start in the top quarter, and come down slowly at first (`y = y0 + (bottom − y0) · u^1.7`), so most are met high up. Base times to the station: 6, 8, 10, 14 s.
+- **Supply pods** (white capsules with a blinking window), four a round in bars 3–15, drift across the middle of the field from side to side. Don't shoot them.
+
+### 28.4 Stuns
+- **A ship getting through, or a bolt hitting a supply pod, stuns the turret for 3 beats:** the barrels lock where they were and don't fire, the turret and barrels flash red, the shield line turns red, and "BREACH · STUNNED" (or "POD HIT · STUNNED") shows above it with three beat lights counting down. Touches still play the field.
+- Noticed, not changed: bolts fly on through the finger, so a finger near the turret aims as well as one on the ship, which pulls touches toward the bottom rows. If ships high up don't fix that, bolts could burst at the finger (you'd touch the ship itself).
+
+### 28.5 Ship styles
+A separate page (artifact "Slicefield Ship Styles") draws five directions live on Slicefield's stage at 124 BPM, each with reference games: A neon vector (Geometry Wars, Tempest 4000), B pulse wireframe tinted by the row underneath (Rez, Everyday Shooter, Beat Hazard), C pop flat (Sayonara Wild Hearts, Thumper), D fine pixel in three colours (Downwell, Steredenn), E silhouette with edge light (Ikaruga, Nex Machina, Galak-Z). Andrew to choose; the pixel sprites stay until then.

@@ -384,9 +384,7 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
 .take .th,.take .th canvas{touch-action:pan-y}
 #cliploop[aria-pressed="true"]{background:#3a3120;border-color:var(--accent);color:var(--accent)}
 /* v24: the game takes the whole screen */
-.app.gaming .side{display:none}
-.app.gaming{padding-block:0;gap:0}
-.gamex{position:absolute;right:8px;top:6px;width:36px;height:36px;padding:0;border-radius:18px;z-index:4;background:rgba(17,19,23,.8)}
+.gamex{position:absolute;right:8px;top:6px;width:36px;height:36px;padding:0;border-radius:18px;z-index:4;background:rgba(17,19,23,.8);transition:opacity .25s}
 .gamex svg{width:16px;height:16px}
 .prow.gone{transition:opacity .25s;opacity:.55}
 .projtools{display:grid;grid-template-columns:36px repeat(3,minmax(0,1fr));gap:6px}
