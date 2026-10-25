@@ -1,6 +1,6 @@
 # Slicefield — handoff for the iOS app
 
-This guide and the `prototype/` folder are everything needed to build Slicefield as a native iPhone app. The prototype is a single-page web app (version 25) designed through about fifteen rounds of hands-on testing on a phone. Treat its behaviour as the specification: when this document and the code disagree, the code in `prototype/src/` is what was actually played and approved. Say so in the pull request if you change any behaviour on purpose.
+This guide and the `prototype/` folder are everything needed to build Slicefield as a native iPhone app. The prototype is a single-page web app (version 26) designed through about fifteen rounds of hands-on testing on a phone. Treat its behaviour as the specification: when this document and the code disagree, the code in `prototype/src/` is what was actually played and approved. Say so in the pull request if you change any behaviour on purpose.
 
 **For Claude Code:** read this whole file first, then `prototype/src/engine.js` (about 580 lines, the heart of it). Section 13 gives the build order. Section 14 lists decisions the owner (Andrew) hasn't made yet. Ask him about those instead of guessing. Section 18 covers using Slicefield as the sound engine inside a larger app, and sections 19–21 list what changed in versions 16, 17 and 18. **Version 18 replaced recording, clips and the song with capture and a Takes list, and the play-order and silence strips with fixed ORDER and SKIP patterns.** Where §5.4, §5.5, §8, §9, §10.4 or §20 disagree with §21, §21 wins.
 
@@ -36,6 +36,7 @@ This guide and the `prototype/` folder are everything needed to build Slicefield
 26. Changes in version 23: fields as rows, the waveform ruler, the game's second pass
 27. Changes in version 24: the game as a shooter, clips play down the list
 28. Changes in version 25: zooming into the game, a calmer round, stuns
+29. Changes in version 26: the game's ships, waves and the four-bar shape
 
 ---
 
@@ -590,7 +591,7 @@ When you are unsure how something should feel, open the prototype on a phone and
 Postponed by Andrew (v22): resampling a take into a new loop, Ableton Link and MIDI clock, background audio, the iPad layout, desktop/VST input, sharing projects, and the native app itself (until the game is further along).
 
 1. **Fields** (rows, §26.1). Still open: the maximum of 10 rows and 4 effects a row, the order of effects inside a row (as added now), whether the filter's dry middle should be wider again (it uses the same middle band as Pitch now), and the ruler's height (24 pt).
-2. **The game** (shooter, §28): scoring and currency (waiting on the larger platform), round length (16 bars), the ship mix, speeds and hit counts, the fire rate (one bolt per finger per 16th), your settings or the game's own (§28.2), the visual style (the ship-style page, §28.5), and whether bolts should burst at the finger instead of flying on (§28.4).
+2. **The game** (shooter, §28): scoring and currency (waiting on the larger platform), round length (16 bars), the ship mix, speeds and hit counts, the fire rate (one bolt per finger per 16th), your settings or the game's own (§28.2), the ship designs (§29.1), and whether bolts should burst at the finger instead of flying on (§28.4).
 3. **Imported audio** is stretched to the bar by default now (§25.6); resampling is the other choice in Preferences. Still open: trimming or choosing which part of a long file becomes the bar.
 4. **Persistence and projects.** Named projects in a folder library (§24.6, now a sheet, §25.5).
 
@@ -1427,6 +1428,8 @@ Agreed with Andrew after v24. Aims: fewer fingers on the glass (more of the plai
 - **Your settings stay:** Replace/Combine, FX ONLY and stepped/smooth are yours during a round. **Preferences → Game** keeps v24's behaviour as an option: "Play with the game's own: Replace, stepped, FX ONLY off" (`prefs.gameOwn`, saved with the project). Either way a round doesn't record into the sequence and the plain loop plays through empty steps.
 
 ### 28.3 A calmer round
+**Superseded by §29.2** (more ships again, in waves; even speed).
+
 - **Fewer hits:** scout 1, saucer 2, crab 3, mothership 6 (were 3, 6, 10, 24).
 - **Fewer ships, and rests:** most bars bring one ship, some two (more later), a few three; the fourth bar of each four is usually empty (70%), and any bar may be (12%); a mothership alone in bars 7 and 13. About 20 ships a round (was about 50).
 - **Higher:** ships start in the top quarter, and come down slowly at first (`y = y0 + (bottom − y0) · u^1.7`), so most are met high up. Base times to the station: 6, 8, 10, 14 s.
@@ -1438,3 +1441,33 @@ Agreed with Andrew after v24. Aims: fewer fingers on the glass (more of the plai
 
 ### 28.5 Ship styles
 A separate page (artifact "Slicefield Ship Styles") draws five directions live on Slicefield's stage at 124 BPM, each with reference games: A neon vector (Geometry Wars, Tempest 4000), B pulse wireframe tinted by the row underneath (Rez, Everyday Shooter, Beat Hazard), C pop flat (Sayonara Wild Hearts, Thumper), D fine pixel in three colours (Downwell, Steredenn), E silhouette with edge light (Ikaruga, Nex Machina, Galak-Z). Andrew to choose; the pixel sprites stay until then.
+
+## 29. Changes in version 26: the game's ships, waves and the four-bar shape
+
+Agreed with Andrew after v25 (he chose look B of the ship-style page, in more detail, with both spaceships and creatures, each keeping its own colour).
+
+### 29.1 Ships and creatures
+Drawn as glowing line work (each path stroked twice: a wide faint pass under a thin bright one, plus a faint fill), nose down, breathing on the beat (8% bigger on each beat, falling away). Wings, legs, tentacles and lights move with the beat position.
+
+| Kind | Look | Colour | Hits | Base crossing time |
+|---|---|---|---|---|
+| dart | arrowhead fighter, cockpit, twin engine flames | #8dff6a | 1 | 6 s |
+| bug | three-segment creature, six legs stepping, feelers | #ff7a59 | 1 | 7 s |
+| jelly | jellyfish: bell facing down, five swaying tentacles trailing | #5fe0ff | 2 | 8 s |
+| manta | ray: wings flapping every two beats, whip tail | #b48cff | 2 | 8 s |
+| cruiser | hexagonal hull, panel lines, side pods on struts, cockpit, three engines | #ff5fa2 | 3 | 10 s |
+| mothership | ring ship: segments turning a step a beat, rim lights, pulsing core | #ffb84d | 6 | 14 s |
+| supply pod (friend) | white capsule, a row of lit windows, blinking beacon | #e9f4ff | — | 8 s across |
+
+Hits left (when more than one) are small dashes under the ship. Bolts are short glowing lines in the colour of the finger's row; a kill breaks the ship into spinning line fragments with a ring. The turret is a wireframe dome with five double-line barrels (tipped in the row colour); the station is a glowing horizon over a floor of lines running to the turret, all red while stunned. Code: `SHIPS`, `ink`, `draw*`, `drawShip`, `boom`, `drawGame` in `ui.js`.
+
+### 29.2 Waves and the four-bar shape
+- **Ships per bar follow the touches wanted in each group of four bars:** first bar fewest, fourth most, second next, third after that: **1, 3, 2, 4** ships (one more in the second and fourth bars from halfway). Motherships lead bars 8 and 16. About 46 ships a round.
+- **Waves:** a bar's ships come in waves of up to three that arrive together (each wave on an eighth weighted toward the bar's end, §26.5), **spread across the width**: the field is split into as many slots as the wave has ships, one each, placed at random inside its slot.
+- **Even speed, anywhere:** ships appear anywhere in the top two thirds and come down at a constant speed (the field's height in the base time), so hits spread over all the rows rather than the top. Each still has at least three times what one finger needs, plus 2.5 s.
+- Pods: four a round, drifting across anywhere from 10% to 70% down.
+
+### 29.3 The screen
+- **The field in the game has no handles and no words:** the handle column closes up (the field takes the full width) and the rows' names, values and NO CHANGE/DRY labels fade out with the zoom. Only the coloured cells and the centre bands stay.
+- **GET READY** is large in the middle with a supply pod drawn under it and "Don't hit the supply pods"; on the count-in bar the numbers 4-3-2-1 replace GET READY and the pod stays. From a stop, playback starts with a bar of GET READY before the count-in (bar 1).
+- **Stunned, touches are silent:** the engine gets no touches until the stun ends, and the field shows no touch highlights.

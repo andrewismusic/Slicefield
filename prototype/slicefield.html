@@ -1022,7 +1022,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   const HUES=[8,24,44,90,138,166,190,214,262,318,340];
   const TRACK_HUES=[40];
   const LOOP_NAMES={break:'Breakbeat',boombap:'Boom bap',acid:'Acid bass',reese:'Reese bass',dub:'Dub stabs',lead:'Synth lead',keys:'Electric piano',kalimba:'Kalimba',vox:'Vocal chops',};
-  const BAND_LO=0.42,BAND_HI=0.58,STRIP=28,HW=30,LROW=36,LLAB=34,LROT=30;   // LROT: the lane's rotate column
+  const BAND_LO=0.42,BAND_HI=0.58,STRIP=28,LROW=36,LLAB=34,LROT=30;   // LROT: the lane's rotate column
   const $=id=>root.getElementById(id);
   const clamp=(v,a,b)=>v<a?a:v>b?b:v;
   const canvas=$('grid'),wrap=$('gridwrap'),laneCv=$('lane'),laneG=laneCv.getContext('2d'),gridG=canvas.getContext('2d');
@@ -1126,6 +1126,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   let clips=[],clipNum=0,selClip=null,songPlaying=false,songList=[],recOn=false,recBn=-1,clipLoop=false,armed=null;
   let st={playing:false,t:0,len:1,tracks:[],hist:[],song:null,recv:0};
   let fieldEdit=false;   // the field editor is open (see setFieldEdit)
+  let HW=30;   // the handle column's width (it closes up in the game; see computeLayout)
   let gameOn=false,game=null,gameZ=0;const HUDH=44,GBASE=62;   // a game round is on (see startGame); gameZ: how far the zoom into it has gone (0…1); HUDH: its status bar, GBASE: the station
   const ptrs=new Map();let orderCtr=0,tsCtr=0,idCtr=0;
   let cssW=300,cssH=400,dpr=1,lay=[],laneRows=1,TOP=100;
@@ -1331,6 +1332,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   const toEngine=e=>({id:e.hid,a:e.a,n:e.n,o:e.order,fx:e.fxs.length?e.fxs.map(f=>({k:f.k,raw:f.raw})):null});
   function entriesOf(t){
     const out=[];
+    if(gameStunned())return out;   // a stunned turret: touches are silent
     for(const p of ptrs.values())if(p.live&&p.fxs&&!p.mined&&p.tr===t.i)out.push({hid:p.hid,fxs:p.fxs,a:p.col*16/t.cols,n:16/t.cols,order:p.order,ts:p.ts,finger:true,ri:p.ri,rel:p.rel});
     return out;
   }
@@ -1353,7 +1355,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   const RY=STRIP+4+STRIP+6,RULER=24;
   function computeLayout(){
     laneRows=laneInfo().rows;
-    TOP=Math.round((RY+RULER+4)*(1-gameZ)+HUDH*gameZ);
+    TOP=Math.round((RY+RULER+4)*(1-gameZ)+HUDH*gameZ);HW=Math.round(30*(1-gameZ));
     sizeLane();
     const t=T(),f=t.field,area=Math.max(1,fieldH()-TOP);let u=0;
     lay=f.rows.map((row,ri)=>{const b0=TOP+u/FG*area,b1=TOP+(u+row.h)/FG*area;u+=row.h;return {ri,ks:row.fx,hue:rowHue(row.fx),y:b0+1.5,h:Math.max(4,b1-b0-3),b0,b1};});
@@ -2987,16 +2989,17 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     // marks: each held touch, in its row (rel: its height there; fxs: the values it plays)
     const marks=[];for(const e of E)marks.push({a:e.a,n:e.n,ts:e.ts,hid:e.hid,finger:e.finger,ri:e.ri,rel:e.rel,fxs:e.fxs});
     const nowHid=i.src==='touch'&&i.sid?i.sid.slice(1,i.sid.indexOf('#')):null;
-    const touch=new Set();for(const p of ptrs.values())if(p.live&&p.tr===view&&p.cells)for(const ri of p.cells)touch.add(ri+':'+(fxOnly?0:p.col));
+    const touch=new Set();if(!gameStunned())for(const p of ptrs.values())if(p.live&&p.tr===view&&p.cells)for(const ri of p.cells)touch.add(ri+':'+(fxOnly?0:p.col));
     // FX ONLY: slices come from the sequence, so each row is one undivided strip: a touch anywhere in it
     // plays that row's effect. dc/dw: the columns drawn and their width; span: where a held cell is drawn.
     const dc=fxOnly?1:cols,dw=W()/dc,span=m=>fxOnly?[HW+gap/2,W()-gap]:[cellX(t,m.a)+gap/2,m.n/16*W()-gap];
     lay.forEach((r,ri)=>{
       const hue=r.hue,ks=r.ks,single=ks.length===1,k=ks[0],c=t.cfg[k],d=FX[k];
-      // the handle
-      g.fillStyle='#1a1d23';rr(0,r.y,HW-3,r.h,5);g.fill();
-      g.fillStyle=`hsl(${hue} 60% 55%)`;g.fillRect(3,r.y+4,3,r.h-8);
-      g.fillStyle='#6c7380';for(let q=0;q<3;q++)g.fillRect(11,r.y+r.h/2-5+q*4,HW-21,1.5);
+      // the handle (it closes up, and the row's words fade, going into the game)
+      const txtA=1-gameZ;
+      if(HW>8){g.globalAlpha=txtA;g.fillStyle='#1a1d23';rr(0,r.y,HW-3,r.h,5);g.fill();
+        g.fillStyle=`hsl(${hue} 60% 55%)`;g.fillRect(3,r.y+4,3,r.h-8);
+        g.fillStyle='#6c7380';for(let q=0;q<3;q++)g.fillRect(11,r.y+r.h/2-5+q*4,HW-21,1.5);g.globalAlpha=1;}
       const rm=marks.filter(m=>m.ri===ri),playing=st.playing&&i.fx&&ks.some(q=>i.fx.includes(q))&&curSlice>=0;
       for(let col=0;col<dc;col++){
         let l=13;if(!fxOnly&&col===curSlice&&!i.fx.length)l+=3;
@@ -3013,7 +3016,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
         g.setLineDash([2,4]);g.strokeStyle=`hsl(${hue} 30% 45%)`;g.lineWidth=1;
         g.beginPath();g.moveTo(HW,yb1);g.lineTo(cssW,yb1);g.moveTo(HW,yb2);g.lineTo(cssW,yb2);g.stroke();g.setLineDash([]);
         if(single&&r.h>=56){g.textBaseline='middle';g.font=`400 ${fs}px ${FONT}`;g.textAlign='center';g.fillStyle=`hsl(${hue} 20% 50%)`;
-          g.fillText(k==='filter'?'DRY':'NO CHANGE',HW+W()/2,(yb1+yb2)/2);}
+          g.globalAlpha=txtA;g.fillText(k==='filter'?'DRY':'NO CHANGE',HW+W()/2,(yb1+yb2)/2);g.globalAlpha=1;}
       }
       // a single effect's steps (notes, note values) as ticks at the right edge
       const cn=c.cells.filter(n=>d.params[n]),P=cn.length?d.params[cn[0]]:null,pn=cn[0];
@@ -3041,9 +3044,9 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
       else if(single&&P)lab=P.bip?P.lab(c.lo[pn],c.o)+' ↓  ↑ '+P.lab(c.hi[pn],c.o):P.lab(c.lo[pn],c.o)+' → '+P.lab(c.hi[pn],c.o);
       const lw=lab?g.measureText(lab).width:0;g.font=`600 ${fs}px ${FONT}`;
       const title=rowTitle(ks,W()-24-(lab?Math.min(W()/2,lw+12):0)),tw=g.measureText(title).width;
-      g.textAlign='left';g.fillStyle=latest?`hsl(${hue} 90% 84%)`:`hsl(${hue} 50% 64%)`;g.fillText(title,HW+8,ty);
+      g.globalAlpha=txtA;g.textAlign='left';g.fillStyle=latest?`hsl(${hue} 90% 84%)`:`hsl(${hue} 50% 64%)`;g.fillText(title,HW+8,ty);
       g.font=`400 ${fs}px ${FONT}`;g.textAlign='right';g.fillStyle=latest?'#fff':`hsl(${hue} 14% 52%)`;
-      if(lab&&lw<W()-tw-28)g.fillText(lab,cssW-12,ty);
+      if(lab&&lw<W()-tw-28)g.fillText(lab,cssW-12,ty);g.globalAlpha=1;
     });
     // going into (or out of) the game, the strips and the ruler slide up out of the frame
     const lift=gameZ*(RY+RULER+4);
@@ -3096,22 +3099,25 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   }
   const rowTitle=(ks,maxW)=>{const long=ks.map(k=>fxName(k).toUpperCase()).join(' + ');return g.measureText(long).width<=maxW?long:ks.map(k=>SHORT[k]).join('+');};
 
-  // ---------- game (fourth pass: a shooter, still no scoring) ----------
+  // ---------- game (fifth pass: a shooter, still no scoring) ----------
   // The game is its own mode. Going in, the field zooms up to fill the screen: the header, tools and lane
-  // slide up out of the frame with the strips and ruler, the rows grow, a status bar comes down from the top
-  // and the station with its turret rises from the bottom (gameZ goes 0 → 1; leaving plays it backwards).
+  // slide up out of the frame with the strips and ruler, the handles close up and the rows' words fade,
+  // the rows grow, a status bar comes down from the top and the station with its turret rises from the
+  // bottom (gameZ goes 0 → 1; leaving plays it backwards).
   // Touching anywhere plays the field as always and aims: every 16th step each finger's barrel fires a bolt
-  // along the line through the finger. 8-bit alien ships appear high up and drift down, slowly at first,
-  // each needing a few hits; the path always leaves far more time than shooting it down takes. There are
-  // bars with no ships at all. Supply pods drift across now and then: hitting one stuns the turret for 3
-  // beats, and so does a ship getting through (the barrels lock, flash and don't fire).
+  // along the line through the finger. Spaceships and creatures, drawn as glowing line work, arrive in
+  // waves spread across the width, anywhere in the top two thirds, and come down at an even speed; each
+  // needs one to six hits and has far more time than that takes. In each four bars the count follows the
+  // touches wanted: fewest in the first, then the third, the second, most in the fourth. Supply pods
+  // drift across now and then: hitting one stuns the turret for 3 beats, and so does a ship getting
+  // through (the barrels lock, flash and don't fire, and touches are silent).
   // The sound side: recording is off and the plain loop plays through empty steps; the sequence is set
   // aside. Replace/Combine, FX ONLY and stepped/smooth stay yours, unless Preferences says the game uses
   // its own (Replace, stepped, FX ONLY off). The engine hands over each bar's touched steps as a take, so
   // the 16 bars after the count-in become 16 clips, each made only of what was played in it.
   // Timing: if the loop is playing it carries on, and the count-in is the next bar (or the one after, if
   // the next starts within half a second of the zoom ending); if it isn't, playback starts as the zoom ends
-  // and bar 0 is the count-in. Playback carries on after the round.
+  // with a bar of GET READY before the count-in. Playback carries on after the round.
   const GBARS=16,gameX=$('gamex'),appEl=$('app'),sideEl=$('side'),ZOOM_MS=700;
   const nowSamples=()=>st.playing?st.t+(performance.now()-st.recv)*sr/1000:st.t;
   const barS=()=>{const t=T();return Math.max(1,barSteps(t)*st.len/t.cols);};
@@ -3150,7 +3156,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
         const nb=nowBar();let c=Math.floor(nb)+1;if((c-nb)*barS()/sr<0.5)c++;
         g0.countBar=c;tx({type:'launch',tr:t.i,clip:clipForm(plainBlank(t))});
       }else{
-        g0.countBar=0;tx({type:'launch',tr:t.i,clip:clipForm(plainBlank(t)),now:true});intent={type:'play'};tx(intent);
+        g0.countBar=1;tx({type:'launch',tr:t.i,clip:clipForm(plainBlank(t)),now:true});intent={type:'play'};tx(intent);
       }
       g0.startBar=g0.countBar+1;g0.plan=makePlan(g0.startBar);tx({type:'take',tr:t.i,on:true});paintIcons();
     }));
@@ -3184,67 +3190,139 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     if(g0.taken>=GBARS)endGame(false);
   }
 
-  // The ships, as 8-bit sprites (two frames, swapped on the beat). hp: hits to shoot one down; base: the
-  // shortest time (s) it takes to reach the station. The supply pod is a friend: don't shoot it.
+  // The ships and creatures, drawn as glowing line work in their own colours (look B of the style page):
+  // they breathe on the beat. hp: hits to shoot one down; base: seconds to cross the whole field (they
+  // come down at an even speed). r: size. The supply pod is a friend: don't shoot it.
   const SHIPS={
-    scout:{hp:1,px:3,col:'#8dff6a',base:6,frames:[
-      ['....X....','...XXX...','..XX.XX..','.XXXXXXX.','XX.XXX.XX','X...X...X','....X....'],
-      ['....X....','...XXX...','..XX.XX..','.XXXXXXX.','XX.XXX.XX','.X..X..X.','...X.X...']]},
-    saucer:{hp:2,px:3,col:'#5fe0ff',base:8,frames:[
-      ['...XXXXX...','.XXXXXXXXX.','XX.XX.XX.XX','XXXXXXXXXXX','..XXX.XXX..','...X...X...'],
-      ['...XXXXX...','.XXXXXXXXX.','X.XX.XX.XXX','XXXXXXXXXXX','..XXX.XXX..','..X.....X..']]},
-    crab:{hp:3,px:3.5,col:'#ff5fa2',base:10,frames:[
-      ['..X.....X..','...X...X...','..XXXXXXX..','.XX.XXX.XX.','XXXXXXXXXXX','X.XXXXXXX.X','X.X.....X.X','...XX.XX...'],
-      ['..X.....X..','X..X...X..X','X.XXXXXXX.X','XXX.XXX.XXX','XXXXXXXXXXX','.XXXXXXXXX.','..X.....X..','.X.......X.']]},
-    mother:{hp:6,px:4,col:'#ffb84d',base:14,frames:[
-      ['.....XXXXXX.....','...XXXXXXXXXX...','..XXXXXXXXXXXX..','.XX.XX.XX.XX.XX.','XXXXXXXXXXXXXXXX','..XXX..XX..XXX..','...X........X...'],
-      ['.....XXXXXX.....','...XXXXXXXXXX...','..XXXXXXXXXXXX..','.X.XX.XX.XX.XX.X','XXXXXXXXXXXXXXXX','..XXX..XX..XXX..','..X..........X..']]},
-    pod:{hp:1,px:3,col:'#e9f4ff',friend:true,base:8,frames:[
-      ['..XXXXXXX..','.XXXXXXXXX.','XX.......XX','XX.ooooo.XX','XX.......XX','.XXXXXXXXX.','..X.....X..'],
-      ['..XXXXXXX..','.XXXXXXXXX.','XX.......XX','XX.o.o.o.XX','XX.......XX','.XXXXXXXXX.','..X.....X..']]},
+    dart:{hp:1,r:12,col:'#8dff6a',base:6,draw:drawDart},
+    bug:{hp:1,r:13,col:'#ff7a59',base:7,draw:drawBug},
+    jelly:{hp:2,r:14,col:'#5fe0ff',base:8,draw:drawJelly},
+    manta:{hp:2,r:16,col:'#b48cff',base:8,draw:drawManta},
+    cruiser:{hp:3,r:17,col:'#ff5fa2',base:10,draw:drawCruiser},
+    mother:{hp:6,r:28,col:'#ffb84d',base:14,draw:drawMother},
+    pod:{hp:1,r:13,col:'#e9f4ff',friend:true,base:8,draw:drawPod},
   };
-  const shipW=s=>s.frames[0][0].length*s.px,shipH=s=>s.frames[0].length*s.px;
-  // where in the bar ships arrive (in beats): weighted toward its second half, and most of all its end
+  // a path stroked as glowing line work: a wide faint pass under a thin bright one (and a faint fill)
+  function ink(col,lw,fillA){
+    if(fillA){g.globalAlpha=fillA;g.fillStyle=col;g.fill();}
+    g.strokeStyle=col;g.globalAlpha=0.22;g.lineWidth=lw+3;g.stroke();g.globalAlpha=1;g.lineWidth=lw;g.stroke();
+  }
+  // Each is drawn around (0, 0), nose down (they fly toward the station). p: the beat's pulse (1 → 0),
+  // ph: the beat position, for wings, legs and tentacles.
+  function drawDart(r,col,p,ph){
+    g.beginPath();g.moveTo(0,r);g.lineTo(-r*0.85,-r*0.65);g.lineTo(-r*0.3,-r*0.45);g.lineTo(0,-r*0.25);g.lineTo(r*0.3,-r*0.45);g.lineTo(r*0.85,-r*0.65);g.closePath();ink(col,1.5,0.12);
+    g.beginPath();g.moveTo(0,r*0.85);g.lineTo(0,-r*0.25);g.moveTo(-r*0.5,-r*0.25);g.lineTo(-r*0.2,r*0.35);g.moveTo(r*0.5,-r*0.25);g.lineTo(r*0.2,r*0.35);ink(col,1);
+    g.beginPath();g.arc(0,r*0.25,r*0.12,0,7);ink('#fff',1);
+    g.beginPath();g.moveTo(-r*0.3,-r*0.5);g.lineTo(-r*0.3,-r*(0.8+0.5*p));g.moveTo(r*0.3,-r*0.5);g.lineTo(r*0.3,-r*(0.8+0.5*p));ink('#fff',1.2);
+  }
+  function drawCruiser(r,col,p,ph){
+    const P=[[0,1],[0.55,0.35],[0.62,-0.45],[0.28,-0.82],[-0.28,-0.82],[-0.62,-0.45],[-0.55,0.35]];
+    g.beginPath();P.forEach(([x,y],i)=>g[i?'lineTo':'moveTo'](x*r,y*r));g.closePath();ink(col,1.5,0.12);
+    g.beginPath();g.moveTo(-r*0.3,-r*0.55);g.lineTo(r*0.3,-r*0.55);g.lineTo(r*0.22,r*0.3);g.lineTo(0,r*0.62);g.lineTo(-r*0.22,r*0.3);g.closePath();ink(col,1);
+    // panel lines, side pods on struts, a cockpit, three engines
+    g.beginPath();for(const y of [-0.3,0,0.25]){g.moveTo(-r*0.5,y*r);g.lineTo(-r*0.26,y*r);g.moveTo(r*0.26,y*r);g.lineTo(r*0.5,y*r);}
+    for(const sx of [-1,1]){g.moveTo(sx*r*0.6,-r*0.2);g.lineTo(sx*r*0.92,-r*0.2);g.rect(sx*r*0.92-r*0.09,-r*0.55,r*0.18,r*0.75);}ink(col,1);
+    g.beginPath();g.arc(0,r*0.08,r*0.17,0,7);ink('#fff',1.2,0.25);
+    g.beginPath();for(const x of [-0.18,0,0.18]){g.moveTo(x*r,-r*0.85);g.lineTo(x*r,-r*(1.05+0.4*p));}ink('#fff',1.2);
+  }
+  function drawMother(r,col,p,ph){
+    g.beginPath();g.arc(0,0,r,0,7);ink(col,1.6,0.08);
+    g.beginPath();g.arc(0,0,r*0.62,0,7);ink(col,1.2);
+    // the segments between the rings turn one step a beat; lights round the rim; the core pulses
+    const k=Math.floor(ph)*Math.PI/6;g.beginPath();
+    for(let i=0;i<6;i++){const a=k+i*Math.PI/3,b=a+Math.PI/6;g.moveTo(Math.cos(a)*r*0.62,Math.sin(a)*r*0.62);g.lineTo(Math.cos(a)*r,Math.sin(a)*r);
+      g.moveTo(Math.cos(b)*r*0.7,Math.sin(b)*r*0.7);g.arc(0,0,r*0.7,b,b+Math.PI/12);}
+    ink(col,1);
+    for(let i=0;i<12;i++){const a=i*Math.PI/6;g.beginPath();g.arc(Math.cos(a)*r*0.82,Math.sin(a)*r*0.82,1.6,0,7);g.fillStyle=(i+Math.floor(ph))%3===0?'#fff':col;g.fill();}
+    g.beginPath();g.arc(0,0,r*(0.22+0.08*p),0,7);ink('#fff',1.4,0.3);
+    g.beginPath();g.moveTo(-r*0.35,r*0.9);g.lineTo(0,r*1.25);g.lineTo(r*0.35,r*0.9);ink(col,1.2);
+  }
+  function drawJelly(r,col,p,ph){
+    // the bell faces down; tentacles trail above it and sway
+    g.beginPath();g.moveTo(-r,0);g.bezierCurveTo(-r,r*1.25,r,r*1.25,r,0);
+    for(let i=4;i>=0;i--){const x=-r+i*r/2;g.quadraticCurveTo(x+r*0.25,-r*0.18,x,0);}g.closePath();ink(col,1.5,0.12);
+    g.beginPath();g.moveTo(-r*0.6,r*0.2);g.bezierCurveTo(-r*0.6,r*0.8,r*0.6,r*0.8,r*0.6,r*0.2);ink(col,1);
+    g.beginPath();g.arc(-r*0.3,r*0.45,1.8,0,7);g.arc(r*0.3,r*0.45,1.8,0,7);g.fillStyle='#fff';g.fill();
+    g.beginPath();for(let i=0;i<5;i++){const x0=-r*0.8+i*r*0.4;g.moveTo(x0,0);
+      for(let s=1;s<=6;s++){const y=-s*r*0.27,w=Math.sin(ph*Math.PI+s*0.9+i)*r*0.16*(s/6);g.lineTo(x0+w,y*(1+0.15*p));}}
+    ink(col,1);
+  }
+  function drawManta(r,col,p,ph){
+    const f=Math.sin(ph*Math.PI)*r*0.35;   // one flap every two beats
+    g.beginPath();g.moveTo(0,r*0.7);g.quadraticCurveTo(r*0.5,r*0.5,r*1.45,-r*0.05+f);g.quadraticCurveTo(r*0.6,-r*0.1,r*0.25,-r*0.55);
+    g.lineTo(0,-r*0.7);g.lineTo(-r*0.25,-r*0.55);g.quadraticCurveTo(-r*0.6,-r*0.1,-r*1.45,-r*0.05+f);g.quadraticCurveTo(-r*0.5,r*0.5,0,r*0.7);g.closePath();ink(col,1.5,0.12);
+    g.beginPath();g.moveTo(0,-r*0.7);g.quadraticCurveTo(r*0.2*Math.sin(ph*Math.PI*0.5),-r*1.2,0,-r*1.6);
+    for(const sx of [-1,1]){g.moveTo(sx*r*0.25,r*0.35);g.quadraticCurveTo(sx*r*0.7,r*0.2,sx*r*1.15,f*0.8);}ink(col,1);
+    g.beginPath();g.arc(-r*0.22,r*0.35,1.8,0,7);g.arc(r*0.22,r*0.35,1.8,0,7);g.fillStyle='#fff';g.fill();
+  }
+  function drawBug(r,col,p,ph){
+    // three body segments, six legs stepping on the beat, two feelers
+    const step=Math.sin(ph*Math.PI)*0.35;
+    g.beginPath();for(let i=0;i<3;i++){const y=r*(0.5-i*0.55),s=r*(0.42-i*0.04);g.moveTo(s,y);g.ellipse(0,y,s,s*0.8,0,0,7);}ink(col,1.4,0.12);
+    g.beginPath();for(let i=0;i<3;i++){const y=r*(0.45-i*0.55),sw=(i%2?1:-1)*step;
+      for(const sx of [-1,1]){g.moveTo(sx*r*0.35,y);g.lineTo(sx*r*0.85,y+r*(0.2+sw*sx));g.lineTo(sx*r*1.05,y+r*(0.55+sw*sx));}}
+    g.moveTo(-r*0.15,r*0.85);g.quadraticCurveTo(-r*0.45,r*1.2,-r*0.55,r*1.35);g.moveTo(r*0.15,r*0.85);g.quadraticCurveTo(r*0.45,r*1.2,r*0.55,r*1.35);ink(col,1);
+    g.beginPath();g.arc(-r*0.16,r*0.62,1.7,0,7);g.arc(r*0.16,r*0.62,1.7,0,7);g.fillStyle='#fff';g.fill();
+  }
+  function drawPod(r,col,p,ph){
+    // a white capsule with a row of lit windows and a beacon: plainly not a ship
+    const w=r*1.5,h=r*0.85;g.beginPath();g.moveTo(-w+h,-h);g.lineTo(w-h,-h);g.arc(w-h,0,h,-Math.PI/2,Math.PI/2);g.lineTo(-w+h,h);g.arc(-w+h,0,h,Math.PI/2,Math.PI*1.5);g.closePath();ink(col,1.5,0.18);
+    for(let i=-2;i<=2;i++){g.beginPath();g.arc(i*r*0.42,0,r*0.13,0,7);g.fillStyle=i===Math.round(ph*2)%5-2?'#5fe0ff':'rgba(95,224,255,.45)';g.fill();}
+    g.beginPath();g.moveTo(0,-h);g.lineTo(0,-h-r*0.4);ink(col,1);
+    g.beginPath();g.arc(0,-h-r*0.5,2+2*p,0,7);g.fillStyle=Math.floor(ph*2)%2?'#5fe0ff':'#fff';g.fill();
+  }
+  function drawShip(e,x,y,nb,now){
+    const S=e.S,p=Math.pow(1-((nb*4)%1+1)%1,3),hit=now-e.flash<70;
+    g.save();g.translate(x,y);g.scale(1+0.08*p,1+0.08*p);S.draw(S.r,hit?'#fff':S.col,p,nb*4);g.restore();
+    // hits left (more than one): small dashes under it
+    if(S.hp>1&&!S.friend){g.fillStyle=S.col;for(let i=0;i<e.hp;i++)g.fillRect(x-e.hp*4+i*8+1,y+S.r*1.3+5,6,1.5);}
+  }
+  // where in the bar a wave arrives (in beats): weighted toward its second half, and most of all its end
   const STARTS=[0,0.5,1,1.5,2,2.5,3,3.5],SW=[1,0.4,0.8,0.5,2,1.5,3,4];
   function wpick(ws,R){let s=0;for(const w of ws)s+=w;let x=R()*s;for(let i=0;i<ws.length;i++){x-=ws[i];if(x<0)return i;}return ws.length-1;}
-  // the plan: {t0 (bars from the start of playback), type}. Most bars bring one or two ships, some none
-  // (the fourth bar of each four is usually a rest, so the loop gets heard on its own); a mothership alone
-  // in bars 7 and 13; four supply pods somewhere in bars 3–15.
+  // The plan: {t0 (bars from the start of playback), type, x (0…1 across the field)}. Ships come in waves
+  // that arrive together, spread across the width. In each group of four bars the number follows the
+  // touches wanted: the first bar fewest, then the third, then the second, and the fourth the most
+  // (1, 3, 2, 4 ships; one more in the second and fourth from halfway). A mothership leads bars 8 and 16;
+  // four supply pods somewhere in bars 2–15.
   function makePlan(b0){
-    const R=Math.random,out=[];
+    const R=Math.random,out=[],N=[1,3,2,4];
+    const pick=lv=>['dart','bug','jelly','manta','cruiser'][wpick([1.2,1,lv>0.1?1:0.4,lv>0.25?0.9:0,lv>0.4?0.8:0],R)];
     for(let b=0;b<GBARS;b++){
-      const lv=b/GBARS;
-      if(b===6||b===12){out.push({t0:b0+b,type:'mother'});continue;}
-      if(b%4===3&&R()<0.7||R()<0.12)continue;
-      const n=1+(R()<0.2+lv*0.4?1:0)+(lv>0.5&&R()<0.2?1:0);
-      for(let i=0;i<n;i++)out.push({t0:b0+b+STARTS[wpick(SW,R)]*0.25,type:['scout','saucer','crab'][wpick([1.2,lv>0.1?1:0.3,lv>0.3?0.8:0],R)]});
+      const lv=b/GBARS,q=b%4;let n=N[q]+(lv>=0.5&&q%2===1?1:0);
+      if(b===7||b===15){out.push({t0:b0+b,type:'mother',x:0.3+0.4*R()});n=Math.max(1,n-2);}
+      while(n>0){
+        const k=Math.min(n,n>=3&&R()<0.6?3:n>=2&&R()<0.75?2:1);n-=k;
+        const t0=b0+b+STARTS[wpick(SW,R)]*0.25,sh=R();
+        for(let i=0;i<k;i++)out.push({t0,type:pick(lv),x:(i+0.2+0.6*((sh+i*0.37)%1))/k});
+      }
     }
-    const pb=[2,3,4,5,7,8,9,10,11,13,14].sort(()=>R()-0.5).slice(0,4);
-    for(const b of pb)out.push({t0:b0+b+Math.floor(R()*4)*0.25,type:'pod'});
+    for(const b of [1,2,4,5,6,8,9,10,12,13,14].sort(()=>R()-0.5).slice(0,4))out.push({t0:b0+b+Math.floor(R()*4)*0.25,type:'pod'});
     return out.sort((a,b)=>a.t0-b.t0);
   }
   const gameBot=()=>cssH-GBASE;
   const stepsPerSec=()=>{const t=T();return barSteps(t)/(barS()/sr);};
   function spawn(s){
-    const R=Math.random,S=SHIPS[s.type],top=TOP+16,span=gameBot()-top;
+    const R=Math.random,S=SHIPS[s.type],top=TOP+20,span=gameBot()-top;
     if(S.friend){
-      // a pod drifts across the middle of the field, side to side
-      const fromL=R()<0.5,y0=top+span*(0.15+0.35*R());
-      game.enemies.push({type:'pod',S,hp:1,born:performance.now(),dur:S.base*(0.9+0.3*R())*1000,x0:fromL?HW-20:cssW+20,x1:fromL?cssW+20:HW-20,y0,path:'drift',ph:R()*6.3,flash:0});return;
+      // a pod drifts across the field from side to side
+      const fromL=R()<0.5,y0=top+span*(0.1+0.6*R());
+      game.enemies.push({type:'pod',S,hp:1,born:performance.now(),dur:S.base*(0.9+0.3*R())*1000,x0:fromL?-20:cssW+20,x1:fromL?cssW+20:-20,y0,path:'drift',ph:R()*6.3,flash:0});return;
     }
-    // ships start high (the top quarter) and come down slowly at first, so most are met high up
-    const x0=HW+20+R()*(W()-40),y0=top+R()*span*0.25;
-    const dur=Math.max(S.base*(0.85+0.3*R()),3*S.hp/stepsPerSec()+2.5);
-    const path=s.type==='mother'?'loop':s.type==='saucer'?(R()<0.7?'wind':'loop'):s.type==='crab'?(R()<0.6?'straight':'wind'):(R()<0.6?'diag':'straight');
-    game.enemies.push({type:s.type,S,hp:S.hp,born:performance.now(),dur:dur*1000,x0,y0,x1:HW+20+R()*(W()-40),path,
-      vx:(R()<0.5?-1:1)*W()*(0.4+0.6*R()),A:20+R()*W()/4,f:1+R()*1.5,ph:R()*6.3,loops:1+Math.floor(R()*2),r:24+R()*20,flash:0});
+    // ships appear anywhere in the top two thirds and come down at an even speed, so all the rows get hit
+    const x0=HW+S.r*1.5+s.x*(W()-S.r*3),y0=top+R()*span*0.62;
+    const dur=Math.max((gameBot()-y0)/(span/(S.base*(0.85+0.3*R()))),3*S.hp/stepsPerSec()+2.5);
+    const path=s.type==='mother'?'loop':s.type==='dart'?(R()<0.6?'diag':'straight'):s.type==='cruiser'?'straight':s.type==='manta'?(R()<0.5?'loop':'wind'):'wind';
+    const dx=W()*0.15*(R()-0.5);
+    game.enemies.push({type:s.type,S,hp:S.hp,born:performance.now(),dur:dur*1000,x0,y0,x1:x0+dx,path,
+      vx:(R()<0.5?-1:1)*W()*(0.2+0.3*R()),A:12+R()*W()/10,f:0.6+R(),ph:R()*6.3,loops:1+Math.floor(R()*2),r:18+R()*16,flash:0});
   }
-  // a ship's place at time now (bouncing off the sides); it descends slowly at first and faster later
+  // a ship's place at time now (bouncing off the sides)
   function shipAt(e,now){
-    const u=clamp((now-e.born)/e.dur,0,1),lo=HW+shipW(e.S)/2,hi=cssW-shipW(e.S)/2,refl=x=>{const w=hi-lo;let v=((x-lo)%(2*w)+2*w)%(2*w);return lo+(v>w?2*w-v:v);};
+    const u=clamp((now-e.born)/e.dur,0,1),m=e.S.r*1.4,lo=HW+m,hi=cssW-m,refl=x=>{const w=hi-lo;let v=((x-lo)%(2*w)+2*w)%(2*w);return lo+(v>w?2*w-v:v);};
     if(e.path==='drift')return [e.x0+(e.x1-e.x0)*u,e.y0+14*Math.sin(2*Math.PI*u*1.5+e.ph),u];
-    let x,y=e.y0+(gameBot()-e.y0)*Math.pow(u,1.7);
-    if(e.path==='straight')x=e.x0+(e.x1-e.x0)*u;
+    let x,y=e.y0+(gameBot()-e.y0)*u;
+    if(e.path==='straight')x=refl(e.x0+(e.x1-e.x0)*u);
     else if(e.path==='diag')x=refl(e.x0+e.vx*u);
     else if(e.path==='wind')x=refl(e.x0+e.A*Math.sin(2*Math.PI*e.f*u+e.ph));
     else{const th=2*Math.PI*e.loops*u+e.ph,k=Math.min(1,u*8,(1-u)*8);x=refl(e.x0+(e.x1-e.x0)*u+e.r*Math.cos(th)*k);y+=e.r*Math.sin(th)*k;}
@@ -3255,90 +3333,100 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   const GUNX=()=>cssW/2,GUNY=()=>cssH-GBASE+10;
   function barrels(){
     const g0=game,fs=fingers().slice().sort((a,b)=>a.x-b.x).slice(0,5),n=fs.length,out=[];
-    for(let i=0;i<5;i++){const px=GUNX()+(i-2)*13,py=GUNY()-4,f=n?fs[i-Math.floor((5-n)/2)]:null;
+    for(let i=0;i<5;i++){const px=GUNX()+(i-2)*11,py=GUNY()-2,f=n?fs[i-Math.floor((5-n)/2)]:null;
       const a=f&&f.y<py-4?Math.atan2(f.y-py,f.x-px):-Math.PI/2+(i-2)*0.32;out.push({px,py,a,f});}
     if(g0&&g0.stunA)out.forEach((b,i)=>{b.a=g0.stunA[i];});
     return out;
   }
   const fingers=()=>[...ptrs.values()].filter(p=>p.live&&p.tr===view);
+  function gameStunned(){return !!(gameOn&&game&&game.stunA);}
   const rowHueAt=p=>{const r=lay[p.ri];return r?r.hue:200;};
-  function boom(x,y,col,n){for(let i=0;i<n;i++){const a=Math.random()*6.3,v=60+Math.random()*220;game.parts.push({x,y,vx:Math.cos(a)*v,vy:Math.sin(a)*v,col,t:performance.now(),life:350+Math.random()*350});}}
-  // stunned for 3 beats: the barrels lock where they are and don't fire
-  function stun(nb,why){const g0=game;if(nb<g0.stunTo)return;g0.stunTo=nb+0.75;g0.stunA=barrels().map(b=>b.a);g0.why=why;g0.hitT=performance.now();}
+  // a ship breaking up: its lines fly apart, and a ring opens
+  function boom(x,y,col,n,r){
+    const now=performance.now();game.parts.push({ring:true,x,y,col,r:r||14,t:now,life:420});
+    for(let i=0;i<n;i++){const a=Math.random()*6.3,v=50+Math.random()*190;game.parts.push({x,y,vx:Math.cos(a)*v,vy:Math.sin(a)*v,a:Math.random()*6.3,va:(Math.random()-0.5)*12,len:4+Math.random()*(r||10)*0.6,col,t:now,life:380+Math.random()*380});}
+  }
+  // stunned for 3 beats: the barrels lock where they are, don't fire, and touches are silent
+  function stun(nb,why){const g0=game;if(nb<g0.stunTo)return;g0.stunTo=nb+0.75;g0.stunA=barrels().map(b=>b.a);g0.why=why;g0.hitT=performance.now();push(T());}
   function gameTick(){
     const g0=game;if(!g0)return;const now=performance.now(),dt=Math.min(0.05,(now-g0.lastT)/1000);g0.lastT=now;
     if(st.playing)g0.seen=true;else{if(g0.seen&&!intent)endGame(true);return;}
     if(g0.startBar==null)return;
     const nb=nowBar();
-    if(g0.stunA&&nb>=g0.stunTo){g0.stunA=null;g0.why='';}
+    if(g0.stunA&&nb>=g0.stunTo){g0.stunA=null;g0.why='';for(const p of ptrs.values())if(p.live){p.ts=++tsCtr;}push(T());}
     while(g0.next<g0.plan.length&&g0.plan[g0.next].t0<=nb)spawn(g0.plan[g0.next++]);
     // every 16th step, each finger's barrel fires
     const sp=Math.floor(nb*barSteps(T()));
-    if(sp!==g0.lastStep){g0.lastStep=sp;if(nb>=g0.startBar&&!g0.stunA)for(const b of barrels())if(b.f){const L=26;
-      g0.bolts.push({x:b.px+Math.cos(b.a)*L,y:b.py+Math.sin(b.a)*L,vx:Math.cos(b.a)*1500,vy:Math.sin(b.a)*1500,col:`hsl(${rowHueAt(b.f)} 90% 70%)`});}}
+    if(sp!==g0.lastStep){g0.lastStep=sp;if(nb>=g0.startBar&&!g0.stunA)for(const b of barrels())if(b.f){const L=24;
+      g0.bolts.push({x:b.px+Math.cos(b.a)*L,y:b.py+Math.sin(b.a)*L,vx:Math.cos(b.a)*1500,vy:Math.sin(b.a)*1500,col:`hsl(${rowHueAt(b.f)} 90% 72%)`});}}
     // bolts move in small steps and stop at the first ship (or pod) they touch
     for(const q of g0.bolts){const n=Math.ceil(Math.hypot(q.vx,q.vy)*dt/8);
       for(let s=0;s<n&&!q.gone;s++){q.x+=q.vx*dt/n;q.y+=q.vy*dt/n;
-        for(const e of g0.enemies){if(e.dead)continue;const [x,y]=shipAt(e,now),w=shipW(e.S)/2+3,h=shipH(e.S)/2+3;
-          if(Math.abs(q.x-x)<w&&Math.abs(q.y-y)<h){q.gone=true;e.hp--;e.flash=now;
-            if(e.S.friend){e.dead=now;boom(x,y,'#e9f4ff',24);stun(nb,'POD HIT');}
-            else if(e.hp<=0){e.dead=now;g0.down++;boom(x,y,e.S.col,e.type==='mother'?36:18);}else boom(q.x,q.y,'#fff',2);break;}}}
+        for(const e of g0.enemies){if(e.dead)continue;const [x,y]=shipAt(e,now),rr=e.S.r*(e.S.friend?1.4:1.05)+3;
+          if(Math.hypot(q.x-x,(q.y-y)*(e.S.friend?1.6:1))<rr){q.gone=true;e.hp--;e.flash=now;
+            if(e.S.friend){e.dead=now;boom(x,y,'#e9f4ff',16,20);stun(nb,'POD HIT');}
+            else if(e.hp<=0){e.dead=now;g0.down++;boom(x,y,e.S.col,e.type==='mother'?26:12,e.S.r*1.6);}
+            break;}}}
       if(q.x<0||q.x>cssW||q.y<TOP||q.y>cssH)q.gone=true;}
     g0.bolts=g0.bolts.filter(q=>!q.gone);
-    for(const e of g0.enemies){if(e.dead)continue;const [x,y,u]=shipAt(e,now);if(u>=1){e.dead=now;if(!e.S.friend){g0.through++;boom(x,gameBot(),'#ff5050',16);stun(nb,'BREACH');}}}
+    for(const e of g0.enemies){if(e.dead)continue;const [x,,u]=shipAt(e,now);if(u>=1){e.dead=now;if(!e.S.friend){g0.through++;boom(x,gameBot(),'#ff5050',10,18);stun(nb,'BREACH');}}}
     g0.enemies=g0.enemies.filter(e=>!e.dead);
-    for(const p of g0.parts){p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=300*dt;}
+    for(const p of g0.parts)if(!p.ring){p.x+=p.vx*dt;p.y+=p.vy*dt;p.a+=p.va*dt;}
     g0.parts=g0.parts.filter(p=>now-p.t<p.life);
-  }
-  function sprite(rows,x,y,px,col,col2){
-    const w=rows[0].length*px,h=rows.length*px,x0=Math.round(x-w/2),y0=Math.round(y-h/2);
-    for(let r=0;r<rows.length;r++)for(let c=0;c<rows[r].length;c++){const ch=rows[r][c];if(ch==='.')continue;g.fillStyle=ch==='o'?col2:col;g.fillRect(x0+c*px,y0+r*px,Math.ceil(px),Math.ceil(px));}
   }
   // drawn from draw() while gameZ > 0: the round (if one is on), then the station and the status bar,
   // which slide in with the zoom
   function drawGame(fs){
     const g0=game,now=performance.now(),z=gameZ;
     if(g0)gameTick();
-    const nb=g0&&st.playing?nowBar():0,beat=Math.floor(nb*4),stunned=g0&&g0.stunA;
+    const nb=g0&&st.playing?nowBar():now/1000*bpm/240,stunned=gameStunned(),p=Math.pow(1-((nb*4)%1+1)%1,3);
     g.fillStyle=`rgba(8,9,12,${0.5*z})`;g.fillRect(0,TOP,cssW,cssH-TOP);
-    if(g0&&game){
-      for(const e of g0.enemies){const [x,y]=shipAt(e,now),S=e.S;
-        sprite(S.frames[beat&1],x,y,S.px,now-e.flash<70?'#fff':S.col,beat&1?'#5fe0ff':'#ffb84d');
-        if(S.hp>2&&e.hp<S.hp){const w=shipW(S);g.fillStyle='rgba(0,0,0,.6)';g.fillRect(x-w/2,y-shipH(S)/2-7,w,3);g.fillStyle=S.col;g.fillRect(x-w/2,y-shipH(S)/2-7,w*e.hp/S.hp,3);}}
-      for(const q of g0.bolts){g.fillStyle=q.col;const a=Math.atan2(q.vy,q.vx);g.save();g.translate(q.x,q.y);g.rotate(a);g.fillRect(-7,-1.5,14,3);g.restore();}
-      for(const p of g0.parts){g.globalAlpha=1-(now-p.t)/p.life;g.fillStyle=p.col;g.fillRect(Math.round(p.x)-2,Math.round(p.y)-2,4,4);}g.globalAlpha=1;
+    g.lineCap='round';g.lineJoin='round';
+    if(g0){
+      for(const e of g0.enemies){const [x,y]=shipAt(e,now);drawShip(e,x,y,nb,now);}
+      for(const q of g0.bolts){const a=Math.atan2(q.vy,q.vx);g.beginPath();g.moveTo(q.x-Math.cos(a)*14,q.y-Math.sin(a)*14);g.lineTo(q.x,q.y);ink(q.col,1.6);}
+      for(const q of g0.parts){const k=(now-q.t)/q.life;g.globalAlpha=1-k;
+        if(q.ring){g.beginPath();g.arc(q.x,q.y,q.r*(0.6+1.4*k),0,7);g.strokeStyle=q.col;g.lineWidth=1.5;g.stroke();}
+        else{g.beginPath();g.moveTo(q.x-Math.cos(q.a)*q.len/2,q.y-Math.sin(q.a)*q.len/2);g.lineTo(q.x+Math.cos(q.a)*q.len/2,q.y+Math.sin(q.a)*q.len/2);g.strokeStyle=q.col;g.lineWidth=1.5;g.stroke();}}
+      g.globalAlpha=1;
     }
-    // the station: a pixel wall with a shield line that flashes red when the turret is stunned
+    // the station: a glowing horizon over a floor of lines running to the turret; red while stunned
     g.save();g.translate(0,(1-z)*(GBASE+40));
-    const by=gameBot(),flash=stunned&&Math.floor(now/120)%2===0;
-    g.fillStyle='#14161b';g.fillRect(0,by,cssW,cssH-by+GBASE+40);
-    g.fillStyle='#2a2f38';for(let x=0;x<cssW;x+=16)g.fillRect(x+1,by+8+((x/16)&1)*6,14,5);
-    g.fillStyle=stunned?'#ff5050':'rgba(95,224,255,.8)';g.fillRect(0,by,cssW,stunned?3:2);
-    for(const b of barrels()){g.save();g.translate(b.px,b.py);g.rotate(b.a);g.fillStyle=stunned?(flash?'#ff5050':'#5a3a3e'):b.f?'#ece7dc':'#6c7380';g.fillRect(0,-3,26,6);
-      g.fillStyle=stunned?'#3a1d1f':b.f?`hsl(${rowHueAt(b.f)} 90% 65%)`:'#3a3f4a';g.fillRect(20,-3,6,6);g.restore();}
-    sprite(['....XXXXXXX....','..XXXXXXXXXXX..','.XXXXXXXXXXXXX.','XXXXXXXXXXXXXXX','XXXXXXXXXXXXXXX'],GUNX(),GUNY()+6,4,stunned&&flash?'#ff5050':'#8a8f99');
-    sprite(['XXX','XXX'],GUNX(),GUNY()+2,4,stunned?'#ff5050':ACC);
+    const by=gameBot(),flash=stunned&&Math.floor(now/120)%2===0,line=stunned?'#ff5050':'#5fe0ff';
+    g.fillStyle='#0d0f13';g.fillRect(0,by,cssW,cssH-by+GBASE+40);
+    g.strokeStyle=stunned?'rgba(255,80,80,.25)':'rgba(95,224,255,.18)';g.lineWidth=1;g.beginPath();
+    for(let i=-8;i<=8;i++){g.moveTo(GUNX()+i*18,by);g.lineTo(GUNX()+i*70,cssH+GBASE);}
+    for(const d of [10,24,44]){g.moveTo(0,by+d);g.lineTo(cssW,by+d);}g.stroke();
+    g.beginPath();g.moveTo(0,by);g.lineTo(cssW,by);ink(line,1.5);
+    // the turret: a wireframe dome with its barrels (each tipped in the colour of its finger's row)
+    const tc=stunned?(flash?'#ff5050':'#7a3a3e'):'#ece7dc';
+    for(const b of barrels()){g.save();g.translate(b.px,b.py);g.rotate(b.a);g.beginPath();g.moveTo(4,-2.5);g.lineTo(24,-2.5);g.moveTo(4,2.5);g.lineTo(24,2.5);g.moveTo(24,-2.5);g.lineTo(24,2.5);
+      ink(b.f&&!stunned?tc:stunned?tc:'#6c7380',1.2);if(b.f&&!stunned){g.beginPath();g.arc(25,0,2.5+1.5*p,0,7);g.fillStyle=`hsl(${rowHueAt(b.f)} 90% 70%)`;g.fill();}g.restore();}
+    g.beginPath();g.arc(GUNX(),GUNY()+12,24,Math.PI,0);g.closePath();ink(tc,1.5,0.15);
+    g.beginPath();g.arc(GUNX(),GUNY()+12,15,Math.PI,0);for(let i=1;i<4;i++){const a=Math.PI+i*Math.PI/4;g.moveTo(GUNX()+Math.cos(a)*15,GUNY()+12+Math.sin(a)*15);g.lineTo(GUNX()+Math.cos(a)*24,GUNY()+12+Math.sin(a)*24);}ink(tc,1);
+    g.beginPath();g.arc(GUNX(),GUNY()+8,3+2*p,0,7);g.fillStyle=stunned?'#ff5050':ACC;g.fill();
     if(stunned){g.textAlign='center';g.textBaseline='middle';g.font=`700 ${fs+2}px ${FONT}`;g.fillStyle='#ff8080';
-      g.fillText(g0.why+' · STUNNED',GUNX(),by-34);
-      const left=Math.max(1,Math.ceil((g0.stunTo-nb)*4-1e-6));for(let i=0;i<3;i++){g.fillStyle=i<left?'#ff5050':'#3a1d1f';g.fillRect(GUNX()-16+i*12,by-20,8,8);}}
+      g.fillText(g0.why+' · STUNNED',GUNX(),by-40);
+      const left=Math.max(1,Math.ceil((g0.stunTo-nb)*4-1e-6));for(let i=0;i<3;i++){g.beginPath();g.arc(GUNX()-12+i*12,by-24,3.5,0,7);g.fillStyle=i<left?'#ff5050':'#3a1d1f';g.fill();}}
     g.restore();
-    // the status bar, and the count-in in the middle
+    // the status bar
     g.save();g.translate(0,-(1-z)*(HUDH+4));
-    g.fillStyle='#111317';g.fillRect(0,0,cssW,HUDH);g.fillStyle='rgba(255,95,162,.5)';g.fillRect(0,HUDH-1,cssW,1);
-    g.textAlign='left';g.textBaseline='middle';g.fillStyle='#ffd1e6';g.font=`700 ${fs+3}px ${FONT}`;
+    g.fillStyle='#111317';g.fillRect(0,0,cssW,HUDH);g.fillStyle='rgba(95,224,255,.4)';g.fillRect(0,HUDH-1,cssW,1);
+    g.textAlign='left';g.textBaseline='middle';g.fillStyle='#ece7dc';g.font=`700 ${fs+3}px ${FONT}`;
     const sb=g0&&g0.startBar,pre=!g0||sb==null||nb<sb;
     g.fillText(pre?'GET READY':'BAR '+Math.min(GBARS,Math.floor(nb)-sb+1)+' / '+GBARS,12,HUDH/2-7);
-    g.fillStyle='#c9a3b6';g.font=`400 ${fs}px ${FONT}`;g.fillText(g0?g0.taken+' clips · '+g0.down+' down · '+g0.through+' through':'',12,HUDH/2+9);
+    g.fillStyle='#8a8f99';g.font=`400 ${fs}px ${FONT}`;g.fillText(g0?g0.taken+' clips · '+g0.down+' down · '+g0.through+' through':'',12,HUDH/2+9);
     g.restore();
+    // before the round: GET READY, then the count-in in its place; the pod warning stays under both
     if(g0&&pre&&z>=1){
-      const cy=TOP+(gameBot()-TOP)*0.42,counting=sb!=null&&st.playing&&nb>=g0.countBar;
-      g.textAlign='center';g.textBaseline='middle';g.fillStyle='#ffd1e6';
+      const cy=TOP+(gameBot()-TOP)*0.36,counting=sb!=null&&st.playing&&nb>=g0.countBar;
+      g.textAlign='center';g.textBaseline='middle';g.fillStyle='#ece7dc';
       if(counting){g.font=`700 ${Math.round(cssW/4)}px ${FONT}`;g.fillText(String(4-Math.min(3,Math.floor((nb-g0.countBar)*4))),cssW/2,cy);}
-      else{g.font=`700 ${Math.round(cssW/11)}px ${FONT}`;g.fillText('GET READY',cssW/2,cy);}
-      const hy=cy+cssW/7;g.font=`600 ${fs+2}px ${FONT}`;g.fillStyle='#c9a3b6';
-      g.fillText(counting?'Touch anywhere to aim and fire':'The count-in starts on the next bar',cssW/2,hy);
-      g.fillText(counting?'Each bar becomes a clip':'Don’t shoot the supply pods',cssW/2,hy+18);
+      else{g.font=`700 ${Math.round(cssW/9)}px ${FONT}`;g.fillText('GET READY',cssW/2,cy);}
+      const py=cy+cssW/4.2;g.save();g.translate(cssW/2,py);g.scale(1.6,1.6);drawPod(13,'#e9f4ff',p,nb*4);g.restore();
+      g.font=`600 ${fs+3}px ${FONT}`;g.fillStyle='#e9f4ff';g.fillText('Don’t hit the supply pods',cssW/2,py+44);
     }
+    g.lineCap='butt';g.lineJoin='miter';
   }
 
   // ---------- start ----------
