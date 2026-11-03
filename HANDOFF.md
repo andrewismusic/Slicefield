@@ -1,6 +1,6 @@
 # Slicefield — handoff for the iOS app
 
-This guide and the `prototype/` folder are everything needed to build Slicefield as a native iPhone app. The prototype is a single-page web app (version 26) designed through about fifteen rounds of hands-on testing on a phone. Treat its behaviour as the specification: when this document and the code disagree, the code in `prototype/src/` is what was actually played and approved. Say so in the pull request if you change any behaviour on purpose.
+This guide and the `prototype/` folder are everything needed to build Slicefield as a native iPhone app. The prototype is a single-page web app (version 27) designed through about fifteen rounds of hands-on testing on a phone. Treat its behaviour as the specification: when this document and the code disagree, the code in `prototype/src/` is what was actually played and approved. Say so in the pull request if you change any behaviour on purpose.
 
 **For Claude Code:** read this whole file first, then `prototype/src/engine.js` (about 580 lines, the heart of it). Section 13 gives the build order. Section 14 lists decisions the owner (Andrew) hasn't made yet. Ask him about those instead of guessing. Section 18 covers using Slicefield as the sound engine inside a larger app, and sections 19–21 list what changed in versions 16, 17 and 18. **Version 18 replaced recording, clips and the song with capture and a Takes list, and the play-order and silence strips with fixed ORDER and SKIP patterns.** Where §5.4, §5.5, §8, §9, §10.4 or §20 disagree with §21, §21 wins.
 
@@ -37,6 +37,7 @@ This guide and the `prototype/` folder are everything needed to build Slicefield
 27. Changes in version 24: the game as a shooter, clips play down the list
 28. Changes in version 25: zooming into the game, a calmer round, stuns
 29. Changes in version 26: the game's ships, waves and the four-bar shape
+30. Changes in version 27: the field page, even rows, trios, no pods
 
 ---
 
@@ -590,8 +591,8 @@ When you are unsure how something should feel, open the prototype on a phone and
 
 Postponed by Andrew (v22): resampling a take into a new loop, Ableton Link and MIDI clock, background audio, the iPad layout, desktop/VST input, sharing projects, and the native app itself (until the game is further along).
 
-1. **Fields** (rows, §26.1). Still open: the maximum of 10 rows and 4 effects a row, the order of effects inside a row (as added now), whether the filter's dry middle should be wider again (it uses the same middle band as Pitch now), and the ruler's height (24 pt).
-2. **The game** (shooter, §28): scoring and currency (waiting on the larger platform), round length (16 bars), the ship mix, speeds and hit counts, the fire rate (one bolt per finger per 16th), your settings or the game's own (§28.2), the ship designs (§29.1), and whether bolts should burst at the finger instead of flying on (§28.4).
+1. **Fields** (rows, §26.1, the field page §30.1). Still open: 4 effects a row (rows are now 4–7 when rolled, 7 at most, all the same height), the order of effects inside a row (as added now), whether the filter's dry middle should be wider again (it uses the same middle band as Pitch now), and the ruler's height (24 pt).
+2. **The game** (shooter, §28): scoring and currency (waiting on the larger platform), round length (16 bars), the ship mix, speeds and hit counts, the fire rate (one bolt per finger per 16th), your settings or the game's own (§28.2), the ship designs (§29.1), whether bolts should burst at the finger instead of flying on (§28.4), and how strict trios are (all three within a beat, §30.3).
 3. **Imported audio** is stretched to the bar by default now (§25.6); resampling is the other choice in Preferences. Still open: trimming or choosing which part of a long file becomes the bar.
 4. **Persistence and projects.** Named projects in a folder library (§24.6, now a sheet, §25.5).
 
@@ -1471,3 +1472,33 @@ Hits left (when more than one) are small dashes under the ship. Bolts are short 
 - **The field in the game has no handles and no words:** the handle column closes up (the field takes the full width) and the rows' names, values and NO CHANGE/DRY labels fade out with the zoom. Only the coloured cells and the centre bands stay.
 - **GET READY** is large in the middle with a supply pod drawn under it and "Don't hit the supply pods"; on the count-in bar the numbers 4-3-2-1 replace GET READY and the pod stays. From a stop, playback starts with a bar of GET READY before the count-in (bar 1).
 - **Stunned, touches are silent:** the engine gets no touches until the stun ends, and the field shows no touch highlights.
+
+## 30. Changes in version 27: the field page, even rows, trios, no pods
+
+Agreed with Andrew after v26. Where §26–§29 disagree, this section wins.
+
+### 30.1 The field page
+Field work moved off popups onto a page of its own, apart from the sequencer. The Fields button (row 2) opens and closes it; it shows pressed while open. On it the sequencer's tools (row 3) and lane step aside, and the Clear button is hidden.
+- **Row 3a:** the field's name (editable), **Save**, and **Open…** (your fields, ✓ on the one in use, then New: Random field and the presets).
+- **Row 3b:** delete (takes the field out of the library; it stays on the page, unsaved), the **randomize slider** (here it rolls the field, below), and **+ ROW (n/7)**.
+- **The row panel** (under them, scrolls; at most about a third of the screen): the picked row's effects as tabs (× takes one out; the last effect of a row takes the row out, and the last row can't go), **Add to this row** buttons for the effects not on the field (while the row has fewer than 4), then the settings of the tab's effect (the same options and vertical sliders as the old settings sheet).
+- **On the field:** rows show their effects as chips; tap a row to pick it, drag it to move it (the signal order). The line under the header says "Top to bottom = signal order", with "• Unsaved" in front while the field differs from the library's copy.
+- **Save:** the library only changes on Save. Under the name the field was opened with, Save overwrites that field (disabled until something changed); under a new name it is **Save as new** (a new id; the field on the page becomes it). A name another field already has shows NAME TAKEN. There is no Duplicate any more.
+- **Unsaved changes stay on the field**: the sequence plays through them, projects save them, clips keep them. Opening a project or loading a clip puts its field on as it was saved, without adding it to the library (v22 projects with a list of fields still add them all). A new session starts on the library's last field.
+- On the sequencer page, tapping a row's handle opens the field page with that row picked (dragging it still moves the row).
+- Code: `paintFieldPage`, `buildPanel`, `rollField`, `fieldDirty`, `drawEdit`, `editDown/Move/Up` in `ui.js`; markup `#ftools`, `#ftools2`, `#fpanel` in `app.html`.
+
+### 30.2 Even rows, 4–7 rows
+- **Every row is the same height**: the field's height divided by the number of rows (the fewer rows, the taller each). Row heights can't be dragged any more; `h` is still saved (FG shared out evenly) for older readers.
+- **At most 7 rows** (MAXROWS). Older fields with more: the effects of rows past the seventh join the rows above that have room. The All effects preset is now 7 rows (Stutter · Random + Reverse · Pitch · Filter · Decay + Crush · Freeze · Delay + Reverb).
+- **Randomizing always gives 4 to 7 rows.** A random field holds 5 to 10 effects in 4 to 7 rows. The field's randomize slider is seeded per drag (the same place gives the same field): its amount sets how many changes are made to the field it started from (about 9 at the right end): an effect swapped for an unused one, an effect moved to another row, two rows swapped, a row split or two joined, a row added, an effect's settings rolled (its options and the parameters its cells don't play). At the far right (97%+) it's a new random field. A field with fewer than 4 rows gets rows split or added until it has 4.
+
+### 30.3 The game
+- **No supply pods** (and no pod warning: GET READY is just GET READY, then the count-in numbers).
+- **Enemies from the start:** a trio is up from the third beat of the count-in, so bar 1 has something to shoot from its first step (bar 1's own ship arrives on its downbeat).
+- **Trios, for three fingers:** wherever a bar has three or more ships, three of them come as a trio: the same 1- or 2-hit kind (dart, bug, or jelly from 30% in) in a horizontal line across the width, joined by a dashed line, moving together. **Shoot all three within a beat of each other**: a member shot down turns faint, with a ring running down its beat; if the other two aren't down by then, it comes back whole. All three down: a white flash along the line and TRIPLE. With the opening trio there are about 8 a round. The status bar counts triples; so does the end-of-round message.
+- **Ships wander:** two slow side-to-side swings (bouncing off the edges) plus an up-and-down bob strong enough to climb at times, over a slow way down (35% longer than before). Trios swing less (all three the same way, so the line holds). Motherships still circle.
+
+### 30.4 Freeze pitch
+Freeze offers only the original pitch and an octave up: the lower half of its range is the original, the upper half +12 (`frzSemi` in `engine.js`; the parameter is no longer centred, and its Scale option is gone). Saved settings with a negative Freeze pitch are clamped to 0. Test: "freeze: original or an octave up"; scenario 02 now touches Freeze in its octave-up half.
+

@@ -296,6 +296,10 @@ const blank=id=>({id,cols:16,n:16,ord:{perm:null},mute:{bits:null},slots:Array.f
  const e2=mk();e2.msg({type:'song',rows:[{bars:1,clips:[k]},{bars:1,clips:[blank('M')]}],from:0,once:true});run(e2,steps(e2,40));
  ok('the list plays once and stops; LOOP turned on while it plays keeps going',looping&&!e2.playing,[looping,e2.playing]);}
 
+// Freeze offers two pitches: the original in the lower half of its range, an octave up in the upper half.
+{const c=EF.defCfg('freeze'),at=r=>EF.frzSemi(EF.resolve(c,'freeze',r).semi);
+ ok('freeze: original or an octave up',at(0)===0&&at(0.3)===0&&at(0.6)===12&&at(1)===12&&!EF.FX.freeze.params.semi.bip,[at(0),at(0.3),at(0.6),at(1)]);}
+
 // Every effect renders without NaN.
 {const e=mk();e.msg({type:'play'});let nan=false,pk=0;
  for(const k of ['stutter','random','reverse','freeze','crush','pitch','env','filter','delay','reverb']){e.msg({type:'touches',tr:0,list:[{id:k,a:2,n:1,o:1,fx:{k,raw:0.7}}]});

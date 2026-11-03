@@ -23,6 +23,7 @@ function engineFactory(){
     if(v===0)return 0;const L=scaleNotes(mask,v>0?1:-1);if(!L.length)return 0;
     return L[Math.min(L.length-1,Math.floor(Math.abs(v)*L.length))];
   }
+  const frzSemi=v=>v>=0.5?12:0;
   const semiLab=(v,o)=>{const s=semiQ(v,o);return sgn(s)+' st'+(s?' · '+NOTES[((s%12)+12)%12]:'');};
   // Effect schema. Values are normalised 0..1 (bipolar ones −1..1). `cells` lists the parameters
   // the cell's height controls by default.
@@ -39,9 +40,9 @@ function engineFactory(){
     reverse:{name:'Reverse',hue:166,cells:[],params:{}},
     env:{name:'Decay',hue:90,cells:['dec'],
       params:{dec:{name:'Decay',def:1,lab:v=>v>=0.985?'full':Math.round(envMs(v))+' ms'}}},
+    // Freeze plays at the original pitch or an octave up (the lower half of its range, the upper half)
     freeze:{name:'Freeze',hue:190,cells:['semi'],
-      opts:{scale:{name:'Scale',def:'chrom',choices:SCALE_CHOICES}},
-      params:{semi:{name:'Pitch',def:0,bip:true,lab:semiLab}}},
+      params:{semi:{name:'Pitch',def:0,lab:v=>frzSemi(v)?'+12 st · octave up':'0 st · original'}}},
     crush:{name:'Crush',hue:262,cells:['rate'],
       params:{rate:{name:'Rate',def:0.5,lab:v=>fmtHz(crHz(v))}}},
     // a send: touched steps feed a tempo-synced ping-pong delay whose echoes carry on across later steps
@@ -458,7 +459,7 @@ function engineFactory(){
           const v=frz.v,glen=Math.round(0.0303*sr);
           if(--this.gNext<=0){
             this.gNext=Math.max(16,Math.round(glen/12));
-            this.gr.push({s:c.fc+Math.random()*0.02*sr,k:0,n:glen,r:Math.pow(2,semiQ(v.semi,frz.o)/12)});
+            this.gr.push({s:c.fc+Math.random()*0.02*sr,k:0,n:glen,r:frzSemi(v.semi)?2:1});
           }
           let fl=0,fr=0;
           for(let j=this.gr.length-1;j>=0;j--){
@@ -737,5 +738,5 @@ function engineFactory(){
   }
   // a sequence's signal order in engine form (see the 'field' message)
   const rankOf=order=>{const r={};(order||[]).forEach((k,i)=>{r[k]=i;});return r;};
-  return {Engine,bounce,rankOf,orderPattern,skipPattern,DEAD,PATN,emptyStep,DT,FX,semi,semiQ,scaleNotes,SCALES,maskOf,NOTES,stMs,DIV,step,defCfg,allCfg,resolve,rowBip,AUTO};
+  return {Engine,frzSemi,bounce,rankOf,orderPattern,skipPattern,DEAD,PATN,emptyStep,DT,FX,semi,semiQ,scaleNotes,SCALES,maskOf,NOTES,stMs,DIV,step,defCfg,allCfg,resolve,rowBip,AUTO};
 }

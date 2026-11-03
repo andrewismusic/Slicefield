@@ -17,7 +17,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   const BG='#111317';
   const playBtn=$('play'),bpmEl=$('bpm'),swingEl=$('swing'),expBtn=$('export'),modeBtn=$('recmode'),fxoBtn=$('fxonly'),clearBtn=$('clear'),steppedBtn=$('stepped'),diceEl=$('dice'),dieEl=$('die'),diceVal=$('diceval'),prefsBtn=$('prefs'),sessBtn=$('sessbtn'),recBtn=$('rec'),capBtn=$('capture'),loadBtn=$('loadclip'),projBtn=$('project'),projIn=$('projfile'),fieldBtn=$('fieldbtn'),gameBtn=$('gamebtn');
   const soundSel=$('sound'),fileIn=$('file'),sheet=$('sheet'),card=$('card');
-  const sessEl=$('session'),takeList=$('takelist'),sessScroll=$('sessScroll'),ghost=$('ghost'),fieldBar=$('fieldbar');
+  const sessEl=$('session'),takeList=$('takelist'),sessScroll=$('sessScroll'),ghost=$('ghost');
 
   // ---------- state ----------
   function defCfg(){
@@ -26,25 +26,26 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   }
   // ---------- fields ----------
   // A field is a stack of effect rows plus the effects' settings: {id, name, rows:[{fx:[k…], h}], cfg}.
-  // Rows are full-width bands on a grid FG units tall (their heights add up to FG). A row holds one to
+  // Rows are full-width bands, all the same height (h shares FG units out evenly; up to MAXROWS rows, so
+  // the fewer rows, the taller each one). A row holds one to
   // MAXFX effects; a touch in it drives every one of them by its height in the row. Top to bottom is the
   // signal order (inside a row, the order listed; Delay and Reverb, being sends, always come after the
   // step). Each effect is in at most one row. Fields are kept in a library shared by every project; a
   // project keeps a copy of the field it uses, and each clip a copy of the field it was captured on.
-  const FG=48,MAXROWS=10,MAXFX=4,MINH=3;
+  const FG=48,MAXROWS=7,MAXFX=4,MINROWS=4;
   const PRESETS={
-    all:{name:'All effects',rows:[[['stutter'],4],[['random'],4],[['pitch'],8],[['filter'],8],[['reverse'],4],[['env'],4],[['freeze'],4],[['crush'],4],[['delay'],4],[['reverb'],4]]},
-    combos:{name:'Combos',rows:[[['stutter','crush'],12],[['pitch','delay'],12],[['freeze','reverb'],12],[['reverse','filter'],12]]},
-    dub:{name:'Dub',rows:[[['stutter'],8],[['delay','reverb'],14],[['filter'],16],[['env'],10]],set:{delay:{x:{fb:0.7}},reverb:{x:{size:0.7},o:{tails:'ring'}}}},
-    glitch:{name:'Glitch',rows:[[['stutter','random'],12],[['reverse'],8],[['crush'],12],[['filter'],16]]},
-    pitch:{name:'Pitch play',rows:[[['pitch','delay'],18],[['freeze'],12],[['filter'],18]]},
+    all:{name:'All effects',rows:[['stutter'],['random','reverse'],['pitch'],['filter'],['env','crush'],['freeze'],['delay','reverb']]},
+    combos:{name:'Combos',rows:[['stutter','crush'],['pitch','delay'],['freeze','reverb'],['reverse','filter']]},
+    dub:{name:'Dub',rows:[['stutter'],['delay','reverb'],['filter'],['env']],set:{delay:{x:{fb:0.7}},reverb:{x:{size:0.7},o:{tails:'ring'}}}},
+    glitch:{name:'Glitch',rows:[['stutter','random'],['reverse'],['crush'],['filter']]},
+    pitch:{name:'Pitch play',rows:[['pitch','delay'],['freeze'],['env'],['filter']]},
   };
   let fieldCtr=0;
   const newFieldId=()=>'f'+(++fieldCtr)+Math.random().toString(36).slice(2,5);
   function presetField(key){
     const P=PRESETS[key],cfg=defCfg();
     for(const k in P.set||{}){const q=P.set[k];Object.assign(cfg[k].x,q.x||{});Object.assign(cfg[k].o,q.o||{});}
-    return {id:newFieldId(),name:P.name,rows:P.rows.map(([fx,h])=>({fx:fx.slice(),h})),cfg};
+    return evenOut({id:newFieldId(),name:P.name,rows:P.rows.map(fx=>({fx:fx.slice(),h:0})),cfg});
   }
   const cloneCfg=c=>{const o={};for(const k in c){const x=c[k];o[k]={cells:x.cells.slice(),lo:Object.assign({},x.lo),hi:Object.assign({},x.hi),x:Object.assign({},x.x),o:Object.assign({},x.o,x.o.mask?{mask:x.o.mask.slice()}:{}),hue:x.hue};}return o;};
   const cloneField=f=>({id:f.id,name:f.name,rows:f.rows.map(r=>({fx:r.fx.slice(),h:r.h})),cfg:cloneCfg(f.cfg)});
@@ -58,21 +59,46 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     let x=0,y=0;for(const k of ks){const a=FX[k].hue*Math.PI/180;x+=Math.cos(a);y+=Math.sin(a);}
     return ks.length===1?FX[ks[0]].hue:Math.round((Math.atan2(y,x)*180/Math.PI+360)%360);
   }
-  // heights that add up to FG, none under the minimum, in proportion to w
-  function shareHeights(w){
-    const n=w.length,sum=w.reduce((a,b)=>a+b,0)||1,h=w.map(v=>Math.max(MINH,Math.round(v*FG/sum)));
-    let d=FG-h.reduce((a,b)=>a+b,0);
-    for(let q=0;d!==0&&q<500;q++){const i=d>0?h.indexOf(Math.min(...h)):h.indexOf(Math.max(...h));if(d<0&&h[i]<=MINH)break;h[i]+=Math.sign(d);d-=Math.sign(d);}
-    return h;
-  }
-  // A random field: 4 to 8 effects in 3 to 6 rows, one or two of them combining two or three effects.
-  function randomField(){
-    const R=Math.random,pool=ALL_FX.concat('filter').sort(()=>R()-0.5),n=4+Math.floor(R()*5),ks=pool.slice(0,n);
-    const nr=Math.max(3,Math.min(6,n-1-Math.floor(R()*2))),rows=ks.slice(0,nr).map(k=>({fx:[k],h:0}));
+  // every row the same share of FG (what's left over goes to the top rows, one unit each)
+  function evenOut(f){const n=f.rows.length;f.rows.forEach((r,i)=>{r.h=Math.floor(FG/n)+(i<FG%n?1:0);});return f;}
+  // A seeded random source (so a randomize slider held in one place always gives the same field).
+  function rng(seed){let a=seed|0;return ()=>{a=(a+0x6D2B79F5)|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+  const FIELD_NAMES=['Spiral','Drift','Shard','Bloom','Tangle','Rift','Echo','Static','Pulse','Haze'];
+  // A random field: 4 to 7 rows holding 5 to 10 effects, some rows combining two or three.
+  function randomField(R){
+    R=R||Math.random;const pool=ALL_FX.concat('filter').sort(()=>R()-0.5),n=5+Math.floor(R()*6),ks=pool.slice(0,n);
+    const nr=Math.min(MAXROWS,n,MINROWS+Math.floor(R()*(MAXROWS-MINROWS+1))),rows=ks.slice(0,nr).map(k=>({fx:[k],h:0}));
     for(const k of ks.slice(nr)){const cands=rows.filter(r=>r.fx.length<3);const r=cands[Math.floor(R()*cands.length)];r.fx.push(k);}
-    const h=shareHeights(rows.map(r=>(r.fx.some(k=>k==='pitch'||k==='freeze'||k==='filter')?1.6:1)*(0.7+0.6*R())));rows.forEach((r,i)=>{r.h=h[i];});
-    const names=['Spiral','Drift','Shard','Bloom','Tangle','Rift','Echo','Static','Pulse','Haze'];
-    return {id:newFieldId(),name:names[Math.floor(R()*names.length)]+' '+(10+Math.floor(R()*90)),rows,cfg:defCfg()};
+    return evenOut({id:newFieldId(),name:FIELD_NAMES[Math.floor(R()*FIELD_NAMES.length)]+' '+(10+Math.floor(R()*90)),rows,cfg:defCfg()});
+  }
+  // A setting of one effect rolled: its options and the parameters its cells don't play.
+  function rollSettings(c,k,R){
+    const d=FX[k];
+    for(const n in d.opts||{}){const ch=d.opts[n].choices.filter(x=>x[0]!=='custom');c.o[n]=ch[Math.floor(R()*ch.length)][0];if(n==='scale')c.o.mask=EF.maskOf(EF.SCALES[c.o[n]]);}
+    for(const n in d.params)if(!c.cells.includes(n)){const P=d.params[n];c.x[n]=P.bip?R()*2-1:R();}
+  }
+  // The field's randomize slider: amt 0 is the field as it was (base), more changes more of it, and the far
+  // end is a new random field. Every result has MINROWS to MAXROWS rows. Effects swap for unused ones, move
+  // between rows, rows change places, split or join, and settings roll.
+  function rollField(base,amt,seed){
+    const R=rng(seed),f=amt>=0.97?randomField(R):cloneField(base);f.id=base.id;f.name=base.name;
+    if(amt>=0.97){f.rows.forEach(r=>r.fx.forEach(k=>{if(R()<0.4)rollSettings(f.cfg[k],k,R);}));return f;}
+    const unused=()=>['filter'].concat(ALL_FX).filter(k=>!fieldHas(f,k)),pick=a=>a[Math.floor(R()*a.length)];
+    const ops=Math.round(amt*9);
+    for(let o=0;o<ops;o++){
+      const u=R(),r=pick(f.rows),un=unused();
+      if(u<0.25&&un.length){const i=Math.floor(R()*r.fx.length),k=pick(un);r.fx[i]=k;f.cfg[k]=defCfg()[k];}
+      else if(u<0.4&&f.rows.length>1){const q=pick(f.rows.filter(x=>x!==r&&x.fx.length<MAXFX));if(q&&r.fx.length>1){const k=r.fx.splice(Math.floor(R()*r.fx.length),1)[0];q.fx.push(k);}}
+      else if(u<0.55){const a=Math.floor(R()*f.rows.length),b=Math.floor(R()*f.rows.length);[f.rows[a],f.rows[b]]=[f.rows[b],f.rows[a]];}
+      else if(u<0.65&&f.rows.length<MAXROWS&&r.fx.length>1){const k=r.fx.pop();f.rows.splice(f.rows.indexOf(r)+1,0,{fx:[k],h:0});}
+      else if(u<0.72&&f.rows.length>MINROWS){const i=f.rows.indexOf(r),q=f.rows[i+1]||f.rows[i-1];if(q.fx.length+r.fx.length<=MAXFX){q.fx.push(...r.fx);f.rows.splice(i,1);}}
+      else if(u<0.8&&f.rows.length<MAXROWS&&un.length){const k=pick(un);f.rows.splice(Math.floor(R()*(f.rows.length+1)),0,{fx:[k],h:0});f.cfg[k]=defCfg()[k];}
+      else{const k=pick(r.fx);rollSettings(f.cfg[k],k,R);}
+    }
+    // at least MINROWS rows: split rows that hold several effects, then add unused effects
+    while(f.rows.length<MINROWS){const r=f.rows.find(x=>x.fx.length>1),un=unused();
+      if(r)f.rows.splice(f.rows.indexOf(r)+1,0,{fx:[r.fx.pop()],h:0});else if(un.length){const k=pick(un);f.rows.push({fx:[k],h:0});f.cfg[k]=defCfg()[k];}else break;}
+    return evenOut(f);
   }
   // One channel: a single track (the engine could run more side by side, the app uses one).
   // seq: the sequence on the main page (there always is one: a blank one plays the loop's slices in order).
@@ -83,7 +109,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   const newTrack=(i,kind,field)=>{const t={i,kind,cols:16,len16:16,field,loopSet:{orderV:1,muteV:1,silPat:'mute'},seq:null,buf:null,pk:null};
     Object.defineProperty(t,'cfg',{get(){return t.field.cfg;}});return t;};
   let fields=[presetField('all')];
-  const tracks=[newTrack(0,'break',fields[0])];
+  const tracks=[newTrack(0,'break',cloneField(fields[0]))];
   let view=0;
   // touchWin: touches play through SKIP.
   // fit: how imported audio is fitted to the bar ('stretch' keeps its pitch, 'resample' does not)
@@ -111,7 +137,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   // recOn: Record is on, so touches are written into the sequence (recBn: the bar of the last write).
   let clips=[],clipNum=0,selClip=null,songPlaying=false,songList=[],recOn=false,recBn=-1,clipLoop=false,armed=null;
   let st={playing:false,t:0,len:1,tracks:[],hist:[],song:null,recv:0};
-  let fieldEdit=false;   // the field editor is open (see setFieldEdit)
+  let fieldEdit=false;   // the field page is open (page 'edit')
   let HW=30;   // the handle column's width (it closes up in the game; see computeLayout)
   let gameOn=false,game=null,gameZ=0;const HUDH=44,GBASE=62;   // a game round is on (see startGame); gameZ: how far the zoom into it has gone (0…1); HUDH: its status bar, GBASE: the station
   const ptrs=new Map();let orderCtr=0,tsCtr=0,idCtr=0;
@@ -337,14 +363,14 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   // b0, b1}. b0/b1: the band a row answers touches in; y/h: where it is drawn (a small gap to its neighbours).
   // Above the rows, under the ORDER and SKIP strips, the ruler shows the loop's waveform and its slices.
   // the field's height (the editor's bar takes the bottom while editing)
-  const fieldH=()=>cssH-(fieldEdit?48:gameZ*GBASE);
+  const fieldH=()=>cssH-gameZ*GBASE;
   const RY=STRIP+4+STRIP+6,RULER=24;
   function computeLayout(){
     laneRows=laneInfo().rows;
-    TOP=Math.round((RY+RULER+4)*(1-gameZ)+HUDH*gameZ);HW=Math.round(30*(1-gameZ));
+    TOP=fieldEdit?30:Math.round((RY+RULER+4)*(1-gameZ)+HUDH*gameZ);HW=Math.round(30*(1-gameZ));
     sizeLane();
-    const t=T(),f=t.field,area=Math.max(1,fieldH()-TOP);let u=0;
-    lay=f.rows.map((row,ri)=>{const b0=TOP+u/FG*area,b1=TOP+(u+row.h)/FG*area;u+=row.h;return {ri,ks:row.fx,hue:rowHue(row.fx),y:b0+1.5,h:Math.max(4,b1-b0-3),b0,b1};});
+    const t=T(),f=t.field,area=Math.max(1,fieldH()-TOP),n=f.rows.length;
+    lay=f.rows.map((row,ri)=>{const b0=TOP+ri/n*area,b1=TOP+(ri+1)/n*area;return {ri,ks:row.fx,hue:rowHue(row.fx),y:b0+1.5,h:Math.max(4,b1-b0-3),b0,b1};});
   }
   function sizeLane(){
     const w=laneCv.clientWidth||cssW,h=laneRows*LROW+6;laneDpr=Math.min(3,window.devicePixelRatio||1);
@@ -469,7 +495,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     const sp=special.get(e.pointerId);
     if(sp){special.delete(e.pointerId);
       if(sp.kind==='strip')endLive(T(),sp.which);
-      if(sp.kind==='handle'){if(sp.moved)dropRow(sp.ri,sp.y);else openRow(sp.ri);}
+      if(sp.kind==='handle'){if(sp.moved)dropRow(sp.ri,sp.y);else openFieldPage(sp.ri);}
       return;}
     const ptr=ptrs.get(e.pointerId);if(!ptr)return;ptrs.delete(e.pointerId);
     if(ptr.live&&ptr.fxs)pushFor(ptr);
@@ -711,7 +737,8 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     expBtn.innerHTML=ICON.share;clearBtn.innerHTML=ICON.trash;capBtn.innerHTML=ICON.capture;recBtn.innerHTML=ICON.rec;
     press(recBtn,recOn);recBtn.setAttribute('aria-label',recOn?'Record (on)':'Record');
     // row 3 and the lane are the field's; row 2's middle shows the loop, field and game there, LOAD on the Clips page
-    root.querySelectorAll('.fieldonly').forEach(n=>{n.hidden=page!=='field';});root.querySelectorAll('.clipsonly').forEach(n=>{n.hidden=!sessOn;});
+    root.querySelectorAll('.fieldonly').forEach(n=>{n.hidden=sessOn;});root.querySelectorAll('.seqonly').forEach(n=>{n.hidden=page!=='field';});
+    root.querySelectorAll('.editonly').forEach(n=>{n.hidden=page!=='edit';});clearBtn.hidden=page==='edit';press(fieldBtn,page==='edit');root.querySelectorAll('.clipsonly').forEach(n=>{n.hidden=!sessOn;});
     loopBtn.innerHTML=ICON.loop;press(loopBtn,clipLoop);
     loadBtn.disabled=!selClip;projBtn.innerHTML=ICON.folder;fieldBtn.innerHTML=ICON.field;gameBtn.innerHTML=ICON.game;press(gameBtn,gameOn);
     capBtn.disabled=gameOn;recBtn.disabled=gameOn;fieldBtn.disabled=gameOn;
@@ -967,9 +994,8 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   function showPage(p){
     if(p===page)return;const from=page;
     for(const id of [...special.keys(),...ptrs.keys(),...editing.keys()])end({pointerId:id,type:'pointercancel'});laneHolds.clear();laneHold=null;clipHolds.clear();
-    if(p!=='field'&&fieldEdit)setFieldEdit(false);
-    page=p;sessOn=p==='clips';
-    sessEl.hidden=!sessOn;wrap.hidden=p!=='field';laneCv.hidden=p!=='field';
+    page=p;sessOn=p==='clips';fieldEdit=p==='edit';editing.clear();
+    sessEl.hidden=!sessOn;wrap.hidden=sessOn;laneCv.hidden=p!=='field';
     if(from==='clips'){
       if(songPlaying){songPlaying=false;songList=[];tx({type:'songStop'});}
       const t=T(),f=info(t.i),id=t.seq?t.seq.id:null;
@@ -978,7 +1004,8 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     }
     if(sessOn){if(!selClip&&clips.length)selClip=clips[clips.length-1];renderSession();
       const r=takeList.querySelector('.take.sel');if(r)r.scrollIntoView({block:'nearest'});else sessScroll.scrollTop=sessScroll.scrollHeight;}
-    if(p==='field')requestAnimationFrame(resize);
+    if(fieldEdit){selRow=clamp(selRow,0,T().field.rows.length-1);paintFieldPage(true);}
+    if(!sessOn)requestAnimationFrame(()=>{resize();computeLayout();});
     paintIcons();
   }
   sessBtn.addEventListener('click',()=>{if(gameOn)return;showPage(sessOn?'field':'clips');});
@@ -1002,7 +1029,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     if(mediaEl){try{mediaEl.pause();}catch(_){}}
     ptrs.clear();special.clear();laneHolds.clear();laneHold=null;trashHeld=null;diceHeld=null;clipHolds.clear();
     const keep=tracks[0].kind==='break'&&tracks[0].buf&&tracks[0].buf.L.length===loopLen(48000)?tracks[0]:null;
-    if(gameOn)endGame(true,true);if(fieldEdit)setFieldEdit(false);
+    if(gameOn)endGame(true,true);
     tracks[0]=newTrack(0,'break',tracks[0].field);if(keep){tracks[0].buf=keep.buf;tracks[0].pk=keep.pk;}
     tracks[0].seq=blankClip(tracks[0]);
     view=0;clips=[];clipNum=0;selClip=null;songPlaying=false;songList=[];recOn=false;recBn=-1;
@@ -1014,7 +1041,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     bpmEl.querySelector('b').textContent='124';swingEl.querySelector('b').textContent='50';
     files.clear();soundSel.querySelectorAll('option[value^="f:"]').forEach(o=>o.remove());sentLoops.clear();
     soundSel.value='break';
-    if(page!=='field'){page='field';sessOn=false;sessEl.hidden=true;wrap.hidden=false;laneCv.hidden=false;clipHolds.clear();}
+    if(page!=='field'){page='field';sessOn=false;fieldEdit=false;sessEl.hidden=true;wrap.hidden=false;laneCv.hidden=false;clipHolds.clear();}
     cur={id:null,name:'',folder:''};
     computeLayout();
     sheet.hidden=true;paintIcons();requestAnimationFrame(resize);
@@ -1022,112 +1049,157 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     savedSig=projSig();
   }
 
-  // ---------- fields: switching and editing ----------
-  // The Fields sheet lists the library (every project's fields). Loading one keeps the loop and clears the
-  // sequence (Undo brings it back). Edit opens the editor on the field itself: drag a row to move it, the
-  // line between two rows to share their height, × on an effect to take it out of its row, + to add one
-  // (up to MAXFX a row), tap a row for its settings. Changes to the field are kept in the library.
-  let fieldSendRaf=0;
+  // ---------- the field page ----------
+  // The Fields button opens the field's own page, apart from the sequencer (its lane and tools step aside).
+  // At the top: the field's name with Save, and a list to open another of your fields or start a new one
+  // (from a preset, or random). Under them: delete, the randomize slider (here it rolls the field: drag
+  // further for more change, to the far end for a new random field; it always gives 4 to 7 rows) and
+  // + Row. Then the picked row's panel: its effects (× takes one out, + adds one, up to MAXFX) and their
+  // settings. On the field itself: drag a row to move it, tap one to pick it.
+  // The field on the page is the one in use, so the sequence plays through each change. The library only
+  // changes on Save: under the name it was opened with, Save overwrites that field; under a new name it
+  // saves a new one. Unsaved changes stay with the field (and the project) and mark its name with a dot.
+  let fieldSendRaf=0,selRow=0,selFx=null,panelKey='',panelCols=[];
   const editing=new Map();
   let editHits=[];
-  function useField(t,f){if(!fields.includes(f))fields.push(f);t.field=f;sendField(t);computeLayout();}
-  // after a layout or settings change: the engine follows (once per frame)
-  function fieldEdited(t){computeLayout();if(fieldBar.fill)fieldBar.fill();if(!fieldSendRaf)fieldSendRaf=requestAnimationFrame(()=>{fieldSendRaf=0;sendField(t);});}
-  // a field from a clip or a project, as one of the library's (added, under a new id, if it differs)
+  const fname=$('fname'),fsave=$('fsave'),fopen=$('fopen'),fdel=$('fdel'),fdice=$('fdice'),fdiceVal=$('fdiceval'),fdie=$('fdie'),faddrow=$('faddrow'),fpanel=$('fpanel');
+  function useField(t,f){t.field=f;sendField(t);computeLayout();paintFieldPage(true);}
+  // after a layout or settings change: the engine follows (once per frame); fromPanel: the panel made it
+  function fieldEdited(t,fromPanel){
+    computeLayout();paintFieldPage(!fromPanel);
+    if(!fieldSendRaf)fieldSendRaf=requestAnimationFrame(()=>{fieldSendRaf=0;sendField(t);});
+  }
+  const libOf=f=>fields.find(x=>x.id===f.id);
+  const fieldDirty=f=>{const L=libOf(f);return !L||L.name!==f.name||!sameField(L,f);};
+  const uniqueName=b=>{if(!fields.some(f=>f.name===b))return b;for(let i=2;;i++)if(!fields.some(f=>f.name===b+' '+i))return b+' '+i;};
+  // v22 projects kept a list of fields: each joins the library (under a new id, if one by its id differs)
   function adoptField(f,from){
     const same=fields.find(x=>x.id===f.id);
     if(same&&sameField(same,f))return same;
     const nf=cloneField(f);if(same){nf.id=newFieldId();nf.name=f.name+' · '+from;}
     fields.push(nf);return nf;
   }
-  const fieldFromClip=k=>adoptField(k.field,'clip '+k.num);
+  // a clip's field goes on as it was captured (it joins the library only if saved)
+  const fieldFromClip=k=>cloneField(k.field);
   function loadField(f){
-    const t=T();if(f===t.field)return;checkpoint();
-    useField(t,f);if(!seqEmpty(t))loadSeq(t,blankClip(t,t.seq),true);
+    const t=T();checkpoint();
+    useField(t,cloneField(f));if(!seqEmpty(t))loadSeq(t,blankClip(t,t.seq),true);
     paintIcons();
   }
-  // a small picture of a field: its rows as coloured bands
-  function fieldThumb(f,w,h){
-    const cv=el('canvas'),d=Math.min(3,window.devicePixelRatio||1);cv.width=w*d;cv.height=h*d;cv.style.width=w+'px';cv.style.height=h+'px';
-    const c=cv.getContext('2d');c.scale(d,d);c.fillStyle='#15171c';c.fillRect(0,0,w,h);let u=0;
-    for(const r of f.rows){c.fillStyle=`hsl(${rowHue(r.fx)} 50% ${r.fx.length>1?42:48}%)`;c.fillRect(1,u/FG*h+0.5,w-2,Math.max(1,r.h/FG*h-1));u+=r.h;}
-    return cv;
+  fieldBtn.addEventListener('click',()=>{if(gameOn)return;showPage(page==='edit'?'field':'edit');});
+  function openFieldPage(ri){selRow=ri||0;selFx=null;if(page!=='edit')showPage('edit');else paintFieldPage(true);}
+  // the page's controls follow the field; rebuild: the row panel too (not while one of its sliders is in use)
+  function paintFieldPage(rebuild){
+    if(page!=='edit')return;const t=T(),f=t.field,L=libOf(f);
+    if(root.activeElement!==fname)fname.value=f.name;
+    const nm=fname.value.trim(),taken=fields.find(x=>x.name===nm&&x!==L),same=!!L&&L.name===nm;
+    fsave.textContent=!nm?'NAME IT':taken?'NAME TAKEN':same?'SAVE':'SAVE AS NEW';
+    fsave.disabled=!nm||!!taken||(same&&!fieldDirty(f));fsave.classList.toggle('due',!fsave.disabled);
+    fopen.textContent='';fopen.appendChild(el('option',{value:'',textContent:'Open…'}));
+    const og=el('optgroup',{label:'Your fields'});for(const x of fields)og.appendChild(el('option',{value:'id:'+x.id,textContent:(x.id===f.id?'✓ ':'')+x.name+' · '+x.rows.length+' rows'}));fopen.appendChild(og);
+    const nw=el('optgroup',{label:'New'});nw.appendChild(el('option',{value:'rand',textContent:'Random field'}));
+    for(const k in PRESETS)nw.appendChild(el('option',{value:'p:'+k,textContent:PRESETS[k].name}));fopen.appendChild(nw);fopen.value='';
+    fdel.disabled=!L||fields.length<2;
+    faddrow.textContent='';faddrow.appendChild(el('option',{value:'',textContent:'+ ROW ('+f.rows.length+'/'+MAXROWS+')'}));
+    for(const k of unusedFx(f))faddrow.appendChild(el('option',{value:k,textContent:fxName(k)}));
+    faddrow.disabled=faddrow.options.length<2||f.rows.length>=MAXROWS;faddrow.value='';
+    selRow=clamp(selRow,0,f.rows.length-1);
+    const r=f.rows[selRow];if(!r.fx.includes(selFx))selFx=r.fx[0];
+    const key=selRow+'|'+r.fx.join(',')+'|'+selFx+'|'+unusedFx(f).join(',');
+    if(rebuild||key!==panelKey){panelKey=key;buildPanel(t);}else panelCols.forEach(c=>c.paint());
   }
-  const rowLabel=ks=>ks.map(k=>fxName(k).toLowerCase()).join(' + ');
-  fieldBtn.addEventListener('click',()=>openFields());
-  function openFields(){
-    openSheet('Fields',cardEl=>{
-      const t=T(),list=el('div',{className:'fieldlist'});
-      const paint=()=>{
-        list.textContent='';
-        for(const f of fields){
-          const row=el('div',{className:'frow'+(f===t.field?' cur':'')}),b=el('button',{type:'button',className:'pb'});
-          const n=f.rows.length;b.append(fieldThumb(f,30,36),el('span',{},[el('b',{textContent:f.name}),el('small',{textContent:(f===t.field?'on the field · ':'')+n+(n>1?' rows':' row')+' · '+f.rows.map(r=>rowLabel(r.fx)).join(', ')})]));
-          b.addEventListener('click',()=>{loadField(f);closeSheet();});
-          const del=el('button',{type:'button',className:'ic',title:'Delete this field (projects and clips keep their own copy)',disabled:fields.length<2||f===t.field});del.innerHTML=ICON.trash;
-          del.addEventListener('click',()=>{checkpoint();fields=fields.filter(x=>x!==f);paint();});
-          row.append(b,del);list.appendChild(row);
-        }
-      };
-      paint();
-      const name=el('input',{type:'text',value:t.field.name,maxLength:30,spellcheck:false});name.style.cssText='flex:1;min-width:0;height:32px;font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:0 8px';
-      name.addEventListener('change',()=>{const v=name.value.trim();if(v){t.field.name=v;paint();}});
-      const edit=el('button',{type:'button',textContent:'Edit layout'});edit.addEventListener('click',()=>{closeSheet();setFieldEdit(true);});
-      const dup=el('button',{type:'button',textContent:'Duplicate'});dup.addEventListener('click',()=>{checkpoint();const f=cloneField(t.field);f.id=newFieldId();f.name=t.field.name+' 2';fields.push(f);t.field=f;sendField(t);computeLayout();paint();name.value=f.name;});
-      cardEl.appendChild(el('div',{},[el('h3',{},['This field']),el('div',{className:'btnrow'},[name,edit,dup])]));
-      cardEl.appendChild(el('div',{},[el('h3',{},['Your fields']),list,el('p',{},['Kept on this device for every project. Loading a field keeps the loop and clears the sequence (Undo brings it back). Projects keep the field they use, and clips the field they were captured on; Load puts it back.'])]));
-      const rnd=el('button',{type:'button',textContent:'Random field'});rnd.addEventListener('click',()=>{const f=randomField();fields.push(f);loadField(f);closeSheet();});
-      const pre=el('select');pre.appendChild(el('option',{value:'',textContent:'New from a preset…'}));for(const k in PRESETS)pre.appendChild(el('option',{value:k,textContent:PRESETS[k].name}));
-      pre.addEventListener('change',()=>{if(!pre.value)return;const f=presetField(pre.value);fields.push(f);loadField(f);closeSheet();});
-      cardEl.appendChild(el('div',{},[el('h3',{},['New field']),el('div',{className:'btnrow'},[rnd,pre]),el('p',{},['Top to bottom is the signal order (Delay and Reverb, which ring on after the step, always come last). A row can hold up to '+MAXFX+' effects: a touch in it plays all of them, each by the touch’s height in the row.'])]));
-    });
+  fname.addEventListener('input',()=>paintFieldPage());
+  fname.addEventListener('change',()=>{const v=fname.value.trim(),t=T();if(v&&v!==t.field.name){checkpoint();t.field.name=v;}paintFieldPage();});
+  fname.addEventListener('keydown',e=>{if(e.key==='Enter')fname.blur();});
+  fsave.addEventListener('click',()=>{
+    const t=T(),f=t.field,nm=fname.value.trim();if(!nm||fsave.disabled)return;const L=libOf(f);
+    checkpoint();f.name=nm;
+    if(L&&L.name===nm)fields[fields.indexOf(L)]=cloneField(f);   // overwrite the one it was opened from
+    else{f.id=newFieldId();fields.push(cloneField(f));}            // a new name: a new field
+    fname.blur();paintFieldPage();
+  });
+  fopen.addEventListener('change',()=>{
+    const v=fopen.value;if(!v)return;
+    if(v==='rand'){const f=randomField();f.name=uniqueName(f.name);loadField(f);}
+    else if(v.startsWith('p:')){const f=presetField(v.slice(2));f.name=uniqueName(f.name);loadField(f);}
+    else{const f=fields.find(x=>'id:'+x.id===v);if(f)loadField(f);}
+    selRow=0;paintFieldPage(true);
+  });
+  // deleting takes it out of the library; the field stays on the page, unsaved (projects and clips keep their own copy)
+  fdel.addEventListener('click',()=>{const t=T(),L=libOf(t.field);if(!L||fields.length<2)return;checkpoint();fields=fields.filter(x=>x!==L);paintFieldPage();});
+  faddrow.addEventListener('change',()=>{if(faddrow.value)addRow(T(),faddrow.value);});
+  // the randomize slider (like the sequencer's: drag the die, or tap the slider where you want it)
+  let fdHeld=null,fdRaf=0;
+  const fdAmt=e=>{const b=fdice.getBoundingClientRect();return clamp((e.clientX-b.left-DIE/2)/Math.max(1,b.width-DIE-4),0,1);};
+  function fdPos(a,roll){
+    const w=fdice.clientWidth-DIE-4;fdie.style.transition=roll?'transform .5s cubic-bezier(.25,.8,.3,1)':'none';
+    fdie.style.transform='translateX('+(a*w)+'px) rotate('+(a*w*1.9)+'deg)';
+    fdiceVal.textContent=fdHeld&&a>0.01?Math.round(a*100)+'%':'';fdiceVal.classList.toggle('left',a>0.5);fdice.setAttribute('aria-valuenow',String(Math.round(a*100)));
   }
+  function fdApply(h){const t=T();if(!h.cp){h.cp=true;checkpoint();}h.used=true;t.field=rollField(h.base,h.a,h.seed);fieldEdited(t);}
+  fdice.addEventListener('pointerdown',e=>{
+    e.preventDefault();try{fdice.setPointerCapture(e.pointerId);}catch(_){}
+    fdHeld={id:e.pointerId,x0:e.clientX,a:fdAmt(e),moved:false,used:false,cp:false,base:cloneField(T().field),seed:(Math.random()*4294967296)>>>0};
+    fdice.classList.add('held');fdPos(fdHeld.a,false);
+  });
+  fdice.addEventListener('pointermove',e=>{
+    const h=fdHeld;if(!h||h.id!==e.pointerId)return;h.a=fdAmt(e);if(Math.abs(e.clientX-h.x0)>4)h.moved=true;fdPos(h.a,false);
+    if(h.moved&&!fdRaf)fdRaf=requestAnimationFrame(()=>{fdRaf=0;if(fdHeld===h)fdApply(h);});
+  });
+  const fdUp=e=>{const h=fdHeld;if(!h||h.id!==e.pointerId)return;fdHeld=null;fdice.classList.remove('held');
+    if(e.type==='pointerup'&&!h.used&&h.a>0.01)fdApply(h);fdPos(0,true);};
+  ['pointerup','pointercancel','lostpointercapture'].forEach(ev=>fdice.addEventListener(ev,fdUp));
+  fdice.addEventListener('keydown',e=>{if(e.key!=='Enter'&&e.key!==' ')return;e.preventDefault();fdApply({a:0.5,cp:false,base:cloneField(T().field),seed:(Math.random()*4294967296)>>>0});});
   const unusedFx=f=>['filter'].concat(ALL_FX).filter(k=>!fieldHas(f,k));
-  // the editor's bar, over the bottom of the field
-  function setFieldEdit(on){
-    fieldEdit=on;fieldBar.hidden=!on;for(const id of [...editing.keys()])editing.delete(id);fieldBar.fill=null;
-    if(on){
-      for(const id of [...special.keys(),...ptrs.keys()])end({pointerId:id,type:'pointercancel'});
-      fieldBar.textContent='';const t=T();
-      const add=el('select',{title:'Add a row'}),hint=el('span',{className:'hint'});
-      const fill=()=>{add.textContent='';add.appendChild(el('option',{value:'',textContent:'+ Row…'}));
-        for(const k of unusedFx(t.field))add.appendChild(el('option',{value:k,textContent:fxName(k)}));
-        add.disabled=add.options.length<2||t.field.rows.length>=MAXROWS;hint.textContent=t.field.rows.length+' / '+MAXROWS+' rows';};
-      add.addEventListener('change',()=>{if(add.value)addRow(t,add.value);});fill();fieldBar.fill=fill;
-      const even=el('button',{type:'button',textContent:'Even out',title:'Give every row the same height'});
-      even.addEventListener('click',()=>{checkpoint();const h=shareHeights(t.field.rows.map(()=>1));t.field.rows.forEach((r,i)=>{r.h=h[i];});fieldEdited(t);});
-      const done=el('button',{type:'button',className:'play',textContent:'Done'});done.addEventListener('click',()=>setFieldEdit(false));
-      fieldBar.append(add,even,hint,done);
-    }
-    computeLayout();paintIcons();
-  }
-  // a new row goes at the bottom, taking half of the tallest row's height
-  function addRow(t,k){
-    const f=t.field;if(f.rows.length>=MAXROWS)return;checkpoint();
-    const big=f.rows.reduce((a,b)=>b.h>a.h?b:a),h=Math.max(MINH,Math.floor(big.h/2));if(big.h-h<MINH)return;big.h-=h;
-    f.rows.push({fx:[k],h});fieldEdited(t);
-  }
-  function addToRow(t,ri){
-    const left=unusedFx(t.field);if(!left.length)return;
-    openSheet('Add to this row',cardEl=>{
-      const box=el('div',{className:'btnrow'});
-      for(const k of left){const b=el('button',{type:'button',textContent:fxName(k)});b.style.borderColor=`hsl(${FX[k].hue} 60% 50%)`;
-        b.addEventListener('click',()=>{const r=t.field.rows[ri];if(r&&r.fx.length<MAXFX&&!fieldHas(t.field,k)){checkpoint();r.fx.push(k);fieldEdited(t);}closeSheet();});box.appendChild(b);}
-      cardEl.appendChild(el('div',{},[box,el('p',{},['A touch in the row plays all of its effects, in the order shown.'])]));
-    });
-  }
+  function addRow(t,k){const f=t.field;if(f.rows.length>=MAXROWS||fieldHas(f,k))return;checkpoint();f.rows.push({fx:[k],h:0});evenOut(f);selRow=f.rows.length-1;selFx=k;fieldEdited(t);}
+  function addToRow(t,ri,k){const r=t.field.rows[ri];if(!r||r.fx.length>=MAXFX||fieldHas(t.field,k))return;checkpoint();r.fx.push(k);selFx=k;fieldEdited(t);}
   function removeFx(t,ri,k){
     const f=t.field,r=f.rows[ri];if(!r)return;
     if(r.fx.length>1){checkpoint();r.fx=r.fx.filter(x=>x!==k);}
-    else{if(f.rows.length<2)return;checkpoint();const nb=f.rows[ri+1]||f.rows[ri-1];nb.h+=r.h;f.rows.splice(ri,1);}
+    else{if(f.rows.length<2)return;checkpoint();f.rows.splice(ri,1);evenOut(f);}
     fieldEdited(t);
   }
+  // the picked row's panel: its effects (a tab each, × to take one out), + for the effects not on the
+  // field, then the settings of the effect whose tab is picked
+  function buildPanel(t){
+    fpanel.textContent='';panelCols=[];
+    const f=t.field,ri=selRow,r=f.rows[ri],k=selFx;if(!r)return;
+    const head=el('div',{className:'phead'});
+    const dot=el('i');dot.style.cssText=`width:10px;height:10px;border-radius:50%;flex:none;background:hsl(${rowHue(r.fx)} 70% 58%)`;
+    head.append(dot,el('h3',{},['Row '+(ri+1)+' of '+f.rows.length]));fpanel.appendChild(head);
+    const tabs=el('div',{className:'btnrow'});
+    for(const q of r.fx){
+      const b=el('button',{type:'button',className:'chip'+(q===k?' on':'')});b.style.borderColor=`hsl(${FX[q].hue} 60% ${q===k?60:35}%)`;
+      b.appendChild(document.createTextNode(fxName(q)));b.addEventListener('click',()=>{selFx=q;paintFieldPage(true);});
+      if(f.rows.length>1||r.fx.length>1){const x=el('span',{className:'cx',title:'Take '+fxName(q)+' out',textContent:'×'});
+        x.addEventListener('click',ev=>{ev.stopPropagation();removeFx(t,ri,q);});b.appendChild(x);}
+      tabs.appendChild(b);
+    }
+    fpanel.appendChild(tabs);
+    const left=unusedFx(f);
+    if(r.fx.length<MAXFX&&left.length){
+      const add=el('div',{className:'btnrow adds'});
+      for(const q of left){const b=el('button',{type:'button',textContent:'+ '+fxName(q)});b.style.borderColor=`hsl(${FX[q].hue} 50% 32%)`;b.addEventListener('click',()=>addToRow(t,ri,q));add.appendChild(b);}
+      fpanel.appendChild(el('div',{},[el('h3',{},['Add to this row']),add]));
+    }
+    const d=FX[k],c=t.cfg[k];
+    // every change reaches the engine straight away, so a playing sequence follows the new settings
+    let cp=false,raf=0;
+    const changed=()=>{if(!cp){cp=true;checkpoint();}panelCols.forEach(x=>x.paint());paintFieldPage();if(!raf)raf=requestAnimationFrame(()=>{raf=0;sendCfg(t);push(t);});};
+    const sets=el('div',{className:'psets'});
+    if(d.opts)for(const on in d.opts){
+      const od=d.opts[on];
+      if(on==='scale'){sets.appendChild(scaleEditor(c,k+'-scale',changed));continue;}
+      sets.appendChild(el('div',{},[el('h3',{},[d.name+' · '+od.name]),radios('f-'+k+'-'+on,od.choices,c.o[on],v=>{c.o[on]=v;changed();})]));
+    }
+    const names=Object.keys(d.params);
+    if(names.length){panelCols=names.map(n=>vcol(t,k,n,changed));sets.appendChild(el('div',{className:'vrow'},panelCols.map(x=>x.col)));}
+    else sets.appendChild(el('p',{},[d.name+' has no settings: a touch in its row turns it on.']));
+    fpanel.appendChild(sets);
+  }
+  // on the field: drag a row to move it, tap it to pick it
   function editRect(r){return {x:HW+2,w:cssW-HW-4,y:r.b0+1,h:r.b1-r.b0-2};}
   function editDown(id,x,y){
-    const t=T();
-    for(const q of editHits)if(x>=q.x-3&&x<q.x+q.w+3&&y>=q.y-3&&y<q.y+q.h+3){q.act();return;}
-    // the line between two rows
-    for(let ri=0;ri<lay.length-1;ri++)if(Math.abs(y-lay[ri].b1)<10){const f=t.field;editing.set(id,{mode:'edge',ri,y0:y,h0a:f.rows[ri].h,h0b:f.rows[ri+1].h,moved:false,cp:false});return;}
     const ri=rowAt(y);if(ri<0)return;
     editing.set(id,{mode:'move',ri,y0:y,moved:false,cp:false});
   }
@@ -1135,49 +1207,32 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     const e=editing.get(id),t=T();if(!e)return;
     if(Math.abs(y-e.y0)>6)e.moved=true;if(!e.moved)return;
     const f=t.field;
-    if(e.mode==='edge'){
-      const du=Math.round((y-e.y0)/Math.max(1,fieldH()-TOP)*FG),ha=clamp(e.h0a+du,MINH,e.h0a+e.h0b-MINH);
-      if(ha===f.rows[e.ri].h)return;if(!e.cp){e.cp=true;checkpoint();}
-      f.rows[e.ri].h=ha;f.rows[e.ri+1].h=e.h0a+e.h0b-ha;fieldEdited(t);return;
-    }
     // moving: the row changes places as the finger passes the middle of a neighbour
     const to=dropAt(y);if(to===e.ri||to===e.ri+1)return;
     if(!e.cp){e.cp=true;checkpoint();}
-    const r=f.rows.splice(e.ri,1)[0],ni=to>e.ri?to-1:to;f.rows.splice(ni,0,r);e.ri=ni;fieldEdited(t);
+    const r=f.rows.splice(e.ri,1)[0],ni=to>e.ri?to-1:to;f.rows.splice(ni,0,r);evenOut(f);
+    if(selRow===e.ri)selRow=ni;e.ri=ni;fieldEdited(t);
   }
-  function editUp(id,tap){const e=editing.get(id);editing.delete(id);if(e&&tap&&!e.moved&&e.mode==='move')openRow(e.ri);}
+  function editUp(id,tap){const e=editing.get(id);editing.delete(id);if(e&&!e.moved){selRow=e.ri;paintFieldPage();}}
   function drawEdit(fs){
     const t=T(),f=t.field;editHits=[];
-    g.fillStyle='#ece7dc';g.font=`600 ${fs}px ${FONT}`;g.textAlign='left';g.textBaseline='middle';g.fillText('EDITING · '+f.name.toUpperCase(),8,STRIP/2);
-    g.fillStyle='#8a8f99';g.font=`400 ${fs}px ${FONT}`;g.fillText('Top to bottom = signal order',8,STRIP+4+STRIP/2);
-    const left=unusedFx(f).length;
+    g.textAlign='left';g.textBaseline='middle';g.fillStyle='#8a8f99';g.font=`400 ${fs}px ${FONT}`;
+    g.fillText(fieldDirty(f)?'• Unsaved · top to bottom = signal order':'Top to bottom = signal order',8,14);
     lay.forEach((r,ri)=>{
-      const q=editRect(r),hue=r.hue,held=[...editing.values()].some(e=>e.ri===ri&&e.mode==='move');
-      g.fillStyle=`hsla(${hue} 40% 26% / .95)`;rr(q.x,q.y,q.w,q.h,6);g.fill();
-      g.strokeStyle=held?'#fff':`hsl(${hue} 60% 55%)`;g.lineWidth=held?2:1.2;rr(q.x,q.y,q.w,q.h,6);g.stroke();
-      // the handle column: the row's place in the signal order
-      g.fillStyle='#6c7380';g.font=`600 ${fs}px ${FONT}`;g.textAlign='center';g.textBaseline='middle';g.fillText(String(ri+1),HW/2-1,r.b0+Math.min(12,q.h/2+1));
-      // chips: each effect (× takes it out), then + while the row has room
-      const ch=Math.min(24,q.h-6),cy=q.h>40?q.y+5:q.y+(q.h-ch)/2;let cx=q.x+6;
-      g.font=`600 ${fs}px ${FONT}`;g.textBaseline='middle';
-      const lastOne=f.rows.length<2&&r.ks.length<2;
-      for(const k of r.ks){
-        const nm=fxName(k).toUpperCase(),w=g.measureText(nm).width+(lastOne?16:34);
-        g.fillStyle=`hsl(${FX[k].hue} 45% 38%)`;rr(cx,cy,w,ch,ch/2);g.fill();
-        g.fillStyle='#fff';g.textAlign='left';g.fillText(nm,cx+8,cy+ch/2+0.5);
-        if(!lastOne){const bx=cx+w-12,by=cy+ch/2;g.strokeStyle='rgba(255,255,255,.8)';g.lineWidth=1.5;g.beginPath();g.moveTo(bx-3.5,by-3.5);g.lineTo(bx+3.5,by+3.5);g.moveTo(bx+3.5,by-3.5);g.lineTo(bx-3.5,by+3.5);g.stroke();
-          editHits.push({x:cx+w-24,y:cy,w:24,h:ch,act:()=>removeFx(t,ri,k)});}
-        cx+=w+5;
-      }
-      if(r.ks.length<MAXFX&&left){g.strokeStyle='rgba(255,255,255,.55)';g.lineWidth=1.2;rr(cx,cy,ch+4,ch,ch/2);g.stroke();
-        const px=cx+(ch+4)/2,py=cy+ch/2;g.beginPath();g.moveTo(px-4,py);g.lineTo(px+4,py);g.moveTo(px,py-4);g.lineTo(px,py+4);g.stroke();
-        editHits.push({x:cx,y:cy,w:ch+4,h:ch,act:()=>addToRow(t,ri)});}
-      g.fillStyle='rgba(255,255,255,.55)';g.font=`400 ${fs-1}px ${FONT}`;g.textAlign='right';if(q.h>40)g.fillText(f.rows[ri].h+' / '+FG,q.x+q.w-8,q.y+q.h-10);
-      // the line to the next row: drag it to share their height
-      if(ri<lay.length-1){const ly=r.b1,gw=Math.min(36,q.w/4);g.fillStyle=`hsla(${hue} 80% 80% / .8)`;g.fillRect(HW+q.w/2-gw/2,ly-1.5,gw,3);}
+      const q=editRect(r),hue=r.hue,held=[...editing.values()].some(e=>e.ri===ri&&e.moved),sel=ri===selRow;
+      g.fillStyle=`hsla(${hue} 40% ${sel?30:22}% / .95)`;rr(q.x,q.y,q.w,q.h,6);g.fill();
+      g.strokeStyle=held||sel?'#fff':`hsl(${hue} 60% 50%)`;g.lineWidth=held?2.5:sel?2:1.2;rr(q.x,q.y,q.w,q.h,6);g.stroke();
+      // the handle column: the row's place in the signal order, and grip lines
+      g.fillStyle=sel?'#ece7dc':'#6c7380';g.font=`600 ${fs}px ${FONT}`;g.textAlign='center';g.textBaseline='middle';g.fillText(String(ri+1),HW/2-1,r.b0+q.h/2-8);
+      for(let i=0;i<3;i++)g.fillRect(HW/2-7,r.b0+q.h/2+2+i*4,12,1.5);
+      // the row's effects as chips
+      const ch=Math.min(24,q.h-6),cy=q.y+(q.h-ch)/2;let cx=q.x+8;
+      g.font=`600 ${fs}px ${FONT}`;g.textBaseline='middle';g.textAlign='left';
+      for(const k of r.ks){const nm=fxName(k).toUpperCase(),w=g.measureText(nm).width+16;
+        g.fillStyle=`hsl(${FX[k].hue} 45% ${sel&&k===selFx?46:36}%)`;rr(cx,cy,w,ch,ch/2);g.fill();
+        g.fillStyle='#fff';g.fillText(nm,cx+8,cy+ch/2+0.5);cx+=w+5;}
     });
   }
-
   // ---------- sheets ----------
   function openSheet(title,build){
     card.textContent='';card.className='card';
@@ -1261,32 +1316,6 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     paint();return box;
   }
   // a row's settings: its first effect's, with a tab for each of the others
-  function openRow(ri){const r=lay[ri];if(r)openSettings(r.ks[0],r.ks);}
-  function openSettings(k,ks){
-    const t=T(),d=FX[k],c=t.cfg[k];
-    const dot=el('i');dot.style.cssText=`width:12px;height:12px;border-radius:50%;background:hsl(${c.hue} 70% 58%)`;
-    let raf=0,cols=[];
-    // every change reaches the engine straight away, so a playing sequence follows the new settings
-    let cp=false;   // the first change is an undo step
-    const changed=()=>{if(!cp){cp=true;checkpoint();}cols.forEach(x=>x.paint());if(!raf)raf=requestAnimationFrame(()=>{raf=0;sendCfg(t);});};
-    sheetOnClose=()=>{sendCfg(t);push(t);};
-    openSheet([dot,d.name],cardEl=>{
-      if(ks&&ks.length>1){
-        const tabs=el('div',{className:'btnrow'});
-        for(const q of ks){const b=el('button',{type:'button',textContent:fxName(q)});b.style.borderColor=`hsl(${FX[q].hue} 60% ${q===k?60:35}%)`;if(q===k)b.classList.add('on');
-          b.addEventListener('click',()=>{if(q!==k)openSettings(q,ks);});tabs.appendChild(b);}
-        cardEl.appendChild(el('div',{},[tabs]));
-      }
-      if(d.opts)for(const on in d.opts){
-        const od=d.opts[on];
-        if(on==='scale'){cardEl.appendChild(scaleEditor(c,k+'-scale',changed));continue;}
-        cardEl.appendChild(el('div',{},[el('h3',{},[od.name]),radios(k+'-'+on,od.choices,c.o[on],v=>{c.o[on]=v;changed();})]));
-      }
-      const names=Object.keys(d.params);
-      if(names.length){cols=names.map(n=>vcol(t,k,n,changed));cardEl.appendChild(el('div',{className:'vrow'},cols.map(x=>x.col)));}
-      else cardEl.appendChild(el('p',{},[d.name+' has no settings: a touch in its row turns it on.']));
-    });
-  }
   prefsBtn.addEventListener('click',()=>openSheet('Preferences',cardEl=>{
     const sendPref=()=>tx(prefMsg());
     // a confirm box under a control, for changes that delete sequences
@@ -1473,7 +1502,10 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
       files:[...files.values()].map(f=>({id:f.id,name:f.name,L:b64(f.L),R:b64(f.R)}))};
   }
   // settings saved before an effect changed get that effect's defaults (and effects added since get theirs)
-  function fixCfg(q){const c=defCfg();for(const k in q||{}){const x=q[k];if(FX[k]&&x&&x.x&&Object.keys(FX[k].params).every(n=>n in x.x))c[k]=Object.assign({},x,{hue:FX[k].hue});}return c;}
+  function fixCfg(q){const c=defCfg();for(const k in q||{}){const x=q[k];if(FX[k]&&x&&x.x&&Object.keys(FX[k].params).every(n=>n in x.x)){
+    c[k]=Object.assign({},x,{hue:FX[k].hue});
+    // a parameter that was centred and isn't any more (Freeze's pitch, v27) keeps to 0…1
+    for(const n in FX[k].params)if(!FX[k].params[n].bip){c[k].lo=Object.assign({},c[k].lo);c[k].x=Object.assign({},c[k].x);if(c[k].lo[n]<0)c[k].lo[n]=0;if(c[k].x[n]<0)c[k].x[n]=0;}}}return c;}
   // A field as saved. Before v23 fields were cells that could overlap partly: each group of overlapping
   // cells becomes one row holding all of their effects ('center', the loop row, is the filter).
   function fixField(f){
@@ -1484,25 +1516,25 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
       rows=[];let end=-1;
       for(const c of cs){const r=rows[rows.length-1];if(r&&c.y<end){r.fx.push(c.k);end=Math.max(end,c.y+c.h);r.h=end-r.y;}else{rows.push({fx:[c.k],y:c.y,h:c.h});end=c.y+c.h;}}
     }
-    // each effect once, at most MAXFX a row (the rest get rows of their own), at most MAXROWS rows
+    // each effect once, at most MAXFX a row (the rest get rows of their own), at most MAXROWS rows (before
+    // v27 a field could have ten: the effects of rows past the seventh join the rows above that have room)
     const seen=new Set(),out=[];
-    for(const r of rows){const ks=r.fx.filter(k=>!seen.has(k)&&seen.add(k));for(let i=0;i<ks.length;i+=MAXFX)out.push({fx:ks.slice(i,i+MAXFX),h:r.h});}
+    for(const r of rows){const ks=r.fx.filter(k=>!seen.has(k)&&seen.add(k));for(let i=0;i<ks.length;i+=MAXFX)out.push({fx:ks.slice(i,i+MAXFX),h:0});}
     const keep=out.filter(r=>r.fx.length).slice(0,MAXROWS);
+    for(const k of out.slice(MAXROWS).flatMap(r=>r.fx)){const r=keep.slice().reverse().find(x=>x.fx.length<MAXFX);if(r)r.fx.push(k);}
     if(!keep.length)return Object.assign(presetField('all'),{id:f.id||newFieldId(),name:f.name||'Field',cfg:fixCfg(f.cfg)});
-    const h=shareHeights(keep.map(r=>r.h));keep.forEach((r,i)=>{r.h=h[i];});
-    return {id:f.id||newFieldId(),name:f.name||'Field',rows:keep,cfg:fixCfg(f.cfg)};
+    return evenOut({id:f.id||newFieldId(),name:f.name||'Field',rows:keep,cfg:fixCfg(f.cfg)});
   }
   // before v22 a project had one row order and the effects shown: that becomes its field
   function fieldFromRows(order,cfg,shown){
     const ks=(order||[]).map(r=>r==='center'?'filter':r).filter(k=>FX[k]&&(k==='filter'||!shown||shown.includes(k)));
     for(const k of fieldOrder(presetField('all')))if(!ks.includes(k)&&(k==='filter'||!shown||shown.includes(k)))ks.push(k);
-    const h=shareHeights(ks.map(k=>k==='filter'||k==='pitch'?2:1));
-    return {id:newFieldId(),name:'Field 1',rows:ks.slice(0,MAXROWS).map((k,i)=>({fx:[k],h:h[i]})),cfg:fixCfg(cfg)};
+    return fixField({id:newFieldId(),name:'Field 1',rows:ks.map(k=>({fx:[k],h:1})),cfg});
   }
   async function openProject(p,name){
     if(!p||p.app!=='slicefield'||!p.track)throw new Error('not a Slicefield project');
     initAudio();await ready;
-    if(gameOn)endGame(true,true);if(fieldEdit)setFieldEdit(false);
+    if(gameOn)endGame(true,true);
     if(st.playing||intent){intent=null;tx({type:'stop'});}
     songPlaying=false;songList=[];recOn=false;recBn=-1;
     // imported audio first, so the loop and clips can find it
@@ -1516,9 +1548,11 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     const t=T(),q=p.track;
     // the project's field joins the library (v22 projects kept a list of fields: all of them join it)
     await fieldsReady;const from=name||'project';
-    if(p.field&&typeof p.field==='object')t.field=adoptField(fixField(p.field),from);
-    else if(p.fields&&p.fields.length){const fs=p.fields.map(f=>adoptField(fixField(f),from));t.field=fs[p.fields.findIndex(f=>f.id===p.field)]||fs[0];}
-    else if(q.cfg||q.rows)t.field=adoptField(fieldFromRows(q.rows,q.cfg,p.prefs&&p.prefs.shown),from);
+    // the project's field goes on as it was saved (v27: it joins the library only when saved on the field
+    // page; v22 projects kept a list of fields, and all of those join it)
+    if(p.field&&typeof p.field==='object')t.field=fixField(p.field);
+    else if(p.fields&&p.fields.length){const fs=p.fields.map(f=>adoptField(fixField(f),from));t.field=cloneField(fs[p.fields.findIndex(f=>f.id===p.field)]||fs[0]);}
+    else if(q.cfg||q.rows)t.field=fieldFromRows(q.rows,q.cfg,p.prefs&&p.prefs.shown);
     t.kind=q.kind&&(!q.kind.startsWith('f:')||files.has(q.kind.slice(2)))?q.kind:'break';
     t.cols=q.cols===8?8:16;t.colsQ=0;t.len16=clamp(q.len16||16,1,16);
     t.loopSet=Object.assign({orderV:1,muteV:1,silPat:'mute'},q.loopSet||{});
@@ -1619,9 +1653,9 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     try{
       const L=await library(),v=L&&await L.fieldLib();
       if(v&&Array.isArray(v.list)&&v.list.length){
-        const lib=v.list.map(fixField),t=T(),pristine=t.field===fields[0]&&fields.length===1&&sameField(t.field,Object.assign(presetField('all'),{id:t.field.id}))&&seqEmpty(t);
-        if(pristine){fields=lib;useField(t,lib.find(f=>f.id===v.last)||lib[0]);}
-        else{const cur=t.field;fields=lib;t.field=adoptField(cur,'this session');sendField(t);computeLayout();}
+        const lib=v.list.map(fixField),t=T(),pristine=t.field.id===fields[0].id&&fields.length===1&&sameField(t.field,fields[0])&&seqEmpty(t);
+        if(pristine){fields=lib;useField(t,cloneField(lib.find(f=>f.id===v.last)||lib[0]));}
+        else{fields=lib;paintFieldPage(true);}   // the field in use stays as it is (unsaved, if it isn't in the library)
       }
     }catch(_){}
     fieldsSig=JSON.stringify(fieldLibState());
@@ -1817,13 +1851,13 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   // recording, each bar that writes steps is one undo step. Live touches are not undoable.
   const undoS=[],redoS=[];
   function snapState(){const t=T();return {seq:t.seq?cloneClip(t.seq):null,loopSet:Object.assign({},t.loopSet),clips:clips.slice(),sel:selClip,clipNum,kind:t.kind,
-    fields:fields.map(cloneField),field:t.field.id};}
+    fields:fields.map(cloneField),field:cloneField(t.field)};}
   function checkpoint(){undoS.push(snapState());if(undoS.length>100)undoS.shift();redoS.length=0;paintUndo();}
   function restoreState(sn){
     const t=T(),f=info(t.i);
     clips=sn.clips;selClip=sn.sel&&clips.includes(sn.sel)?sn.sel:null;clipNum=sn.clipNum;
     t.loopSet=sn.loopSet;t.seq=sn.seq||blankClip(t);liveV.order=liveV.mute=null;
-    if(sn.fields){fields=sn.fields;t.field=fields.find(x=>x.id===sn.field)||fields[0];sendField(t);}
+    if(sn.fields){fields=sn.fields;t.field=typeof sn.field==='object'?sn.field:cloneField(fields.find(x=>x.id===sn.field)||fields[0]);sendField(t);paintFieldPage(true);}
     if(sn.kind&&sn.kind!==t.kind)setLoop(t,sn.kind);tx(prefMsg());
     if(!songPlaying){
       // the same sequence is edited in place at once; a different one takes over at the next bar
@@ -2092,11 +2126,13 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   // bottom (gameZ goes 0 → 1; leaving plays it backwards).
   // Touching anywhere plays the field as always and aims: every 16th step each finger's barrel fires a bolt
   // along the line through the finger. Spaceships and creatures, drawn as glowing line work, arrive in
-  // waves spread across the width, anywhere in the top two thirds, and come down at an even speed; each
-  // needs one to six hits and has far more time than that takes. In each four bars the count follows the
-  // touches wanted: fewest in the first, then the third, the second, most in the fourth. Supply pods
-  // drift across now and then: hitting one stuns the turret for 3 beats, and so does a ship getting
-  // through (the barrels lock, flash and don't fire, and touches are silent).
+  // waves spread across the width, anywhere in the top two thirds, and wander: side to side, up and down,
+  // slowly working their way to the station; each needs one to six hits and has far more time than that
+  // takes. The first wave is already up during the count-in. In each four bars the count follows the
+  // touches wanted: fewest in the first, then the third, the second, most in the fourth. Trios (three
+  // linked ships flying in a line) ask for three fingers: shoot all three within a beat of each other, or
+  // the ones down come back. A ship getting through stuns the turret for 3 beats (the barrels lock, flash
+  // and don't fire, and touches are silent).
   // The sound side: recording is off and the plain loop plays through empty steps; the sequence is set
   // aside. Replace/Combine, FX ONLY and stepped/smooth stay yours, unless Preferences says the game uses
   // its own (Replace, stepped, FX ONLY off). The engine hands over each bar's touched steps as a take, so
@@ -2127,11 +2163,11 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   // a blank sequence with ORDER and SKIP at their defaults: the plain loop, straight through
   function plainBlank(t){const c=blankClip(t);c.orderV=STRIP_DEF.order;c.muteV=STRIP_DEF.mute;c.silPat='mute';return c;}
   function startGame(){
-    if(sessOn||gameOn||zoom)return;if(fieldEdit)setFieldEdit(false);
+    if(sessOn||gameOn||zoom)return;if(page==='edit')showPage('field');
     for(const id of [...special.keys(),...ptrs.keys()])end({pointerId:id,type:'pointercancel'});
     if(songPlaying)songEnded();
     checkpoint();const t=T();
-    game={own:prefs.gameOwn,countBar:null,startBar:null,taken:0,seen:false,plan:null,next:0,enemies:[],bolts:[],parts:[],down:0,through:0,lastStep:-1,lastT:performance.now(),hitT:0,stunTo:-1,stunA:null,why:''};
+    trioMove.clear();game={own:prefs.gameOwn,countBar:null,startBar:null,taken:0,seen:false,plan:null,next:0,enemies:[],bolts:[],parts:[],down:0,through:0,trios:0,lastStep:-1,lastT:performance.now(),hitT:0,stunTo:-1,stunA:null,why:''};
     gameOn=true;recOn=false;recBn=-1;initAudio();paintIcons();
     zoomTo(1,()=>ready.then(()=>{
       const g0=game;if(!gameOn||!g0)return;
@@ -2163,7 +2199,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
         const go=el('button',{type:'button',className:'play',textContent:'Open Clips'});go.addEventListener('click',()=>{closeSheet();showPage('clips');});
         const stay=el('button',{type:'button',textContent:'Stay here'});stay.addEventListener('click',()=>closeSheet());
         cardEl.appendChild(el('div',{},[el('p',{},[n+' new clip'+(n===1?' is':'s are')+' on the Clips page'+(early?', one for each bar played.':', one for each bar of the round.')]),
-          el('p',{},[g0.down+' ship'+(g0.down===1?'':'s')+' shot down · '+g0.through+' got through']),el('div',{className:'btnrow'},[go,stay])]));
+          el('p',{},[g0.down+' ship'+(g0.down===1?'':'s')+' shot down · '+g0.trios+' triple'+(g0.trios===1?'':'s')+' · '+g0.through+' got through']),el('div',{className:'btnrow'},[go,stay])]));
       });
     });
   }
@@ -2177,8 +2213,8 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   }
 
   // The ships and creatures, drawn as glowing line work in their own colours (look B of the style page):
-  // they breathe on the beat. hp: hits to shoot one down; base: seconds to cross the whole field (they
-  // come down at an even speed). r: size. The supply pod is a friend: don't shoot it.
+  // they breathe on the beat. hp: hits to shoot one down; base: seconds to come down the whole field (as
+  // they wander, it takes longer). r: size.
   const SHIPS={
     dart:{hp:1,r:12,col:'#8dff6a',base:6,draw:drawDart},
     bug:{hp:1,r:13,col:'#ff7a59',base:7,draw:drawBug},
@@ -2186,7 +2222,6 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     manta:{hp:2,r:16,col:'#b48cff',base:8,draw:drawManta},
     cruiser:{hp:3,r:17,col:'#ff5fa2',base:10,draw:drawCruiser},
     mother:{hp:6,r:28,col:'#ffb84d',base:14,draw:drawMother},
-    pod:{hp:1,r:13,col:'#e9f4ff',friend:true,base:8,draw:drawPod},
   };
   // a path stroked as glowing line work: a wide faint pass under a thin bright one (and a faint fill)
   function ink(col,lw,fillA){
@@ -2250,18 +2285,11 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     g.moveTo(-r*0.15,r*0.85);g.quadraticCurveTo(-r*0.45,r*1.2,-r*0.55,r*1.35);g.moveTo(r*0.15,r*0.85);g.quadraticCurveTo(r*0.45,r*1.2,r*0.55,r*1.35);ink(col,1);
     g.beginPath();g.arc(-r*0.16,r*0.62,1.7,0,7);g.arc(r*0.16,r*0.62,1.7,0,7);g.fillStyle='#fff';g.fill();
   }
-  function drawPod(r,col,p,ph){
-    // a white capsule with a row of lit windows and a beacon: plainly not a ship
-    const w=r*1.5,h=r*0.85;g.beginPath();g.moveTo(-w+h,-h);g.lineTo(w-h,-h);g.arc(w-h,0,h,-Math.PI/2,Math.PI/2);g.lineTo(-w+h,h);g.arc(-w+h,0,h,Math.PI/2,Math.PI*1.5);g.closePath();ink(col,1.5,0.18);
-    for(let i=-2;i<=2;i++){g.beginPath();g.arc(i*r*0.42,0,r*0.13,0,7);g.fillStyle=i===Math.round(ph*2)%5-2?'#5fe0ff':'rgba(95,224,255,.45)';g.fill();}
-    g.beginPath();g.moveTo(0,-h);g.lineTo(0,-h-r*0.4);ink(col,1);
-    g.beginPath();g.arc(0,-h-r*0.5,2+2*p,0,7);g.fillStyle=Math.floor(ph*2)%2?'#5fe0ff':'#fff';g.fill();
-  }
   function drawShip(e,x,y,nb,now){
     const S=e.S,p=Math.pow(1-((nb*4)%1+1)%1,3),hit=now-e.flash<70;
     g.save();g.translate(x,y);g.scale(1+0.08*p,1+0.08*p);S.draw(S.r,hit?'#fff':S.col,p,nb*4);g.restore();
     // hits left (more than one): small dashes under it
-    if(S.hp>1&&!S.friend){g.fillStyle=S.col;for(let i=0;i<e.hp;i++)g.fillRect(x-e.hp*4+i*8+1,y+S.r*1.3+5,6,1.5);}
+    if(S.hp>1){g.fillStyle=S.col;for(let i=0;i<e.hp;i++)g.fillRect(x-e.hp*4+i*8+1,y+S.r*1.3+5,6,1.5);}
   }
   // where in the bar a wave arrives (in beats): weighted toward its second half, and most of all its end
   const STARTS=[0,0.5,1,1.5,2,2.5,3,3.5],SW=[1,0.4,0.8,0.5,2,1.5,3,4];
@@ -2269,51 +2297,57 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   // The plan: {t0 (bars from the start of playback), type, x (0…1 across the field)}. Ships come in waves
   // that arrive together, spread across the width. In each group of four bars the number follows the
   // touches wanted: the first bar fewest, then the third, then the second, and the fourth the most
-  // (1, 3, 2, 4 ships; one more in the second and fourth from halfway). A mothership leads bars 8 and 16;
-  // four supply pods somewhere in bars 2–15.
+  // (1, 3, 2, 4 ships; one more in the second and fourth from halfway). Wherever a bar has three or more,
+  // three of them come as a trio. A trio is up from the third beat of the count-in, so the first bar has
+  // something to shoot from its first step; a mothership leads bars 8 and 16.
   function makePlan(b0){
-    const R=Math.random,out=[],N=[1,3,2,4];
+    const R=Math.random,out=[],N=[1,3,2,4];let trio=0;
     const pick=lv=>['dart','bug','jelly','manta','cruiser'][wpick([1.2,1,lv>0.1?1:0.4,lv>0.25?0.9:0,lv>0.4?0.8:0],R)];
+    const trioOf=(t0,lv)=>{const type=['dart','bug',lv>0.3?'jelly':'dart'][Math.floor(R()*3)],id=++trio;for(let i=0;i<3;i++)out.push({t0,type,x:(i+0.5)/3,trio:id,slot:i});};
+    trioOf(b0-0.5,0);
     for(let b=0;b<GBARS;b++){
       const lv=b/GBARS,q=b%4;let n=N[q]+(lv>=0.5&&q%2===1?1:0);
       if(b===7||b===15){out.push({t0:b0+b,type:'mother',x:0.3+0.4*R()});n=Math.max(1,n-2);}
+      if(n>=3){trioOf(b0+b+(b?STARTS[wpick(SW,R)]*0.25:0.5),lv);n-=3;}
       while(n>0){
-        const k=Math.min(n,n>=3&&R()<0.6?3:n>=2&&R()<0.75?2:1);n-=k;
-        const t0=b0+b+STARTS[wpick(SW,R)]*0.25,sh=R();
+        const k=Math.min(n,n>=2&&R()<0.75?2:1);n-=k;
+        const t0=b0+b+(b?STARTS[wpick(SW,R)]*0.25:0),sh=R();
         for(let i=0;i<k;i++)out.push({t0,type:pick(lv),x:(i+0.2+0.6*((sh+i*0.37)%1))/k});
       }
     }
-    for(const b of [1,2,4,5,6,8,9,10,12,13,14].sort(()=>R()-0.5).slice(0,4))out.push({t0:b0+b+Math.floor(R()*4)*0.25,type:'pod'});
     return out.sort((a,b)=>a.t0-b.t0);
   }
   const gameBot=()=>cssH-GBASE;
   const stepsPerSec=()=>{const t=T();return barSteps(t)/(barS()/sr);};
+  // a trio's members share one way of moving (so the line holds), set by whichever spawns first
+  const trioMove=new Map();
   function spawn(s){
     const R=Math.random,S=SHIPS[s.type],top=TOP+20,span=gameBot()-top;
-    if(S.friend){
-      // a pod drifts across the field from side to side
-      const fromL=R()<0.5,y0=top+span*(0.1+0.6*R());
-      game.enemies.push({type:'pod',S,hp:1,born:performance.now(),dur:S.base*(0.9+0.3*R())*1000,x0:fromL?-20:cssW+20,x1:fromL?cssW+20:-20,y0,path:'drift',ph:R()*6.3,flash:0});return;
+    let mv=s.trio&&trioMove.get(s.trio);
+    if(!mv){
+      // anywhere in the top two thirds (a trio: the top half); the way down is long, so all the rows get hit
+      const y0=top+R()*span*(s.trio?0.45:0.62);
+      const dur=Math.max(1.35*(gameBot()-y0)/(span/(S.base*(0.85+0.3*R()))),3*S.hp/stepsPerSec()+2.5);
+      mv={y0,dur:dur*1000,born:performance.now(),A:W()*(s.trio?0.1:0.18+0.17*R()),f:0.5+0.8*R(),ph:R()*6.3,A2:W()*0.06,f2:2+R(),ph2:R()*6.3,
+        Ay:26+R()*30,fy:1.2+1.5*R(),phy:R()*6.3,loops:1+Math.floor(R()*2),r:18+R()*16};
+      if(s.trio)trioMove.set(s.trio,mv);
     }
-    // ships appear anywhere in the top two thirds and come down at an even speed, so all the rows get hit
-    const x0=HW+S.r*1.5+s.x*(W()-S.r*3),y0=top+R()*span*0.62;
-    const dur=Math.max((gameBot()-y0)/(span/(S.base*(0.85+0.3*R()))),3*S.hp/stepsPerSec()+2.5);
-    const path=s.type==='mother'?'loop':s.type==='dart'?(R()<0.6?'diag':'straight'):s.type==='cruiser'?'straight':s.type==='manta'?(R()<0.5?'loop':'wind'):'wind';
-    const dx=W()*0.15*(R()-0.5);
-    game.enemies.push({type:s.type,S,hp:S.hp,born:performance.now(),dur:dur*1000,x0,y0,x1:x0+dx,path,
-      vx:(R()<0.5?-1:1)*W()*(0.2+0.3*R()),A:12+R()*W()/10,f:0.6+R(),ph:R()*6.3,loops:1+Math.floor(R()*2),r:18+R()*16,flash:0});
+    const x0=HW+S.r*1.5+s.x*(W()-S.r*3);
+    game.enemies.push(Object.assign({},mv,{type:s.type,S,hp:S.hp,x0,path:s.type==='mother'?'loop':'roam',trio:s.trio||0,slot:s.slot||0,flash:0,ghost:null}));
   }
-  // a ship's place at time now (bouncing off the sides)
+  // A ship's place at time now. Roaming: two slow swings side to side (bouncing off the edges) and a bob up
+  // and down on top of the slow way down, strong enough to climb at times. A trio keeps its spacing (its
+  // swings are smaller, and the same for all three). A mothership circles on its way down.
   function shipAt(e,now){
     const u=clamp((now-e.born)/e.dur,0,1),m=e.S.r*1.4,lo=HW+m,hi=cssW-m,refl=x=>{const w=hi-lo;let v=((x-lo)%(2*w)+2*w)%(2*w);return lo+(v>w?2*w-v:v);};
-    if(e.path==='drift')return [e.x0+(e.x1-e.x0)*u,e.y0+14*Math.sin(2*Math.PI*u*1.5+e.ph),u];
-    let x,y=e.y0+(gameBot()-e.y0)*u;
-    if(e.path==='straight')x=refl(e.x0+(e.x1-e.x0)*u);
-    else if(e.path==='diag')x=refl(e.x0+e.vx*u);
-    else if(e.path==='wind')x=refl(e.x0+e.A*Math.sin(2*Math.PI*e.f*u+e.ph));
-    else{const th=2*Math.PI*e.loops*u+e.ph,k=Math.min(1,u*8,(1-u)*8);x=refl(e.x0+(e.x1-e.x0)*u+e.r*Math.cos(th)*k);y+=e.r*Math.sin(th)*k;}
-    return [x,y,u];
+    const k=Math.min(1,u*6,(1-u)*6),top=TOP+S0;let x,y=e.y0+(gameBot()-e.y0)*u;
+    if(e.path==='roam'){
+      x=e.x0+e.A*Math.sin(2*Math.PI*e.f*u+e.ph)+e.A2*Math.sin(2*Math.PI*e.f2*u+e.ph2);x=e.trio?clamp(x,lo,hi):refl(x);
+      y+=e.Ay*Math.sin(2*Math.PI*e.fy*u+e.phy)*k;
+    }else{const th=2*Math.PI*e.loops*u+e.ph;x=refl(e.x0+e.r*Math.cos(th)*k);y+=e.r*Math.sin(th)*k;}
+    return [x,Math.max(top,y),u];
   }
+  const S0=14;
   // the turret: five barrels; each held finger gets one (left to right), which aims through it. Stunned,
   // the barrels stay where they were.
   const GUNX=()=>cssW/2,GUNY=()=>cssH-GBASE+10;
@@ -2332,6 +2366,15 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     const now=performance.now();game.parts.push({ring:true,x,y,col,r:r||14,t:now,life:420});
     for(let i=0;i<n;i++){const a=Math.random()*6.3,v=50+Math.random()*190;game.parts.push({x,y,vx:Math.cos(a)*v,vy:Math.sin(a)*v,a:Math.random()*6.3,va:(Math.random()-0.5)*12,len:4+Math.random()*(r||10)*0.6,col,t:now,life:380+Math.random()*380});}
   }
+  // the whole trio down within a beat: it's gone for good, with a flash across the line
+  function trioCheck(g0,id,nb,now){
+    const ms=g0.enemies.filter(e=>e.trio===id&&!e.dead);if(ms.some(e=>e.ghost==null))return;
+    const pts=ms.map(e=>shipAt(e,now));
+    for(const e of ms){e.dead=now;g0.down++;}g0.trios++;
+    for(const [x,y] of pts)boom(x,y,'#ffffff',10,22);
+    g0.parts.push({line:pts,t:now,life:500,col:'#ffffff'});
+    const [x,y]=pts[1]||pts[0];g0.parts.push({text:'TRIPLE',x,y:y-26,t:now,life:900,col:'#ffffff'});
+  }
   // stunned for 3 beats: the barrels lock where they are, don't fire, and touches are silent
   function stun(nb,why){const g0=game;if(nb<g0.stunTo)return;g0.stunTo=nb+0.75;g0.stunA=barrels().map(b=>b.a);g0.why=why;g0.hitT=performance.now();push(T());}
   function gameTick(){
@@ -2345,19 +2388,22 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     const sp=Math.floor(nb*barSteps(T()));
     if(sp!==g0.lastStep){g0.lastStep=sp;if(nb>=g0.startBar&&!g0.stunA)for(const b of barrels())if(b.f){const L=24;
       g0.bolts.push({x:b.px+Math.cos(b.a)*L,y:b.py+Math.sin(b.a)*L,vx:Math.cos(b.a)*1500,vy:Math.sin(b.a)*1500,col:`hsl(${rowHueAt(b.f)} 90% 72%)`});}}
-    // bolts move in small steps and stop at the first ship (or pod) they touch
+    // bolts move in small steps and stop at the first ship they touch (a trio's fallen pass them by)
     for(const q of g0.bolts){const n=Math.ceil(Math.hypot(q.vx,q.vy)*dt/8);
       for(let s=0;s<n&&!q.gone;s++){q.x+=q.vx*dt/n;q.y+=q.vy*dt/n;
-        for(const e of g0.enemies){if(e.dead)continue;const [x,y]=shipAt(e,now),rr=e.S.r*(e.S.friend?1.4:1.05)+3;
-          if(Math.hypot(q.x-x,(q.y-y)*(e.S.friend?1.6:1))<rr){q.gone=true;e.hp--;e.flash=now;
-            if(e.S.friend){e.dead=now;boom(x,y,'#e9f4ff',16,20);stun(nb,'POD HIT');}
-            else if(e.hp<=0){e.dead=now;g0.down++;boom(x,y,e.S.col,e.type==='mother'?26:12,e.S.r*1.6);}
+        for(const e of g0.enemies){if(e.dead||e.ghost!=null)continue;const [x,y]=shipAt(e,now);
+          if(Math.hypot(q.x-x,q.y-y)<e.S.r*1.05+3){q.gone=true;e.hp--;e.flash=now;
+            if(e.hp<=0){
+              if(e.trio){e.ghost=nb;boom(x,y,e.S.col,8,e.S.r*1.2);trioCheck(g0,e.trio,nb,now);}
+              else{e.dead=now;g0.down++;boom(x,y,e.S.col,e.type==='mother'?26:12,e.S.r*1.6);}}
             break;}}}
       if(q.x<0||q.x>cssW||q.y<TOP||q.y>cssH)q.gone=true;}
     g0.bolts=g0.bolts.filter(q=>!q.gone);
-    for(const e of g0.enemies){if(e.dead)continue;const [x,,u]=shipAt(e,now);if(u>=1){e.dead=now;if(!e.S.friend){g0.through++;boom(x,gameBot(),'#ff5050',10,18);stun(nb,'BREACH');}}}
+    // a trio member down for a beat while the others fly: it comes back, whole
+    for(const e of g0.enemies)if(e.ghost!=null&&!e.dead&&nb-e.ghost>0.25){e.ghost=null;e.hp=e.S.hp;e.flash=now;e.back=now;}
+    for(const e of g0.enemies){if(e.dead)continue;const [x,,u]=shipAt(e,now);if(u>=1){e.dead=now;if(e.ghost==null){g0.through++;boom(x,gameBot(),'#ff5050',10,18);stun(nb,'BREACH');}}}
     g0.enemies=g0.enemies.filter(e=>!e.dead);
-    for(const p of g0.parts)if(!p.ring){p.x+=p.vx*dt;p.y+=p.vy*dt;p.a+=p.va*dt;}
+    for(const p of g0.parts)if(p.vx!=null){p.x+=p.vx*dt;p.y+=p.vy*dt;p.a+=p.va*dt;}
     g0.parts=g0.parts.filter(p=>now-p.t<p.life);
   }
   // drawn from draw() while gameZ > 0: the round (if one is on), then the station and the status bar,
@@ -2369,10 +2415,21 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     g.fillStyle=`rgba(8,9,12,${0.5*z})`;g.fillRect(0,TOP,cssW,cssH-TOP);
     g.lineCap='round';g.lineJoin='round';
     if(g0){
-      for(const e of g0.enemies){const [x,y]=shipAt(e,now);drawShip(e,x,y,nb,now);}
+      // a trio's link: a dashed line through its members (brighter while one of them is down)
+      const tr=new Map();for(const e of g0.enemies)if(e.trio){if(!tr.has(e.trio))tr.set(e.trio,[]);tr.get(e.trio).push(e);}
+      g.setLineDash([3,5]);
+      for(const ms of tr.values()){if(ms.length<2)continue;ms.sort((a,b)=>a.slot-b.slot);const hot=ms.some(e=>e.ghost!=null);
+        g.beginPath();ms.forEach((e,i)=>{const [x,y]=shipAt(e,now);g[i?'lineTo':'moveTo'](x,y);});g.strokeStyle=hot?'rgba(255,255,255,.75)':`rgba(255,255,255,${0.18+0.15*p})`;g.lineWidth=hot?1.6:1;g.stroke();}
+      g.setLineDash([]);
+      for(const e of g0.enemies){const [x,y]=shipAt(e,now);
+        if(e.ghost!=null){g.globalAlpha=0.28;drawShip(e,x,y,nb,now);g.globalAlpha=1;
+          const left=1-(nb-e.ghost)/0.25;g.beginPath();g.arc(x,y,e.S.r*1.5,-Math.PI/2,-Math.PI/2+left*2*Math.PI);g.strokeStyle='#fff';g.lineWidth=1.5;g.stroke();continue;}
+        drawShip(e,x,y,nb,now);}
       for(const q of g0.bolts){const a=Math.atan2(q.vy,q.vx);g.beginPath();g.moveTo(q.x-Math.cos(a)*14,q.y-Math.sin(a)*14);g.lineTo(q.x,q.y);ink(q.col,1.6);}
       for(const q of g0.parts){const k=(now-q.t)/q.life;g.globalAlpha=1-k;
         if(q.ring){g.beginPath();g.arc(q.x,q.y,q.r*(0.6+1.4*k),0,7);g.strokeStyle=q.col;g.lineWidth=1.5;g.stroke();}
+        else if(q.line){g.beginPath();q.line.forEach(([x,y],i)=>g[i?'lineTo':'moveTo'](x,y));g.strokeStyle=q.col;g.lineWidth=3*(1-k)+0.5;g.stroke();}
+        else if(q.text){g.textAlign='center';g.textBaseline='middle';g.font=`700 ${fs+6}px ${FONT}`;g.fillStyle=q.col;g.fillText(q.text,q.x,q.y-18*k);}
         else{g.beginPath();g.moveTo(q.x-Math.cos(q.a)*q.len/2,q.y-Math.sin(q.a)*q.len/2);g.lineTo(q.x+Math.cos(q.a)*q.len/2,q.y+Math.sin(q.a)*q.len/2);g.strokeStyle=q.col;g.lineWidth=1.5;g.stroke();}}
       g.globalAlpha=1;
     }
@@ -2401,16 +2458,14 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
     g.textAlign='left';g.textBaseline='middle';g.fillStyle='#ece7dc';g.font=`700 ${fs+3}px ${FONT}`;
     const sb=g0&&g0.startBar,pre=!g0||sb==null||nb<sb;
     g.fillText(pre?'GET READY':'BAR '+Math.min(GBARS,Math.floor(nb)-sb+1)+' / '+GBARS,12,HUDH/2-7);
-    g.fillStyle='#8a8f99';g.font=`400 ${fs}px ${FONT}`;g.fillText(g0?g0.taken+' clips · '+g0.down+' down · '+g0.through+' through':'',12,HUDH/2+9);
+    g.fillStyle='#8a8f99';g.font=`400 ${fs}px ${FONT}`;g.fillText(g0?g0.down+' down · '+g0.trios+' triples · '+g0.through+' through':'',12,HUDH/2+9);
     g.restore();
-    // before the round: GET READY, then the count-in in its place; the pod warning stays under both
+    // before the round: GET READY, then the count-in in its place
     if(g0&&pre&&z>=1){
-      const cy=TOP+(gameBot()-TOP)*0.36,counting=sb!=null&&st.playing&&nb>=g0.countBar;
+      const cy=TOP+(gameBot()-TOP)*0.58,counting=sb!=null&&st.playing&&nb>=g0.countBar;
       g.textAlign='center';g.textBaseline='middle';g.fillStyle='#ece7dc';
       if(counting){g.font=`700 ${Math.round(cssW/4)}px ${FONT}`;g.fillText(String(4-Math.min(3,Math.floor((nb-g0.countBar)*4))),cssW/2,cy);}
       else{g.font=`700 ${Math.round(cssW/9)}px ${FONT}`;g.fillText('GET READY',cssW/2,cy);}
-      const py=cy+cssW/4.2;g.save();g.translate(cssW/2,py);g.scale(1.6,1.6);drawPod(13,'#e9f4ff',p,nb*4);g.restore();
-      g.font=`600 ${fs+3}px ${FONT}`;g.fillStyle='#e9f4ff';g.fillText('Don’t hit the supply pods',cssW/2,py+44);
     }
     g.lineCap='butt';g.lineJoin='miter';
   }
@@ -2419,7 +2474,7 @@ function slicefieldUI(hostEl,engineFactory,synth,markup){
   // the layout is portrait only; where the browser allows it, keep the screen upright
   try{const o=screen.orientation;if(o&&o.lock){const p=o.lock('portrait');if(p&&p.catch)p.catch(()=>{});}}catch(_){}
   tracks[0].seq=blankClip(tracks[0]);savedSig=projSig();
-  paintIcons();computeLayout();dieEl.innerHTML=ICON.dice;
+  paintIcons();computeLayout();dieEl.innerHTML=fdie.innerHTML=ICON.dice;fdel.innerHTML=ICON.trash;
   // the count on the Clips button (and Capture) flash once, after a capture
   [sessBtn,capBtn].forEach(b=>b.addEventListener('animationend',()=>b.classList.remove('flash'),true));
   (function pre(){let n=0;const nx=()=>{if(n>=tracks.length)return;const t=tracks[n++];if(!t.buf){t.buf=buildLoop(t,48000);t.pk=peaks(t.buf);}setTimeout(nx,10);};setTimeout(nx,0);})();

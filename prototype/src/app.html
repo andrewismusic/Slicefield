@@ -359,10 +359,19 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
 .toggle2.alt{background:color-mix(in srgb,var(--blue) 18%,#1b1d22);border-color:var(--blue);color:var(--blue)}
 #gamebtn[aria-pressed="true"]{background:#3a1d2c;border-color:#ff5fa2;color:#ff9ccb}
 /* the field editor's and the game's bars sit over the bottom of the field */
-.fieldbar{position:absolute;left:0;right:0;bottom:0;display:flex;gap:6px;align-items:center;padding:6px;background:rgba(17,19,23,.92);border-top:1px solid var(--line);z-index:2}
-.fieldbar select{flex:1;min-width:0;height:32px}
-.fieldbar button{height:32px;font-size:11px}
-.fieldbar .hint{flex:1;font-size:10px;color:var(--dim);line-height:1.3}
+.c14{grid-column:1/5}.c68{grid-column:6/9}
+#fname{height:36px;font:inherit;font-size:12px;color:var(--fg);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:0 8px}
+#fsave.due{border-color:var(--accent);color:var(--accent)}
+#fieldbtn[aria-pressed="true"]{border-color:var(--accent);color:var(--accent);background:color-mix(in srgb,var(--accent) 18%,#1b1d22)}
+.fpanel{max-width:560px;background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:8px 10px;max-height:31vh;overflow:auto;display:flex;flex-direction:column;gap:9px;flex:none}
+.fpanel .phead{display:flex;align-items:center;gap:7px}.fpanel .phead h3{margin:0}
+.fpanel .chip{display:inline-flex;align-items:center;gap:8px}
+.fpanel .chip.on{background:var(--raise);color:var(--fg)}
+.fpanel .chip .cx{font-size:14px;line-height:1;opacity:.7;padding:0 2px}
+.fpanel .adds button{height:28px;font-size:10px;color:var(--dim)}
+.fpanel .psets{display:flex;flex-direction:column;gap:9px}
+.fpanel .vtrack{height:80px}
+.fpanel .vcol{width:78px}
 .fieldlist{display:flex;flex-direction:column;gap:4px}
 .frow{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;align-items:center}
 .frow .pb{height:auto;min-height:42px;display:flex;align-items:center;gap:8px;text-align:left;padding:4px 8px;border-radius:8px}
@@ -413,14 +422,14 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
         <optgroup label="Melodic"><option value="lead">Synth lead</option><option value="keys">Electric piano</option><option value="kalimba">Kalimba</option><option value="vox">Vocal chops</option></optgroup>
         <option value="pick">Load your own…</option>
       </select>
-      <button id="fieldbtn" class="ic c5 fieldonly" aria-label="Fields" title="Fields: switch, edit or roll a layout of effect cells"></button>
+      <button id="fieldbtn" class="ic c5 fieldonly" aria-label="Fields" title="Fields: open the field page to edit, roll, save or switch fields"></button>
       <button id="gamebtn" class="ic c6 fieldonly" aria-pressed="false" aria-label="Game" title="Game: play a 16-bar round; every bar is saved as a clip"></button>
       <button id="cliploop" class="ic c2 clipsonly" hidden aria-pressed="false" aria-label="Loop the selected clip" title="Loop: only the selected clip plays, over and over"></button>
       <button id="loadclip" class="tiny c36 clipsonly" hidden title="Load the selected clip into the sequencer to edit it">LOAD TO SEQUENCER</button>
       <button id="play" class="ic play c78" aria-pressed="false" aria-label="Play"></button>
       <input id="file" type="file" accept="audio/*" hidden><input id="projfile" type="file" accept=".json,.zip,application/json,application/zip" hidden>
     </div>
-    <div class="tgrid fieldonly" id="tools">
+    <div class="tgrid seqonly" id="tools">
       <button id="stepped" class="ic toggle2 c1" aria-label="Stepped values" title="Stepped or smooth effect values"></button>
       <div id="dice" class="dice c24" tabindex="0" role="slider" aria-label="Randomize the sequence" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
         title="Drag the die (or tap the slider) to randomize · hold it and tap steps to randomize just those"><span id="diceval"></span><i id="die"></i></div>
@@ -429,11 +438,23 @@ canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;displa
       <button id="rec" class="ic recbtn c7" aria-pressed="false" aria-label="Record" title="Record: touches are written into the sequence"></button>
       <button id="capture" class="ic capbtn c8" aria-label="Capture" title="Capture: save the sequence as it is now to Clips"></button>
     </div>
+    <!-- v27: the field page (Fields button): name and Save, open; delete, randomize the field, + Row; the picked row's panel -->
+    <div class="tgrid editonly" id="ftools" hidden>
+      <input id="fname" class="c14" type="text" maxlength="30" spellcheck="false" autocomplete="off" aria-label="Field name">
+      <button id="fsave" class="tiny c56" title="Save: under its own name it overwrites the field; under a new name it saves a new one">SAVE</button>
+      <select id="fopen" class="c78" aria-label="Open a field or start a new one"></select>
+    </div>
+    <div class="tgrid editonly" id="ftools2" hidden>
+      <button id="fdel" class="ic trash c1" aria-label="Delete this field" title="Delete this field from your fields (it stays on the page, unsaved)"></button>
+      <div id="fdice" class="dice c25" tabindex="0" role="slider" aria-label="Randomize the field" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"
+        title="Drag the die (or tap the slider) to roll the field: further for more change, the far end for a new random field"><span id="fdiceval"></span><i id="fdie"></i></div>
+      <select id="faddrow" class="tiny c68" aria-label="Add a row"></select>
+    </div>
+    <div class="card fpanel editonly" id="fpanel" hidden></div>
     <canvas id="lane" class="lane" aria-label="Sequencer steps"></canvas>
   </div>
   <div class="main" id="mainpane">
     <div class="gridwrap" id="gridwrap"><canvas id="grid" aria-label="Performance strips and effect grid"></canvas>
-      <div class="fieldbar" id="fieldbar" hidden></div>
       <button class="ic gamex" id="gamex" hidden aria-label="Leave the game" title="Leave the game"></button>
     </div>
     <section class="session" id="session" hidden aria-label="Clips">
